@@ -142,6 +142,15 @@ dependencies = [
 [[package]]
 name = "cordis-hmr"
 version = "0.1.0"
+dependencies = [
+ "cordis-core",
+ "cordis-loader",
+ "futures",
+ "indexmap",
+ "parking_lot",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "cordis-include"
