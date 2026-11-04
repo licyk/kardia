@@ -97,7 +97,7 @@ async fn async_return_2() {
             Ok(())
         })
         .unwrap();
-    let _ = handle.dispose();
+    drop(handle.dispose());
     assert_eq!(seq.get(), Vec::<i32>::new());
     advance(100).await;
     assert_eq!(seq.get(), vec![1, 2]);
@@ -138,7 +138,7 @@ async fn async_yield_2_aborted() {
     let seq = Seq::new();
     let handle = three_steps(&root, &seq);
     advance(50).await;
-    let _ = handle.dispose();
+    drop(handle.dispose());
     assert_eq!(seq.get(), Vec::<i32>::new());
     advance(300).await;
     assert_eq!(seq.get(), vec![1, 2]);
@@ -152,7 +152,7 @@ async fn async_yield_3_aborted() {
     assert_eq!(seq.get(), Vec::<i32>::new());
     advance(100).await;
     assert_eq!(seq.get(), vec![1]);
-    let _ = handle.dispose();
+    drop(handle.dispose());
     assert_eq!(seq.get(), vec![1]);
     advance(200).await;
     assert_eq!(seq.get(), vec![1, 3, 4, 2]);

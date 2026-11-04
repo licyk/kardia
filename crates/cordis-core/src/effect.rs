@@ -198,12 +198,6 @@ impl EffectCell {
         })
     }
 
-    pub(crate) fn with_disposer(label: impl Into<String>, fiber: FiberId, disposer: Disposer) -> Arc<Self> {
-        let cell = Self::new(label, fiber);
-        cell.inner.lock().disposers.push(disposer);
-        cell
-    }
-
     pub(crate) fn set_entry(&self, entry: Option<u64>) {
         self.inner.lock().entry = entry;
     }
@@ -216,11 +210,11 @@ impl EffectCell {
         self.inner.lock().active
     }
 
-    fn push(&self, disposer: Disposer) {
+    pub(crate) fn push_disposer(&self, disposer: Disposer) {
         let mut inner = self.inner.lock();
         if inner.closed {
             drop(inner);
-            let _ = run_sequence(vec![disposer]);
+            drop(run_sequence(vec![disposer]));
         } else {
             inner.disposers.push(disposer);
         }
@@ -234,10 +228,7 @@ impl EffectCell {
 
     pub(crate) fn meta(&self) -> EffectMeta {
         let children = self.inner.lock().children.clone();
-        EffectMeta {
-            label: self.label.clone(),
-            children: children.iter().map(|child| child.meta()).collect(),
-        }
+        EffectMeta { label: self.label.clone(), children: children.iter().map(|child| child.meta()).collect() }
     }
 
     /// Starts disposal at most once; waits for an in-flight setup first.
@@ -277,10 +268,7 @@ pub struct EffectMeta {
 
 impl EffectMeta {
     pub fn new(label: impl Into<String>, children: Vec<EffectMeta>) -> Self {
-        Self {
-            label: label.into(),
-            children,
-        }
+        Self { label: label.into(), children }
     }
 }
 
@@ -292,12 +280,15 @@ pub struct EffectHandle {
     cell: Arc<EffectCell>,
 }
 
+impl std::fmt::Debug for EffectHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "EffectHandle({:?})", self.cell.label)
+    }
+}
+
 impl EffectHandle {
     pub(crate) fn new(root: &Arc<RootInner>, cell: Arc<EffectCell>) -> Self {
-        Self {
-            root: Arc::downgrade(root),
-            cell,
-        }
+        Self { root: Arc::downgrade(root), cell }
     }
 
     pub fn label(&self) -> &str {
@@ -345,7 +336,7 @@ pub struct EffectScope {
 impl EffectScope {
     /// Collects an inverse without an iteration boundary.
     pub fn defer(&self, disposer: Disposer) {
-        self.cell.push(disposer);
+        self.cell.push_disposer(disposer);
     }
 
     /// Shorthand for deferring a synchronous inverse.
@@ -363,15 +354,11 @@ impl EffectScope {
             drop(removed);
         }
         self.cell.inner.lock().children.push(handle.cell.clone());
-        self.cell.push(Disposer::from_handle(handle));
+        self.cell.push_disposer(Disposer::from_handle(handle));
     }
 
     pub fn checkpoint(&self) -> Result<(), Interrupted> {
-        if self.cell.is_active() {
-            Ok(())
-        } else {
-            Err(Interrupted)
-        }
+        if self.cell.is_active() { Ok(()) } else { Err(Interrupted) }
     }
 
     /// Collects an inverse and marks an iteration boundary.
@@ -394,7 +381,7 @@ impl Context {
         let result =
             catch_unwind(AssertUnwindSafe(|| body(&scope))).unwrap_or_else(|panic| Err(Error::from_panic(panic)));
         if let Err(error) = result {
-            let _ = run_sequence(cell.take_disposers(true));
+            drop(run_sequence(cell.take_disposers(true)));
             return Err(error);
         }
         Ok(self.attach(cell))
@@ -415,10 +402,8 @@ impl Context {
         let task_cell = cell.clone();
         let logger = self.clone();
         let task = tokio::spawn(async move {
-            let result = AssertUnwindSafe(future)
-                .catch_unwind()
-                .await
-                .unwrap_or_else(|panic| Err(Error::from_panic(panic)));
+            let result =
+                AssertUnwindSafe(future).catch_unwind().await.unwrap_or_else(|panic| Err(Error::from_panic(panic)));
             match result {
                 Err(error) if !error.is_interrupted() => {
                     if let Err(cleanup) = run_sequence(task_cell.take_disposers(false)).await {
@@ -451,10 +436,7 @@ impl Context {
     }
 
     fn effect_scope(&self, cell: &Arc<EffectCell>) -> EffectScope {
-        EffectScope {
-            root: Arc::downgrade(&self.root),
-            cell: cell.clone(),
-        }
+        EffectScope { root: Arc::downgrade(&self.root), cell: cell.clone() }
     }
 
     fn attach(&self, cell: Arc<EffectCell>) -> EffectHandle {

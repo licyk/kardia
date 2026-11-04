@@ -5,6 +5,7 @@ use parking_lot::Mutex;
 use tokio::sync::Notify;
 
 use crate::error::Error;
+use crate::events::Emit;
 use crate::key::FiberId;
 use crate::logger::{Level, LoggerState};
 use crate::state::State;
@@ -22,6 +23,9 @@ pub(crate) struct RootInner {
 }
 
 pub(crate) enum Action {
+    Reload(FiberId),
+    Unload(FiberId),
+    Emit(Emit),
     Log {
         name: String,
         fiber: FiberId,
@@ -35,8 +39,8 @@ pub(crate) enum Action {
 
 impl RootInner {
     pub(crate) fn new() -> Arc<Self> {
-        Arc::new(Self {
-            state: Mutex::new(State::new()),
+        Arc::new_cyclic(|root| Self {
+            state: Mutex::new(State::new(root.clone())),
             changed: Notify::new(),
             logger: Mutex::new(LoggerState::default()),
         })
@@ -76,12 +80,14 @@ impl RootInner {
     fn execute(self: &Arc<Self>, actions: Vec<Action>) {
         for action in actions {
             match action {
-                Action::Log {
-                    name,
-                    fiber,
-                    level,
-                    error,
-                } => {
+                Action::Reload(id) => {
+                    tokio::spawn(crate::lifecycle::reload(self.clone(), id));
+                }
+                Action::Unload(id) => {
+                    tokio::spawn(crate::lifecycle::unload(self.clone(), id));
+                }
+                Action::Emit(emit) => emit.run(self),
+                Action::Log { name, fiber, level, error } => {
                     crate::logger::Logger::internal(self, name, fiber).log_error_at(level, &error);
                 }
                 Action::Drop(value) => drop(value),

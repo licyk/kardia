@@ -5,13 +5,14 @@ use std::sync::{Arc, Weak};
 
 use serde_json::Value;
 
+use crate::access::Located;
 use crate::context::{Context, merge_shallow};
 use crate::effect::{Disposer, EffectHandle};
 use crate::error::{AccessError, CordisError, Result};
 use crate::fiber::FiberState;
 use crate::key::{FiberId, ImplId, Key, RealmId};
 use crate::root::RootInner;
-use crate::state::{Impl, State};
+use crate::state::{Check, Impl, State};
 
 /// A service type bound to its coeffect key.
 pub trait Service: Any + Send + Sync {
@@ -40,12 +41,7 @@ pub struct Svc<T> {
 
 impl<T> Clone for Svc<T> {
     fn clone(&self) -> Self {
-        Self {
-            value: self.value.clone(),
-            caller: self.caller.clone(),
-            key: self.key.clone(),
-            impl_id: self.impl_id,
-        }
+        Self { value: self.value.clone(), caller: self.caller.clone(), key: self.key.clone(), impl_id: self.impl_id }
     }
 }
 
@@ -116,10 +112,22 @@ impl Context {
     }
 
     pub fn provide_arc_as<T: Any + Send + Sync>(&self, key: impl Into<Key>, value: Arc<T>) -> Result<EffectHandle> {
+        self.provide_checked(key, value, None)
+    }
+
+    /// Provides a value whose availability additionally depends on `check`,
+    /// evaluated for each consumer context. The predicate runs under the
+    /// runtime lock and must not call into the runtime.
+    pub fn provide_checked<T: Any + Send + Sync>(
+        &self,
+        key: impl Into<Key>,
+        value: Arc<T>,
+        check: Option<Check>,
+    ) -> Result<EffectHandle> {
         let key = key.into();
         let label = format!("ctx.provide({:?})", key.as_str());
         self.effect_sync(label, |scope| {
-            let id = self.root.run(|st| st.bind(self, key, value))?;
+            let id = self.root.run(|st| st.bind(self, key, value, check))?;
             scope.defer(withdraw(Arc::downgrade(&self.root), id));
             Ok(())
         })
@@ -132,11 +140,8 @@ impl Context {
 
     pub fn get_as<T: Any + Send + Sync>(&self, key: impl Into<Key>) -> Result<Svc<T>, AccessError> {
         let key = key.into();
-        let found = self.root.with(|st| st.access(self, &key));
-        match found {
-            Some((impl_id, value)) => self.wrap(key, impl_id, value),
-            None => Err(AccessError::Undeclared { key }),
-        }
+        let (impl_id, value) = self.root.with(|st| st.access(self, &key))?;
+        self.wrap(key, impl_id, value)
     }
 
     /// Reflective access to the live store: the current binding of the
@@ -160,20 +165,19 @@ impl Context {
         impl_id: ImplId,
         value: Arc<dyn Any + Send + Sync>,
     ) -> Result<Svc<T>, AccessError> {
-        let value = value.downcast::<T>().map_err(|_| AccessError::TypeMismatch {
-            key: key.clone(),
-            expected: type_name::<T>(),
-        })?;
-        Ok(Svc {
-            value,
-            caller: self.clone(),
-            key,
-            impl_id,
-        })
+        let value = value
+            .downcast::<T>()
+            .map_err(|_| AccessError::TypeMismatch { key: key.clone(), expected: type_name::<T>() })?;
+        Ok(Svc { value, caller: self.clone(), key, impl_id })
     }
 
-    pub(crate) fn declared_meta(&self, _key: &Key) -> Option<Value> {
-        None
+    /// Interception metadata declared by the fiber whose `inject` admits an
+    /// access to `key` from this context.
+    pub(crate) fn declared_meta(&self, key: &Key) -> Option<Value> {
+        self.root.with(|st| match st.locate(self, key)? {
+            Located::Declared { fiber, .. } => st.fiber(fiber)?.inject.meta(key).cloned(),
+            Located::Own(_) => None,
+        })
     }
 }
 
@@ -187,8 +191,7 @@ fn withdraw(root: Weak<RootInner>, id: ImplId) -> Disposer {
             let Some(root) = root else { return };
             // Retired bindings cannot gain new dependents; wait for the
             // cleanup of those that committed to it.
-            root.wait_until(|st| st.impls.get(&id).is_none_or(|i| i.dependents.is_empty()))
-                .await;
+            root.wait_until(|st| st.impls.get(&id).is_none_or(|i| i.dependents.is_empty())).await;
             root.run(|st| st.retire_provision(id));
         }
     })
@@ -200,7 +203,13 @@ impl State {
         ctx: &Context,
         key: Key,
         value: Arc<dyn Any + Send + Sync>,
+        check: Option<Check>,
     ) -> Result<ImplId, CordisError> {
+        // a retired fiber's stale load may still collect inverses, but it must
+        // not occupy a realm its successor may already be providing in
+        if self.fiber(ctx.fiber).is_none_or(|fiber| fiber.removed) {
+            return Err(CordisError::InactiveEffect);
+        }
         let root_realm = *self.root_realms.entry(key.clone()).or_insert_with(RealmId::new);
         let realm = ctx.scope.own_realm(&key).unwrap_or(root_realm);
         if let Some(existing) = self.store.get(&realm) {
@@ -211,12 +220,12 @@ impl State {
         self.impls.insert(
             id,
             Impl {
-                id,
                 key: key.clone(),
                 realm,
                 provider: ctx.fiber,
                 provider_scope: ctx.scope.clone(),
                 value,
+                check,
                 dependents: Default::default(),
             },
         );
@@ -234,8 +243,8 @@ impl State {
         let (key, realm) = (binding.key.clone(), binding.realm);
         if self.store.get(&realm) == Some(&id) {
             self.store.remove(&realm);
+            self.notify(&key, realm);
         }
-        self.notify(&key, realm);
     }
 
     /// Removes a withdrawn binding from its provider's provisions. During a
@@ -270,23 +279,10 @@ impl State {
         let id = *self.store.get(&realm)?;
         if strict {
             let provider = self.impls[&id].provider;
-            if self
-                .fiber(provider)
-                .is_none_or(|fiber| fiber.state != FiberState::Active)
-            {
+            if self.fiber(provider).is_none_or(|fiber| fiber.state != FiberState::Active) {
                 return None;
             }
         }
         Some(id)
     }
-
-    pub(crate) fn access(&self, ctx: &Context, key: &Key) -> Option<(ImplId, Arc<dyn Any + Send + Sync>)> {
-        if ctx.is_root() {
-            let id = self.live_impl(&ctx.scope, key, false)?;
-            return Some((id, self.impls[&id].value.clone()));
-        }
-        None
-    }
-
-    pub(crate) fn notify(&mut self, _key: &Key, _realm: RealmId) {}
 }

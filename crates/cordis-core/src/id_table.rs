@@ -14,10 +14,7 @@ pub struct IdTable<T> {
 
 impl<T> Default for IdTable<T> {
     fn default() -> Self {
-        Self {
-            next: 0,
-            entries: BTreeMap::new(),
-        }
+        Self { next: 0, entries: BTreeMap::new() }
     }
 }
 

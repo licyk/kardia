@@ -83,12 +83,7 @@ pub(crate) struct LoggerState {
 
 impl Default for LoggerState {
     fn default() -> Self {
-        Self {
-            exporters: IdTable::new(),
-            buffer: VecDeque::new(),
-            buffer_size: 1000,
-            sn: 0,
-        }
+        Self { exporters: IdTable::new(), buffer: VecDeque::new(), buffer_size: 1000, sn: 0 }
     }
 }
 
@@ -109,12 +104,7 @@ pub struct Logger {
 
 impl Logger {
     pub(crate) fn internal(root: &Arc<RootInner>, name: String, fiber: FiberId) -> Self {
-        Self {
-            root: root.clone(),
-            name: hyphenate(&name),
-            level: None,
-            fiber,
-        }
+        Self { root: root.clone(), name: hyphenate(&name), level: None, fiber }
     }
 
     pub fn name(&self) -> &str {
@@ -162,10 +152,7 @@ impl Logger {
         };
         let message = Message {
             sn,
-            ts: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0),
+            ts: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
             name: self.name.clone(),
             level,
             text: text.to_string(),
@@ -193,25 +180,13 @@ impl Context {
     /// or after the fiber's plugin.
     pub fn logger(&self) -> Logger {
         let meta: LoggerIntercept = self.intercept_meta("logger");
-        let name = meta
-            .name
-            .unwrap_or_else(|| hyphenate(&self.root.with(|st| st.fiber_name(self.fiber))));
-        Logger {
-            root: self.root.clone(),
-            name,
-            level: meta.level,
-            fiber: self.fiber,
-        }
+        let name = meta.name.unwrap_or_else(|| hyphenate(&self.root.with(|st| st.fiber_name(self.fiber))));
+        Logger { root: self.root.clone(), name, level: meta.level, fiber: self.fiber }
     }
 
     pub fn logger_named(&self, name: impl Into<String>) -> Logger {
         let meta: LoggerIntercept = self.intercept_meta("logger");
-        Logger {
-            root: self.root.clone(),
-            name: name.into(),
-            level: meta.level,
-            fiber: self.fiber,
-        }
+        Logger { root: self.root.clone(), name: name.into(), level: meta.level, fiber: self.fiber }
     }
 
     /// Registers an exporter as an effect of the current fiber.

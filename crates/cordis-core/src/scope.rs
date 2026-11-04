@@ -3,7 +3,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use serde_json::Value;
 
-use crate::key::{FiberId, Key, RealmId};
+use crate::key::{Key, RealmId};
 
 /// One node of a context's derivation chain.
 ///
@@ -17,7 +17,7 @@ pub(crate) struct Scope {
 
 pub(crate) enum ScopeKind {
     /// The context of a fiber: everything below it belongs to that fiber.
-    Fiber(FiberId),
+    Fiber,
     Isolate(Key, RealmId),
     Intercept(Key, Value),
     /// A transparent node, used by the loader as a re-pointable attachment point.
@@ -26,17 +26,11 @@ pub(crate) enum ScopeKind {
 
 impl Scope {
     pub(crate) fn root() -> Arc<Self> {
-        Arc::new(Self {
-            parent: RwLock::new(None),
-            kind: ScopeKind::Fiber(FiberId::ROOT),
-        })
+        Arc::new(Self { parent: RwLock::new(None), kind: ScopeKind::Fiber })
     }
 
     pub(crate) fn child(parent: &Arc<Scope>, kind: ScopeKind) -> Arc<Self> {
-        Arc::new(Self {
-            parent: RwLock::new(Some(parent.clone())),
-            kind,
-        })
+        Arc::new(Self { parent: RwLock::new(Some(parent.clone())), kind })
     }
 
     pub(crate) fn parent(&self) -> Option<Arc<Scope>> {

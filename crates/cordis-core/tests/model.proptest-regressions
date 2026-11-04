@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 501e46bc359d4534e43dc449d8bd8b71d677809ff1fc08a9f3cf57d1ad2d0e93 # shrinks to kinds = [[], [], [0], [], []], ops = [Toggle(0), Yield(2), Toggle(2), Toggle(0), Toggle(0)], delays = [(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)]

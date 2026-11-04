@@ -75,3 +75,52 @@ impl Gate {
         let _ = rx.wait_for(|open| *open).await;
     }
 }
+
+use cordis_core::{Context, Event, Exporter, Level, Message};
+
+/// A custom event for tests (`'custom-event'`).
+pub struct Custom;
+
+impl Event for Custom {
+    type Output = ();
+}
+
+struct Capture {
+    level: Level,
+    seq: Seq<String>,
+}
+
+impl Exporter for Capture {
+    fn export(&self, message: &Message) {
+        if message.level == self.level {
+            self.seq.push(message.text.clone());
+        }
+    }
+
+    fn level(&self, _name: &str) -> Option<Level> {
+        Some(Level::Debug)
+    }
+}
+
+/// Records the text of every message logged at `level`.
+pub fn capture(ctx: &Context, level: Level) -> Seq<String> {
+    let seq = Seq::new();
+    ctx.add_exporter(Arc::new(Capture { level, seq: seq.clone() })).unwrap();
+    seq
+}
+
+pub fn errors(ctx: &Context) -> Seq<String> {
+    capture(ctx, Level::Error)
+}
+
+/// Spawns a future and records when it settles (`true` on success).
+pub fn track<F>(future: F, settled: &Seq<bool>) -> tokio::task::JoinHandle<()>
+where
+    F: std::future::Future<Output = cordis_core::Result<()>> + Send + 'static,
+{
+    let settled = settled.clone();
+    tokio::spawn(async move {
+        let ok = future.await.is_ok();
+        settled.push(ok);
+    })
+}

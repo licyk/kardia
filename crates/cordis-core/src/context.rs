@@ -24,11 +24,12 @@ impl Context {
     pub fn new() -> Self {
         let root = RootInner::new();
         let scope = root.with(|st| st.fibers[&FiberId::ROOT].scope.clone());
-        Self {
-            root,
-            fiber: FiberId::ROOT,
-            scope,
-        }
+        Self { root, fiber: FiberId::ROOT, scope }
+    }
+
+    pub(crate) fn of_root(root: &Arc<RootInner>) -> Self {
+        let scope = root.with(|st| st.fibers[&FiberId::ROOT].scope.clone());
+        Self { root: root.clone(), fiber: FiberId::ROOT, scope }
     }
 
     pub fn fiber_id(&self) -> FiberId {
@@ -51,12 +52,7 @@ impl Context {
 
     /// The root context.
     pub fn root(&self) -> Context {
-        let scope = self.root.with(|st| st.fibers[&FiberId::ROOT].scope.clone());
-        Self {
-            root: self.root.clone(),
-            fiber: FiberId::ROOT,
-            scope,
-        }
+        Self::of_root(&self.root)
     }
 
     /// Derives a context in which `key` lives in a fresh, private realm.
@@ -109,11 +105,7 @@ impl Context {
     }
 
     fn derive(&self, kind: ScopeKind) -> Context {
-        Self {
-            root: self.root.clone(),
-            fiber: self.fiber,
-            scope: Scope::child(&self.scope, kind),
-        }
+        Self { root: self.root.clone(), fiber: self.fiber, scope: Scope::child(&self.scope, kind) }
     }
 }
 
