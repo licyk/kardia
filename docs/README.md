@@ -34,7 +34,7 @@ Where the paper and the code differ, the difference is recorded in [`implementat
 11. [Paper vs. implementation: correspondences, deviations, defects](implementation/11-paper-vs-implementation.md)
 
 ## Rust plan
-* [Rust implementation plan](rust-implementation-plan.md): architecture, crate layout, concurrency model, data structures, APIs, dependencies, phases, testing strategy, risks.
+* [Rust implementation plan](rust-implementation-plan.md): architecture, crate layout, concurrency model, data structures, APIs, dependencies, phases, testing strategy, risks, and (§15) the implementation status in [`../crates/`](../crates/).
 
 ## Suggested reading order
 * For the ideas: `paper/01` → `paper/05` → `paper/07`.

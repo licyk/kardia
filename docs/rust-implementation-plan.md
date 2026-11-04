@@ -4,7 +4,7 @@
 > * the **theory** – [`paper/`](paper/01-overview.md) (definitions, rules, theorems), and
 > * the **reference implementation** – [`implementation/`](implementation/01-repository-overview.md) (TypeScript, Cordis v4),
 >
-> and is explicit about which of the two it follows where they differ ([`implementation/11-paper-vs-implementation.md`](implementation/11-paper-vs-implementation.md)). Nothing here exists yet; all code is proposed.
+> and is explicit about which of the two it follows where they differ ([`implementation/11-paper-vs-implementation.md`](implementation/11-paper-vs-implementation.md)). The plan is implemented in [`../crates/`](../crates/); §15 records the status and where the implementation departs from this text.
 
 ---
 
@@ -619,3 +619,23 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+---
+
+## 15. Implementation status
+
+All phases of §12 are implemented in `crates/` (`cargo test --workspace`; `cargo run -p cordis -- examples/cordis.yml` boots an app from a watched config file). The specs listed in §11.1 are ported except the Node-specific ones (`resolve`, `import`, module-cache details of `reconcile`, `logger-console` formatter directives, `create`, `package-manager`).
+
+Where the implementation departs from this plan or from the TypeScript code:
+
+| Topic | Implementation |
+|---|---|
+| Retired providers | Found by the §11.2 property tests: retiring a fiber unbinds its live provisions at once, so a successor can provide in the same realm while old consumers still drain (they read through their committed views). The TS code keeps the slot until the drain and fails the successor. |
+| Stale loads | A retired fiber's load still in flight may register inverses (so nothing it acquired leaks), but not provisions. |
+| Provision removal during a drain | Postponed to the end of the provider's drain, so descendants can reach inherited services during their own cleanup without relying on microtask order. |
+| Re-pointable contexts | Scope nodes carry their fiber; the fiber chain of an access is read off the derivation chain, so moving an entry also moves the fibers below it (the TS prototype behaviour). Entry tables are mutable `Overlay` nodes. |
+| Checked typed access | `Injected<D>::get::<S, _>()` (the `_` is the inferred position of `S` in `D`); an undeclared `S` does not compile. |
+| Expressions | A side-effect-free JavaScript subset (`cordis_loader::expr`) over JSON views of services; no function calls. |
+| Errors | Parse and validation errors of config files carry `file:line:col`; validation errors of plugin configs are not yet relocated to file positions, and `Entry::evaluate` is not exposed. |
+| Loader API | Resolving a parent group waits for a group entry whose plugin is still loading (its group exists only once its `apply` runs). |
+| Dynamic modules | `ModuleSource` / `ModuleGraph` / `Hmr` with an in-memory source; the WASM and dylib backends and the HMR watch mode are not implemented. |
