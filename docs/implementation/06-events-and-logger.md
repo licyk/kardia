@@ -1,0 +1,62 @@
+# Cordis Core: Events and Logger
+
+> **Layer:** Implementation (`cordis/packages/core/src/events.ts`, `logger.ts`).
+> Paper counterpart: event listeners are the paper's canonical *commutative key* ("registration takes an entry of its own", §3.4.2); the logger is an example of interception metadata.
+
+## 1. `EventsService` (`events.ts`)
+
+One instance on the root; mixed into contexts as `ctx.on/once/emit/parallel/serial/bail/waterfall`.
+
+### Storage and registration
+`_hooks: Record<name, Hook[]>` with `Hook { ctx, callback, prepend?, global?, removed? }`.
+
+`on(name, listener, options)` (`events.ts:187-200`):
+1. `assertActive()` on the calling fiber;
+2. `listener = ctx.reflect.bind(listener)` – arguments/`this` are traced to the listener's context;
+3. `bail('internal/listener', name, listener, options)` – lets special events take over registration (used for per-fiber `internal/update`);
+4. otherwise `register()` – a **`fiber.effect`** that pushes/unshifts the hook and returns `unregister` (marks `removed = true`, splices, deletes empty buckets). Because `this.ctx` is the traced use-site context, the effect is owned by the *listener's* fiber.
+
+`once` disposes itself before calling the listener (so recursive emits and concurrent serial dispatches run it once).
+
+### Dispatch modes (`events.ts:110-163`)
+| Mode | Semantics |
+|---|---|
+| `emit` | synchronous, all listeners, return ignored |
+| `parallel` | `Promise.allSettled`; failures aggregated into `AggregateError` |
+| `serial` | sequential `await`; stops at the first "bailed" result (not `null/undefined/false`) |
+| `bail` | synchronous version of `serial` |
+| `waterfall` | middleware chain: each listener gets `(...args, next)`; `next()` may be called once (`next() called multiple times` otherwise); the last `next` calls the inner function |
+
+* Dispatch snapshots the listener list; listeners removed during dispatch are skipped (`hook.removed`), listeners added during a waterfall run from the next dispatch.
+* An optional first argument `thisArg` (an object) is the `this` for listeners; if it carries `[Context.filter]`, non-`global` hooks are filtered by `filter(hook.ctx)` – this is how realm-scoped events work (`internal/service` only reaches listeners in the same realm; `isolate.spec.ts: 'isolated event'`).
+* `internal/dispatch` is emitted for every non-internal dispatch when someone listens (tracing/devtools).
+
+### Internal events (`events.ts:211-224`)
+| Event | Emitted by | Purpose |
+|---|---|---|
+| `internal/plugin(fiber)` | fiber create / remove | registry change |
+| `internal/replace(fiber)` | `registry.replace` | implementation swapped |
+| `internal/status(fiber, old)` | `_updateState` | lifecycle state change |
+| `internal/service(name, value)` | `reflect.notify` | binding change (realm-filtered) |
+| `internal/update(this: fiber, config, next)` | `fiber.update` | per-fiber hooks may absorb config changes |
+| `internal/commit(fiber, config)` | `fiber.update` | loader writes config back to the entry |
+| `internal/config(fiber, next)` | config resolution | waterfall; default validates with the plugin's `Config` schema |
+| `internal/get` / `internal/set` | proxy traps | intercept property access (used by loader/isolate tooling) |
+| `internal/listener` | `on()` | intercept listener registration |
+| `internal/dispatch` | every public dispatch | observation |
+
+The constructor installs: the `internal/listener` handler that turns `ctx.on('internal/update', …)` into a per-fiber hook list (`fiber._hooks['internal/update']`, itself a tracked effect), the global `internal/update` dispatcher chaining those hooks, and the `internal/config` validator.
+
+## 2. Logger (`logger.ts`)
+
+* `LoggerService` is a callable, `noShadow` service: `ctx.logger(name?)` returns a `Logger`; `ctx.logger.info(...)` is shorthand for `ctx.logger().info(...)`.
+* **Name resolution:** explicit argument → interception metadata `{ name }` → hyphenated name of the *caller's* fiber (`fiber.name` walks up to the first named runtime, else `root`). Inside a service method the caller is the service's def site, so log lines are attributed to the service (`logger.spec.ts` regression tests).
+* **Level:** `exporter.levels[name] ?? exporter.levels.default ?? logger.level ?? INFO`; levels `ERROR=0, WARN=1, INFO=2, DEBUG=3`.
+* **Messages:** `{ sn, ts, name, type, level, args, fiber?: WeakRef<Fiber> }`; errors with `cause` log the cause; non-empty `AggregateError`s are flattened.
+* **Exporters** are registered with `logger.exporter(exp)` as a tracked effect (so a console exporter plugin unregisters on unload). A built-in exporter keeps a ring buffer of the last 1000 messages (for late-attached consoles).
+* `Logger.format` implements printf-style `%s %d %i %f %o %O %c %C` with exporter-overridable formatters, colour codes (16/256-colour palettes hashed from the logger name), and per-line truncation (`maxLength`, default 10240).
+
+## 3. Observations for a port
+* Events are just a service built on `ctx.effect`; nothing in the lifecycle depends on them except the internal hooks (status, service, commit, update, config). A port can implement typed event channels and keep a small set of internal hook points.
+* `waterfall` doubles as the extension mechanism for core behaviour (`internal/get`, `internal/config`, `internal/update`). In Rust these are better expressed as explicit hook traits/registries than as stringly-typed events.
+* The logger maps naturally onto `tracing` (span per fiber, logger name as target), but the *exporter-as-effect* and buffer semantics must be kept if consoles attach at runtime.
