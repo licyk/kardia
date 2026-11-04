@@ -18,6 +18,14 @@ cordis-fs = { path = "crates/cordis-fs" }
 cordis-loader = { path = "crates/cordis-loader" }
 cordis-include = { path = "crates/cordis-include" }
 cordis-hmr = { path = "crates/cordis-hmr" }
+tokio = { version = "1.47", features = ["rt", "sync", "time", "macros"] }
+futures = "0.3"
+parking_lot = "0.12"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_path_to_error = "0.1"
+indexmap = { version = "2", features = ["serde"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
