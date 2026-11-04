@@ -1,0 +1,11 @@
+# Run with `cargo run -p cordis -- examples/cordis.yml`, then edit this file:
+# the running app follows (e.g. enable the console logger below).
+- id: timer
+  name: timer
+- id: plugins
+  name: group
+  group: true
+  config:
+    - id: console
+      name: logger-console
+      disabled: true
