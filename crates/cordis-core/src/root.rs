@@ -39,8 +39,8 @@ pub(crate) enum Action {
 
 impl RootInner {
     pub(crate) fn new() -> Arc<Self> {
-        Arc::new_cyclic(|root| Self {
-            state: Mutex::new(State::new(root.clone())),
+        Arc::new(Self {
+            state: Mutex::new(State::new()),
             changed: Notify::new(),
             logger: Mutex::new(LoggerState::default()),
         })

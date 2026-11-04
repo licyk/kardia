@@ -1,0 +1,11 @@
+[
+  { "id": "timer", "name": "timer" },
+  {
+    "id": "plugins",
+    "name": "group",
+    "group": true,
+    "config": [
+      { "id": "console", "name": "logger-console", "disabled": true }
+    ]
+  }
+]

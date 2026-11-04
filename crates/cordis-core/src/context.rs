@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::key::{FiberId, Key, RealmId};
 use crate::root::RootInner;
-use crate::scope::{Scope, ScopeKind};
+use crate::scope::{Overlay, Scope, ScopeKind};
 
 /// A cheap, clonable handle to a position in the runtime: a root, the fiber
 /// that owns effects created through it, and its derivation scope
@@ -70,16 +70,47 @@ impl Context {
         self.derive(ScopeKind::Intercept(key.into(), meta))
     }
 
-    /// Derives a transparent context that can later be re-attached elsewhere
-    /// with [`Context::reparent`].
+    /// Derives a context with its own mutable isolation and interception
+    /// tables (see [`Overlay`]).
     pub fn extend(&self) -> Context {
-        self.derive(ScopeKind::Plain)
+        self.extend_with(&Overlay::new())
     }
 
-    /// Re-points the derivation parent of this context (which must have been
-    /// created by [`Context::extend`]) to `parent`, keeping its fiber.
-    pub fn reparent(&self, parent: &Context) {
+    /// Derives a context backed by a given overlay; several contexts may
+    /// share one overlay.
+    pub fn extend_with(&self, overlay: &Arc<Overlay>) -> Context {
+        self.derive(ScopeKind::Overlay(overlay.clone()))
+    }
+
+    /// The overlay of this very context, if it was made by `extend`.
+    pub fn overlay(&self) -> Option<Arc<Overlay>> {
+        match &self.scope.kind {
+            ScopeKind::Overlay(overlay) => Some(overlay.clone()),
+            _ => None,
+        }
+    }
+
+    /// Re-attaches this context, with everything derived below it, under
+    /// `parent`. Like a re-pointed prototype, the returned handle belongs to
+    /// `parent`'s fiber.
+    pub fn reparent(&self, parent: &Context) -> Context {
         self.scope.set_parent(parent.scope.clone());
+        Self { root: self.root.clone(), fiber: parent.fiber, scope: self.scope.clone() }
+    }
+
+    /// The tag of the nearest tagged overlay on the derivation chain.
+    pub fn tag(&self) -> Option<u64> {
+        self.scope.tag()
+    }
+
+    /// Whether this context is derived from `ancestor` (or is it).
+    pub fn is_within(&self, ancestor: &Context) -> bool {
+        self.scope.is_within(&ancestor.scope)
+    }
+
+    /// Every key isolated somewhere on this context's derivation chain.
+    pub fn isolated_keys(&self) -> Vec<Key> {
+        self.scope.isolated_keys()
     }
 
     /// The realm `key` resolves to from this context, if it has one yet.

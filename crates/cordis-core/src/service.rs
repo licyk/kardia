@@ -154,6 +154,55 @@ impl Context {
         })
     }
 
+    /// Moves the live binding of `key` from realm `from` to realm `to`, if
+    /// `to` is free. The binding keeps its identity, so consumers that
+    /// committed to it are not restarted. Returns whether it moved.
+    pub fn migrate_binding(&self, key: &str, from: RealmId, to: RealmId) -> bool {
+        self.root.run(|st| {
+            let Some(&id) = st.store.get(&from) else { return false };
+            if st.impls[&id].key.as_str() != key || st.store.contains_key(&to) {
+                return false;
+            }
+            st.store.remove(&from);
+            st.store.insert(to, id);
+            st.impls.get_mut(&id).expect("bound").realm = to;
+            true
+        })
+    }
+
+    /// Re-resolves every fiber that declares `key` and resolves it to `realm`
+    /// (after isolation tables changed under live fibers).
+    pub fn refresh_consumers(&self, key: &str, realm: RealmId) {
+        let key = Key::new(key);
+        self.root.run(|st| st.notify(&key, realm));
+    }
+
+    /// The live bindings of `key`: each realm with the binding it holds.
+    pub fn bindings(&self, key: &str) -> Vec<(RealmId, ImplId)> {
+        self.root.with(|st| {
+            let mut bindings: Vec<_> = st
+                .store
+                .iter()
+                .filter(|(_, id)| st.impls[id].key.as_str() == key)
+                .map(|(realm, id)| (*realm, *id))
+                .collect();
+            bindings.sort_by_key(|(_, id)| *id);
+            bindings
+        })
+    }
+
+    /// The context that provided the live binding of `key` in `realm`.
+    pub fn binding_provider(&self, key: &str, realm: RealmId) -> Option<Context> {
+        self.root.with(|st| {
+            let binding = &st.impls[st.store.get(&realm)?];
+            (binding.key.as_str() == key).then(|| Context {
+                root: self.root.clone(),
+                fiber: binding.provider,
+                scope: binding.provider_scope.clone(),
+            })
+        })
+    }
+
     /// Checked access (Algorithm 6): resolves through committed views.
     pub fn get<S: Service>(&self) -> Result<Svc<S>, AccessError> {
         self.get_as(S::NAME)

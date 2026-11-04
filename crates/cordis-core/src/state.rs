@@ -1,6 +1,6 @@
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 use serde_json::Value;
@@ -13,11 +13,10 @@ use crate::id_table::IdTable;
 use crate::key::{FiberId, ImplId, Key, RealmId};
 use crate::logger::Level;
 use crate::plugin::{Inject, PluginDef, RuntimeKey};
-use crate::root::{Action, RootInner};
+use crate::root::Action;
 use crate::scope::Scope;
 
 pub(crate) struct State {
-    pub(crate) root: Weak<RootInner>,
     pub(crate) fibers: HashMap<FiberId, FiberData>,
     /// Plugins with at least one fiber, in registration order.
     pub(crate) runtimes: IndexMap<RuntimeKey, RuntimeData>,
@@ -97,17 +96,18 @@ pub(crate) struct Impl {
     pub(crate) dependents: HashSet<FiberId>,
 }
 
-pub type Check = Arc<dyn Fn(&crate::context::Context) -> bool + Send + Sync>;
+/// An availability predicate of a binding, given the consumer's
+/// interception metadata for the key (declared `inject` metadata first).
+pub type Check = Arc<dyn Fn(&[Value]) -> bool + Send + Sync>;
 
 impl State {
-    pub(crate) fn new(root: Weak<RootInner>) -> Self {
+    pub(crate) fn new() -> Self {
         let mut fiber = FiberData::new(FiberId::ROOT, Scope::root(), None, Inject::new(), Value::Null);
         fiber.state = FiberState::Active;
         fiber.target = Target::Epoch { revision: 0, providers: Vec::new() };
         fiber.episode = Some(fiber.target.clone());
         fiber.committed = Some(HashMap::new());
         Self {
-            root,
             fibers: HashMap::from([(FiberId::ROOT, fiber)]),
             runtimes: IndexMap::new(),
             aliases: HashMap::new(),

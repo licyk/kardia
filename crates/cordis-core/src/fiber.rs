@@ -196,9 +196,9 @@ impl Fiber {
             }
         });
         if let Some(resolved) = resolved
-            && hooks.iter().any(|hook| hook.accepts(&resolved))
+            && let Some(handled) = hooks.iter().find_map(|hook| hook.offer(&resolved))
         {
-            return Ok(futures::future::ready(Ok(())).boxed());
+            return Ok(handled);
         }
         Ok(self.restart())
     }

@@ -118,7 +118,7 @@ impl State {
         let (key, def) = self.forward(def);
         self.runtimes.entry(key).or_insert_with(|| RuntimeData { def: def.clone(), fibers: Vec::new() });
         let id = self.next_fiber_id();
-        let scope = Scope::child(&parent.scope, ScopeKind::Fiber);
+        let scope = Scope::child(&parent.scope, ScopeKind::Fiber(id));
         let inject = def.inject_spec().clone();
         let keys: Vec<_> = inject.keys().cloned().collect();
         self.fibers.insert(id, FiberData::new(parent.fiber, scope.clone(), Some(key), inject, config));

@@ -10,7 +10,6 @@ use futures::future::join_all;
 use serde_json::Value;
 
 use crate::config::ErasedConfig;
-use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::events::{Emit, ServiceChanged, StatusChanged};
 use crate::fiber::{Fiber, FiberState};
@@ -24,12 +23,11 @@ impl State {
     /// Re-resolves one declared key of a fiber against the live store.
     pub(crate) fn check_impl(&mut self, id: FiberId, key: &Key) {
         let Some(fiber) = self.fiber(id) else { return };
-        let scope = fiber.scope.clone();
-        let found = self.live_impl(&scope, key, true).filter(|impl_id| {
-            let (Some(check), Some(root)) = (self.impls[impl_id].check.clone(), self.root.upgrade()) else {
-                return true;
-            };
-            check(&Context { root, fiber: id, scope: scope.clone() })
+        let found = self.live_impl(&fiber.scope, key, true).filter(|impl_id| {
+            let Some(check) = &self.impls[impl_id].check else { return true };
+            let mut meta: Vec<Value> = fiber.inject.meta(key).cloned().into_iter().collect();
+            meta.extend(fiber.scope.intercepts(key));
+            check(&meta)
         });
         let fiber = self.fiber_mut(id).expect("checked above");
         match found {

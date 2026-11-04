@@ -6,7 +6,6 @@ use std::sync::Arc;
 use crate::context::Context;
 use crate::error::AccessError;
 use crate::key::{FiberId, ImplId, Key};
-use crate::scope::ScopeKind;
 use crate::state::State;
 
 pub(crate) enum Located {
@@ -27,7 +26,8 @@ impl State {
 
     /// Walks from the context up through its fibers: own provisions in the
     /// same realm, then the nearest fiber declaring the key. The walk stops
-    /// at a context that isolates the key again.
+    /// at a context that isolates the key again. The fiber chain is read off
+    /// the (re-pointable) derivation chain, as with JavaScript prototypes.
     pub(crate) fn locate(&self, ctx: &Context, key: &Key) -> Option<Located> {
         let realm = self.realm_of(&ctx.scope, key);
         let mut node = Some(ctx.scope.clone());
@@ -47,9 +47,7 @@ impl State {
                 if Arc::ptr_eq(&scope, &fiber.scope) {
                     break;
                 }
-                if let ScopeKind::Isolate(name, _) = &scope.kind
-                    && name == key
-                {
+                if scope.isolates(key).is_some() {
                     return None;
                 }
                 node = scope.parent();
@@ -62,7 +60,7 @@ impl State {
                 return None;
             }
             node = fiber.scope.parent();
-            id = fiber.parent;
+            id = node.as_ref()?.fiber()?;
         }
     }
 

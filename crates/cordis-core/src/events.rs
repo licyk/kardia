@@ -364,14 +364,17 @@ impl Event for ServiceChanged {
     }
 }
 
+type AcceptFn = Box<dyn Fn(&ErasedConfig) -> Option<BoxFuture<'static, Result<()>>> + Send + Sync>;
+
 pub(crate) struct UpdateHook {
     removed: AtomicBool,
-    accept: Box<dyn Fn(&ErasedConfig) -> bool + Send + Sync>,
+    accept: AcceptFn,
 }
 
 impl UpdateHook {
-    pub(crate) fn accepts(&self, config: &ErasedConfig) -> bool {
-        !self.removed.load(Ordering::Acquire) && (self.accept)(config)
+    /// `Some` if the hook takes the update over, with its completion.
+    pub(crate) fn offer(&self, config: &ErasedConfig) -> Option<BoxFuture<'static, Result<()>>> {
+        if self.removed.load(Ordering::Acquire) { None } else { (self.accept)(config) }
     }
 }
 
@@ -386,9 +389,18 @@ impl Context {
     /// The hook sees the decoded configuration; it is skipped if `C` does
     /// not match the plugin's configuration type.
     pub fn on_update<C: Any>(&self, accept: impl Fn(&C) -> bool + Send + Sync + 'static) -> Result<EffectHandle> {
+        self.on_update_with(move |config: &C| accept(config).then(|| futures::future::ready(Ok(())).boxed()))
+    }
+
+    /// Like [`Context::on_update`]; a hook taking the update over returns
+    /// the future that `update` resolves with.
+    pub fn on_update_with<C: Any>(
+        &self,
+        accept: impl Fn(&C) -> Option<BoxFuture<'static, Result<()>>> + Send + Sync + 'static,
+    ) -> Result<EffectHandle> {
         let hook = Arc::new(UpdateHook {
             removed: AtomicBool::new(false),
-            accept: Box::new(move |config| config.downcast_ref::<C>().is_some_and(&accept)),
+            accept: Box::new(move |config| config.downcast_ref::<C>().and_then(&accept)),
         });
         let root = Arc::downgrade(&self.root);
         let fiber = self.fiber;
