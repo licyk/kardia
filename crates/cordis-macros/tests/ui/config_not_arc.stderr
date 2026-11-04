@@ -1,0 +1,5 @@
+error: the config parameter must be an `Arc<Config>`
+ --> tests/ui/config_not_arc.rs:5:42
+  |
+5 | async fn greeter(_ctx: Context, _config: String) -> Result<()> {
+  |                                          ^^^^^^

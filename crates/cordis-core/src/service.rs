@@ -14,7 +14,7 @@ use crate::fiber::FiberState;
 use crate::key::{FiberId, ImplId, Key, RealmId};
 use crate::logger::Logger;
 use crate::root::RootInner;
-use crate::state::{Check, Impl, State};
+use crate::state::{Check, Impl, State, View};
 
 /// A service type bound to its coeffect key.
 pub trait Service: Any + Send + Sync {
@@ -145,10 +145,35 @@ impl Context {
         value: Arc<T>,
         check: Option<Check>,
     ) -> Result<EffectHandle> {
-        let key = key.into();
+        let view = (&value as &dyn Any).downcast_ref::<Arc<Value>>().map(|value| {
+            let value = value.clone();
+            Arc::new(move || (*value).clone()) as View
+        });
+        self.bind_effect(key.into(), value, check, view)
+    }
+
+    /// Provides a value that expressions and tooling can read as JSON.
+    pub fn provide_serialized_as<T: Any + Send + Sync + serde::Serialize>(
+        &self,
+        key: impl Into<Key>,
+        value: T,
+    ) -> Result<EffectHandle> {
+        let value = Arc::new(value);
+        let reader = value.clone();
+        let view: View = Arc::new(move || serde_json::to_value(&*reader).unwrap_or(Value::Null));
+        self.bind_effect(key.into(), value, None, Some(view))
+    }
+
+    fn bind_effect(
+        &self,
+        key: Key,
+        value: Arc<dyn Any + Send + Sync>,
+        check: Option<Check>,
+        view: Option<View>,
+    ) -> Result<EffectHandle> {
         let label = format!("ctx.provide({:?})", key.as_str());
         self.effect_sync(label, |scope| {
-            let id = self.root.run(|st| st.bind(self, key, value, check))?;
+            let id = self.root.run(|st| st.bind(self, key, value, check, view))?;
             scope.defer(withdraw(Arc::downgrade(&self.root), id));
             Ok(())
         })
@@ -214,6 +239,15 @@ impl Context {
         self.wrap(key, resolved)
     }
 
+    /// Checked access to the JSON view of a service (see
+    /// [`Context::provide_serialized_as`]; JSON values are their own view).
+    pub fn view(&self, key: impl Into<Key>) -> Result<Value, AccessError> {
+        let key = key.into();
+        let (impl_id, ..) = self.root.with(|st| st.access(self, &key))?;
+        let view = self.root.with(|st| st.impls.get(&impl_id).and_then(|binding| binding.view.clone()));
+        view.map(|view| view()).ok_or(AccessError::TypeMismatch { key, expected: "a JSON view" })
+    }
+
     /// Reflective access to the live store: the current binding of the
     /// realm, if its provider is active. Never fails for undeclared keys.
     pub fn live<S: Service>(&self) -> Option<Svc<S>> {
@@ -270,6 +304,7 @@ impl State {
         key: Key,
         value: Arc<dyn Any + Send + Sync>,
         check: Option<Check>,
+        view: Option<View>,
     ) -> Result<ImplId, CordisError> {
         // a retired fiber's stale load may still collect inverses, but it must
         // not occupy a realm its successor may already be providing in
@@ -292,6 +327,7 @@ impl State {
                 provider_scope: ctx.scope.clone(),
                 value,
                 check,
+                view,
                 dependents: Default::default(),
             },
         );

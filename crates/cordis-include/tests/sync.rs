@@ -326,8 +326,13 @@ async fn resolves_scalars_by_the_core_schema() {
 async fn writes_expressions_back_with_their_tag() {
     let text = "- id: a\n  name: config-plugin\n  config:\n    tag: a\n    value: !!js \"'#' + 1\"\n";
     let app = App::setup("parse-expr.yml", text, json!({})).await;
+    assert_eq!(app.config("a").unwrap()["value"], json!("#1"));
     app.update("a", json!({ "config": { "tag": "a", "value": { "__jsExpr": "'#' + 2" } } })).await;
     app.include().flush().await;
     assert!(app.text().contains("    value: !!js '''#'' + 2'\n"), "{}", app.text());
     assert_eq!(app.read()[0]["config"]["value"], json!({ "__jsExpr": "'#' + 2" }));
+    // force a re-read of what was written
+    app.write(app.text() + "# touched\n");
+    app.settle().await;
+    assert_eq!(app.config("a").unwrap()["value"], json!("#2"));
 }

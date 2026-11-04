@@ -1,0 +1,5 @@
+error: a plugin function must be `async`
+ --> tests/ui/not_async.rs:5:1
+  |
+5 | fn greeter(_ctx: Context) -> Result<()> {
+  | ^^

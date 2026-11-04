@@ -10,6 +10,7 @@ use futures::FutureExt;
 use futures::future::BoxFuture;
 use serde_json::Value;
 
+use crate::expr::{evaluate, interpolate, truthy};
 use crate::loader::{EntryId, Loader, LoaderState};
 use crate::options::{Disabled, EntryOptions, diff_keys};
 
@@ -54,11 +55,32 @@ impl Loader {
         .boxed()
     }
 
-    /// Returns whether `inject` changed, or `None` on failure.
+    /// Evaluates `inject` (in the parent group's context). Returns whether
+    /// it changed, or `None` on failure, which disables the entry.
     fn resolve_inject(&self, entry: EntryId) -> Option<bool> {
+        let (declared, parent) = self.with(|st| {
+            let data = st.entries.get(&entry)?;
+            Some((data.read().inject, st.groups[&data.parent].ctx.clone()))
+        })?;
+        let mut inject = cordis_core::Inject::new();
+        for key in declared.keys() {
+            match declared.meta(key).map(|meta| interpolate(&parent, meta)).transpose() {
+                Ok(Some(meta)) => inject = inject.with_meta(key.clone(), meta),
+                Ok(None) => inject = inject.with(key.clone()),
+                Err(error) => {
+                    self.0.ctx.logger().log_error(&error);
+                    self.with(|st| {
+                        if let Some(data) = st.entries.get_mut(&entry) {
+                            data.inject = cordis_core::Inject::new();
+                            data.verdict = Some(true);
+                        }
+                    });
+                    return None;
+                }
+            }
+        }
         self.with(|st| {
             let data = st.entries.get_mut(&entry)?;
-            let inject = data.read().inject;
             let changed = inject != data.inject;
             data.inject = inject;
             Some(changed)
@@ -246,11 +268,10 @@ impl Loader {
                 return Ok(None);
             }
             // a group still starts; its verdict only reaches its children
-            let failure = st.resolve_disabled(entry);
+            let failure = st.resolve_disabled(entry, ctx).or_else(|| st.apply_intercept(entry, ctx));
             if st.is_disabled(entry) {
                 return failure.map_or(Ok(None), Err);
             }
-            st.apply_intercept(entry);
             let data = &st.entries[&entry];
             Ok(Some((data.intercept.clone(), data.read().config)))
         });
@@ -297,7 +318,7 @@ impl Loader {
         result
     }
 
-    async fn reconcile(&self, entry: EntryId, _ctx: Context, diff: &[String]) -> Result<()> {
+    async fn reconcile(&self, entry: EntryId, ctx: Context, diff: &[String]) -> Result<()> {
         let Some((inner, outer)) = self.with(|st| {
             let data = st.entries.get(&entry)?;
             Some((data.inner.clone().filter(|fiber| !fiber.is_removed()), data.outer.clone()))
@@ -312,13 +333,12 @@ impl Loader {
             return Ok(());
         };
         let outcome = self.with(|st| {
-            let failure = st.resolve_disabled(entry);
-            let disabled = st.is_disabled(entry);
-            if !disabled {
-                st.apply_intercept(entry);
+            let mut failure = st.resolve_disabled(entry, &ctx);
+            if !st.is_disabled(entry) {
+                failure = failure.or_else(|| st.apply_intercept(entry, &ctx));
             }
             let options = st.entries[&entry].read();
-            (failure, disabled, options)
+            (failure, st.is_disabled(entry), options)
         });
         let (failure, disabled, options) = outcome;
         if let Some(error) = failure {
@@ -340,15 +360,17 @@ impl Loader {
 }
 
 impl LoaderState {
-    /// `disabled` evaluates to a verdict; a failure disables the entry.
-    pub(crate) fn resolve_disabled(&mut self, entry: EntryId) -> Option<Error> {
+    /// `disabled` evaluates to a verdict in `ctx` (the outer fiber's
+    /// context, which sees the entry's `inject`); a failure disables the entry.
+    pub(crate) fn resolve_disabled(&mut self, entry: EntryId, ctx: &Context) -> Option<Error> {
         let data = self.entries.get_mut(&entry)?;
         let (verdict, failure) = match data.read().disabled {
             None => (false, None),
             Some(Disabled::Bool(disabled)) => (disabled, None),
-            Some(Disabled::Expr(source)) => {
-                (true, Some(Error::msg(format!("cannot evaluate `{source}`: expressions are not supported"))))
-            }
+            Some(Disabled::Expr(source)) => match evaluate(ctx, &source) {
+                Ok(value) => (truthy(&value), None),
+                Err(error) => (true, Some(Error::msg(format!("cannot evaluate `{source}`: {error}")))),
+            },
         };
         data.verdict = Some(verdict);
         failure
@@ -390,11 +412,23 @@ impl LoaderState {
         self.parent_disabled(entry)
     }
 
-    /// Swaps the entry's interception table in place, so that running
-    /// plugins see the new metadata without a restart.
-    pub(crate) fn apply_intercept(&mut self, entry: EntryId) {
-        let data = &self.entries[&entry];
-        let table = data.read().intercept.into_iter().map(|(key, meta)| (key.into(), meta)).collect();
-        data.intercept.set_intercepts(table);
+    /// Evaluates the entry's `intercept` in `ctx` and swaps its
+    /// interception table in place, so that running plugins see the new
+    /// metadata without a restart. A plugin does not run with an intercept
+    /// that cannot be evaluated: a failure disables the entry.
+    pub(crate) fn apply_intercept(&mut self, entry: EntryId, ctx: &Context) -> Option<Error> {
+        let data = self.entries.get_mut(&entry)?;
+        let intercept = Value::Object(data.read().intercept);
+        match interpolate(ctx, &intercept) {
+            Ok(Value::Object(table)) => {
+                data.intercept.set_intercepts(table.into_iter().map(|(key, meta)| (key.into(), meta)).collect());
+                None
+            }
+            Ok(_) => None,
+            Err(error) => {
+                data.verdict = Some(true);
+                Some(error)
+            }
+        }
     }
 }

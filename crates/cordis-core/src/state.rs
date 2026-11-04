@@ -92,9 +92,14 @@ pub(crate) struct Impl {
     /// Extra availability predicate, evaluated for each consumer under the
     /// runtime lock; it must not call into the runtime.
     pub(crate) check: Option<Check>,
+    /// A JSON reading of the value, if it has one.
+    pub(crate) view: Option<View>,
     /// Fibers whose committed view names this binding (relied_n).
     pub(crate) dependents: HashSet<FiberId>,
 }
+
+/// A JSON reading of a bound value.
+pub type View = Arc<dyn Fn() -> Value + Send + Sync>;
 
 /// An availability predicate of a binding, given the consumer's
 /// interception metadata for the key (declared `inject` metadata first).

@@ -7,6 +7,7 @@
 
 mod catalog;
 mod entry;
+pub mod expr;
 mod group;
 mod loader;
 mod options;

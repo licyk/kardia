@@ -233,7 +233,32 @@ impl Loader {
         ctx.on(move |event: &ConfigCommitted| this.on_committed(&event.fiber, &event.config))?;
         let this = loader.clone();
         ctx.on(move |event: &StatusChanged| this.on_status(&event.fiber, event.new))?;
+        let this = loader.clone();
+        ctx.on_config(Arc::new(move |fiber, config, next| next(this.interpolate_config(fiber, config)?)))?;
         Ok(())
+    }
+
+    /// The configuration of an entry's own plugin is interpolated in the
+    /// plugin's context on every (re)load; the source keeps the expressions.
+    /// A group's configuration is its entry list and stays as it is, and
+    /// plugins created by plugin code get their config from that code.
+    fn interpolate_config(&self, fiber: &Fiber, config: Value) -> Result<Value> {
+        if !crate::expr::has_expr(&config) {
+            return Ok(config);
+        }
+        let ctx = fiber.context();
+        let Some(entry) = self.entry_of_context(ctx) else { return Ok(config) };
+        let own = self.with(|st| {
+            let data = st.entries.get(&entry)?;
+            Some(
+                !data.read().group
+                    && ctx.parent_overlay().is_some_and(|overlay| Arc::ptr_eq(&overlay, &data.intercept)),
+            )
+        });
+        if own != Some(true) {
+            return Ok(config);
+        }
+        crate::expr::interpolate(ctx, &config)
     }
 
     pub(crate) fn with<R>(&self, f: impl FnOnce(&mut LoaderState) -> R) -> R {

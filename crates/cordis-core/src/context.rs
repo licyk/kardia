@@ -98,6 +98,14 @@ impl Context {
         Self { root: self.root.clone(), fiber: parent.fiber, scope: self.scope.clone() }
     }
 
+    /// The overlay this context is directly derived from, if any.
+    pub fn parent_overlay(&self) -> Option<Arc<Overlay>> {
+        match &self.scope.parent()?.kind {
+            ScopeKind::Overlay(overlay) => Some(overlay.clone()),
+            _ => None,
+        }
+    }
+
     /// The tag of the nearest tagged overlay on the derivation chain.
     pub fn tag(&self) -> Option<u64> {
         self.scope.tag()
