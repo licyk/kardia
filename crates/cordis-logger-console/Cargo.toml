@@ -7,6 +7,14 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+cordis-core.workspace = true
+serde.workspace = true
+parking_lot.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+serde_json.workspace = true
 
 [lints]
 workspace = true

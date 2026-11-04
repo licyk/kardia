@@ -16,7 +16,15 @@ pub(crate) enum Located {
     Declared { fiber: FiberId, binding: Option<ImplId> },
 }
 
+/// A reached binding: its identity, value and provider fiber.
+pub(crate) type Resolved = (ImplId, Arc<dyn Any + Send + Sync>, FiberId);
+
 impl State {
+    pub(crate) fn resolved(&self, impl_id: ImplId) -> Option<Resolved> {
+        let binding = self.impls.get(&impl_id)?;
+        Some((impl_id, binding.value.clone(), binding.provider))
+    }
+
     /// Walks from the context up through its fibers: own provisions in the
     /// same realm, then the nearest fiber declaring the key. The walk stops
     /// at a context that isolates the key again.
@@ -60,7 +68,7 @@ impl State {
 
     /// The binding an access from `ctx` reaches. The root context has
     /// unchecked access to the live store, as it cannot declare `inject`.
-    pub(crate) fn access(&self, ctx: &Context, key: &Key) -> Result<(ImplId, Arc<dyn Any + Send + Sync>), AccessError> {
+    pub(crate) fn access(&self, ctx: &Context, key: &Key) -> Result<Resolved, AccessError> {
         if self.fiber(ctx.fiber).is_none() {
             // the context's fiber has been disposed and collected
             return Err(AccessError::Inactive { key: key.clone() });
@@ -74,8 +82,6 @@ impl State {
                 Some(Located::Declared { binding, .. }) => binding,
             }
         };
-        found
-            .and_then(|impl_id| Some((impl_id, self.impls.get(&impl_id)?.value.clone())))
-            .ok_or_else(|| AccessError::Inactive { key: key.clone() })
+        found.and_then(|impl_id| self.resolved(impl_id)).ok_or_else(|| AccessError::Inactive { key: key.clone() })
     }
 }

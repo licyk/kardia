@@ -27,6 +27,7 @@ serde_json = "1"
 serde_path_to_error = "0.1"
 indexmap = { version = "2", features = ["serde"] }
 proptest = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

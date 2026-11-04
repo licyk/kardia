@@ -3,6 +3,7 @@
 mod access;
 mod config;
 mod context;
+mod deps;
 mod effect;
 mod error;
 mod events;
@@ -20,6 +21,7 @@ mod state;
 
 pub use config::{ErasedConfig, Issue, PathSegment, ValidationError, decode};
 pub use context::{Context, merge_shallow};
+pub use deps::Deps;
 pub use effect::{Disposal, Disposer, EffectHandle, EffectMeta, EffectScope};
 pub use error::{AccessError, AggregateError, CordisError, Error, Interrupted, Panicked, Result};
 pub use events::{

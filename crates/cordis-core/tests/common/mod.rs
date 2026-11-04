@@ -6,8 +6,19 @@ use std::time::Duration;
 use parking_lot::Mutex;
 
 /// A shared, ordered record of observations.
-#[derive(Clone, Default)]
 pub struct Seq<T>(Arc<Mutex<Vec<T>>>);
+
+impl<T> Clone for Seq<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T> Default for Seq<T> {
+    fn default() -> Self {
+        Self(Default::default())
+    }
+}
 
 impl<T: Clone> Seq<T> {
     pub fn new() -> Self {

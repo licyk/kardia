@@ -5,12 +5,14 @@ use std::sync::{Arc, Weak};
 
 use serde_json::Value;
 
-use crate::access::Located;
+use crate::access::{Located, Resolved};
 use crate::context::{Context, merge_shallow};
 use crate::effect::{Disposer, EffectHandle};
 use crate::error::{AccessError, CordisError, Result};
+use crate::fiber::Fiber;
 use crate::fiber::FiberState;
 use crate::key::{FiberId, ImplId, Key, RealmId};
+use crate::logger::Logger;
 use crate::root::RootInner;
 use crate::state::{Check, Impl, State};
 
@@ -37,11 +39,18 @@ pub struct Svc<T> {
     caller: Context,
     key: Key,
     impl_id: ImplId,
+    provider: FiberId,
 }
 
 impl<T> Clone for Svc<T> {
     fn clone(&self) -> Self {
-        Self { value: self.value.clone(), caller: self.caller.clone(), key: self.key.clone(), impl_id: self.impl_id }
+        Self {
+            value: self.value.clone(),
+            caller: self.caller.clone(),
+            key: self.key.clone(),
+            impl_id: self.impl_id,
+            provider: self.provider,
+        }
     }
 }
 
@@ -73,6 +82,18 @@ impl<T> Svc<T> {
 
     pub fn arc(&self) -> &Arc<T> {
         &self.value
+    }
+
+    /// The fiber that provides this binding (the service's def site).
+    pub fn provider(&self) -> Fiber {
+        Fiber::of(&self.caller.root, self.provider)
+    }
+
+    /// A logger for work done on the caller's behalf: named by the caller's
+    /// `intercept("logger", { name })`, else after the providing plugin.
+    pub fn logger(&self) -> Logger {
+        let fallback = self.caller.root.with(|st| st.fiber_name(self.provider));
+        Logger::for_caller(&self.caller, &fallback)
     }
 
     /// Interception metadata applying to this access, outermost first:
@@ -140,8 +161,8 @@ impl Context {
 
     pub fn get_as<T: Any + Send + Sync>(&self, key: impl Into<Key>) -> Result<Svc<T>, AccessError> {
         let key = key.into();
-        let (impl_id, value) = self.root.with(|st| st.access(self, &key))?;
-        self.wrap(key, impl_id, value)
+        let resolved = self.root.with(|st| st.access(self, &key))?;
+        self.wrap(key, resolved)
     }
 
     /// Reflective access to the live store: the current binding of the
@@ -152,23 +173,19 @@ impl Context {
 
     pub fn live_as<T: Any + Send + Sync>(&self, key: impl Into<Key>) -> Option<Svc<T>> {
         let key = key.into();
-        let (impl_id, value) = self.root.with(|st| {
-            let id = st.live_impl(&self.scope, &key, true)?;
-            Some((id, st.impls[&id].value.clone()))
-        })?;
-        self.wrap(key, impl_id, value).ok()
+        let resolved = self.root.with(|st| st.resolved(st.live_impl(&self.scope, &key, true)?))?;
+        self.wrap(key, resolved).ok()
     }
 
     fn wrap<T: Any + Send + Sync>(
         &self,
         key: Key,
-        impl_id: ImplId,
-        value: Arc<dyn Any + Send + Sync>,
+        (impl_id, value, provider): Resolved,
     ) -> Result<Svc<T>, AccessError> {
         let value = value
             .downcast::<T>()
             .map_err(|_| AccessError::TypeMismatch { key: key.clone(), expected: type_name::<T>() })?;
-        Ok(Svc { value, caller: self.clone(), key, impl_id })
+        Ok(Svc { value, caller: self.clone(), key, impl_id, provider })
     }
 
     /// Interception metadata declared by the fiber whose `inject` admits an

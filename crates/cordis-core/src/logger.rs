@@ -107,6 +107,21 @@ impl Logger {
         Self { root: root.clone(), name: hyphenate(&name), level: None, fiber }
     }
 
+    pub(crate) fn for_caller(caller: &Context, fallback: &str) -> Self {
+        let meta: LoggerIntercept = caller.intercept_meta("logger");
+        let name = meta.name.unwrap_or_else(|| hyphenate(fallback));
+        Self { root: caller.root.clone(), name, level: meta.level, fiber: caller.fiber }
+    }
+
+    pub fn level(&self) -> Option<Level> {
+        self.level
+    }
+
+    pub fn with_level(mut self, level: Level) -> Self {
+        self.level = Some(level);
+        self
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -179,9 +194,8 @@ impl Context {
     /// The logger of this context: named by `intercept("logger", { name })`
     /// or after the fiber's plugin.
     pub fn logger(&self) -> Logger {
-        let meta: LoggerIntercept = self.intercept_meta("logger");
-        let name = meta.name.unwrap_or_else(|| hyphenate(&self.root.with(|st| st.fiber_name(self.fiber))));
-        Logger { root: self.root.clone(), name, level: meta.level, fiber: self.fiber }
+        let fallback = self.root.with(|st| st.fiber_name(self.fiber));
+        Logger::for_caller(self, &fallback)
     }
 
     pub fn logger_named(&self, name: impl Into<String>) -> Logger {
