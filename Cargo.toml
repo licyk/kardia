@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/licyk/cordis-rs"
+rust-version = "1.85"
+
+[workspace.dependencies]
+cordis-core = { path = "crates/cordis-core" }
+cordis-macros = { path = "crates/cordis-macros" }
+cordis-timer = { path = "crates/cordis-timer" }
+cordis-logger-console = { path = "crates/cordis-logger-console" }
+cordis-fs = { path = "crates/cordis-fs" }
+cordis-loader = { path = "crates/cordis-loader" }
+cordis-include = { path = "crates/cordis-include" }
+cordis-hmr = { path = "crates/cordis-hmr" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
