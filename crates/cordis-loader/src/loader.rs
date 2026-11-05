@@ -436,8 +436,10 @@ impl Loader {
             return;
         }
         self.show_log(entry, "unload");
-        // the entry's parent is being unloaded, which takes the entry with it
-        if fiber.parent().is_some_and(|parent| parent.state() == FiberState::Unloading) {
+        // the entry's parent is unloading, which takes the entry with it; on a
+        // multi-thread runtime the parent may be disposed (or gone) by now
+        let parent = fiber.parent();
+        if parent.is_none_or(|parent| matches!(parent.state(), FiberState::Unloading | FiberState::Disposed)) {
             return;
         }
         let change = self.with(|st| {
