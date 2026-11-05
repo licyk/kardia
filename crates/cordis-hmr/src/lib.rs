@@ -2,7 +2,8 @@
 //!
 //! Rust has no module registry, so the host owns one: a [`ModuleGraph`]
 //! loads module code from a [`ModuleSource`]. The [`Hmr`] service reloads
-//! changed modules and replaces the plugins they export in place.
+//! changed modules and replaces the plugins they export in place; with
+//! `watch.enabled` (and the `fs` service) it does so as files change.
 //!
 //! Besides custom sources, two backends load guest modules from files:
 //! [`WasmSource`] (WebAssembly on wasmtime, sandboxed) and [`DylibSource`]
@@ -53,6 +54,7 @@ mod graph;
 #[cfg(any(feature = "wasm", feature = "dylib"))]
 mod guest;
 mod hmr;
+mod watch;
 
 #[cfg(feature = "dylib")]
 mod dylib;
@@ -64,6 +66,7 @@ pub use dylib::DylibSource;
 pub use graph::{Exports, Imports, ModuleCode, ModuleGraph, ModuleId, ModuleSource};
 #[cfg(any(feature = "wasm", feature = "dylib"))]
 pub use guest::GuestService;
-pub use hmr::{Hmr, HmrExt, ImportFailure, ReconcileResult};
+pub use hmr::{Hmr, HmrConfig, HmrExt, ImportFailure, ReconcileResult};
 #[cfg(feature = "wasm")]
 pub use wasm::WasmSource;
+pub use watch::WatchConfig;

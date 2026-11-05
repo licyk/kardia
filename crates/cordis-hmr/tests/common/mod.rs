@@ -1,3 +1,6 @@
+// each test crate uses a part of these
+#![allow(dead_code)]
+
 use std::path::{Path, PathBuf};
 
 use cordis_core::{Context, Fiber, Result, Svc};

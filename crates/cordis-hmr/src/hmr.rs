@@ -11,16 +11,20 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use cordis_core::{Context, Error, Fiber, FiberId, PluginDef, Result, RuntimeKey, Service, Svc};
 use futures::future::join_all;
 use parking_lot::Mutex;
+use serde::Deserialize;
 
 use crate::graph::{Backup, Exports, ModuleGraph, ModuleId};
+use crate::watch::{self, WatchConfig};
 
 /// The hot-reload service (`"hmr"`).
 pub struct Hmr {
     graph: ModuleGraph,
+    base: PathBuf,
     ctx: Context,
     /// Transactions run one at a time.
     queue: tokio::sync::Mutex<()>,
@@ -55,14 +59,35 @@ pub struct ImportFailure {
     pub error: Error,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct HmrConfig {
+    /// The base directory, against the working directory; defaults to it.
+    /// `watch.files` and logged paths are relative to it.
+    pub base: Option<PathBuf>,
+    pub watch: WatchConfig,
+}
+
 impl Hmr {
-    /// The hmr plugin, reloading modules of `graph`.
+    /// The hmr plugin, reloading modules of `graph` (configured by [`HmrConfig`]).
     pub fn plugin(graph: ModuleGraph) -> PluginDef {
-        PluginDef::new(move |ctx, _| {
+        PluginDef::typed(move |ctx, config: Arc<HmrConfig>| {
             let graph = graph.clone();
             async move {
-                let hmr = Hmr { graph, ctx: ctx.clone(), queue: Default::default(), settling: Default::default() };
+                let base = normalize(&std::path::absolute(config.base.as_deref().unwrap_or(Path::new(".")))?);
+                let hmr = Hmr {
+                    graph,
+                    base: base.clone(),
+                    ctx: ctx.clone(),
+                    queue: Default::default(),
+                    settling: Default::default(),
+                };
                 ctx.provide(hmr)?;
+                if config.watch.enabled && !config.watch.files.is_empty() {
+                    let watch = watch::start(&ctx, base, config.watch.clone())?;
+                    // set up before this settles if `fs` is there; a failure is logged
+                    let _ = watch.settled().await;
+                }
                 Ok(())
             }
         })
@@ -72,6 +97,10 @@ impl Hmr {
 
     pub fn graph(&self) -> &ModuleGraph {
         &self.graph
+    }
+
+    pub fn base_dir(&self) -> &Path {
+        &self.base
     }
 }
 

@@ -192,6 +192,7 @@ name = "cordis-hmr"
 version = "0.1.0"
 dependencies = [
  "cordis-core",
+ "cordis-fs",
  "cordis-loader",
  "futures",
  "indexmap",
