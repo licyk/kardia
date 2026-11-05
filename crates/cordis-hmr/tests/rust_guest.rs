@@ -34,7 +34,8 @@ fn artifact(version: &str, target: Option<&str>) -> PathBuf {
     if version == "v2" {
         build.args(["--features", "v2"]);
     }
-    assert!(build.status().unwrap().success(), "cannot build the rust guest");
+    // a WASM build needs `rustup target add wasm32-unknown-unknown`
+    assert!(build.status().unwrap().success(), "cannot build the rust guest for {key}");
     let output = match target {
         Some(target) => dir.join(target).join("debug/rust_guest.wasm"),
         None => dir.join(format!("debug/{DLL_PREFIX}rust_guest{DLL_SUFFIX}")),
@@ -111,7 +112,6 @@ async fn disposing_the_fiber_frees_the_guest_state() {
 }
 
 #[tokio::test]
-#[ignore = "needs the wasm32-unknown-unknown target (rustup target add wasm32-unknown-unknown)"]
 async fn runs_the_same_guest_as_a_wasm_module() {
     let dir = scratch("rust-wasm");
     let app = App::setup(WasmSource::new()).await;
