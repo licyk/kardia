@@ -14,6 +14,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use cordis_core::{Context, Error, Fiber, FiberId, PluginDef, Result, RuntimeKey, Service, Svc};
+use cordis_loader::Loader;
 use futures::future::join_all;
 use parking_lot::Mutex;
 use serde::Deserialize;
@@ -62,7 +63,8 @@ pub struct ImportFailure {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct HmrConfig {
-    /// The base directory, against the working directory; defaults to it.
+    /// The base directory, relative to the directory of the config file that
+    /// loads hmr (else the working directory), and defaulting to it.
     /// `watch.files` and logged paths are relative to it.
     pub base: Option<PathBuf>,
     pub watch: WatchConfig,
@@ -74,7 +76,8 @@ impl Hmr {
         PluginDef::typed(move |ctx, config: Arc<HmrConfig>| {
             let graph = graph.clone();
             async move {
-                let base = normalize(&std::path::absolute(config.base.as_deref().unwrap_or(Path::new(".")))?);
+                let base = config.base.as_deref().unwrap_or(Path::new("."));
+                let base = normalize(&std::path::absolute(entry_dir(&ctx).join(base))?);
                 let hmr = Hmr {
                     graph,
                     base: base.clone(),
@@ -148,6 +151,13 @@ impl Hmr {
         }
         false
     }
+}
+
+/// The directory that relative paths of the loader entry running `ctx`
+/// resolve against (the config file's, for an included tree).
+fn entry_dir(ctx: &Context) -> PathBuf {
+    let entry = ctx.live::<Loader>().and_then(|loader| loader.entry_of(ctx));
+    entry.map(|entry| entry.parent().tree().base_dir()).unwrap_or_default()
 }
 
 /// A registered plugin whose modules have changed.

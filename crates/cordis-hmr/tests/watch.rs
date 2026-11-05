@@ -3,7 +3,7 @@
 mod common;
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,7 +11,7 @@ use common::scratch;
 use cordis_core::{Context, Error, Event, PluginDef, Result, Svc};
 use cordis_fs::FsPlugin;
 use cordis_hmr::{Exports, Hmr, ModuleCode, ModuleGraph, ModuleSource};
-use cordis_loader::Loader;
+use cordis_loader::{Catalog, Loader, TreeBackend};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 
@@ -131,6 +131,29 @@ async fn resolves_a_relative_base_against_the_working_directory() {
     root.plugin_def(&Hmr::plugin(graph), json!({ "base": ".." })).unwrap().settled().await.unwrap();
     let cwd = std::env::current_dir().unwrap();
     assert_eq!(root.get::<Hmr>().unwrap().base_dir(), cwd.parent().unwrap());
+}
+
+/// A tree read from a config file in `0`.
+struct FileTree(PathBuf);
+
+impl TreeBackend for FileTree {
+    fn base_dir(&self) -> Option<PathBuf> {
+        Some(self.0.clone())
+    }
+}
+
+#[tokio::test]
+async fn resolves_a_relative_base_against_the_config_file_of_its_entry() {
+    let dir = scratch("watch-entry-base");
+    let root = Context::new();
+    let catalog = Catalog::new();
+    catalog.register_def("hmr", Hmr::plugin(ModuleGraph::new(Files::default())));
+    let loader = Loader::plugin_with(Arc::new(catalog), Arc::new(FileTree(dir.clone())));
+    root.plugin_def(&loader, Value::Null).unwrap().settled().await.unwrap();
+    let loader = (*root.get::<Loader>().unwrap()).clone();
+    loader.create(json!({ "name": "hmr", "config": { "base": "./plugins" } }), None, None).await.unwrap();
+    loader.settled().await;
+    assert_eq!(root.get::<Hmr>().unwrap().base_dir(), dir.join("plugins"));
 }
 
 #[tokio::test]

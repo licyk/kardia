@@ -150,11 +150,13 @@ version = "0.1.0"
 dependencies = [
  "cordis-core",
  "cordis-fs",
+ "cordis-hmr",
  "cordis-include",
  "cordis-loader",
  "cordis-logger-console",
  "cordis-macros",
  "cordis-timer",
+ "futures",
  "serde",
  "serde_json",
  "tokio",
