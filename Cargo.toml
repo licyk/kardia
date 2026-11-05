@@ -3,21 +3,21 @@ resolver = "3"
 members = ["crates/*", "xtask"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "GPL-3.0-only"
 repository = "https://github.com/licyk/kardia"
 rust-version = "1.85"
 
 [workspace.dependencies]
-kardia-core = { path = "crates/kardia-core", version = "0.1.0" }
-kardia-macros = { path = "crates/kardia-macros", version = "0.1.0" }
-kardia-timer = { path = "crates/kardia-timer", version = "0.1.0" }
-kardia-logger-console = { path = "crates/kardia-logger-console", version = "0.1.0" }
-kardia-fs = { path = "crates/kardia-fs", version = "0.1.0" }
-kardia-loader = { path = "crates/kardia-loader", version = "0.1.0" }
-kardia-include = { path = "crates/kardia-include", version = "0.1.0" }
-kardia-hmr = { path = "crates/kardia-hmr", version = "0.1.0" }
+kardia-core = { path = "crates/kardia-core", version = "0.1.1" }
+kardia-macros = { path = "crates/kardia-macros", version = "0.1.1" }
+kardia-timer = { path = "crates/kardia-timer", version = "0.1.1" }
+kardia-logger-console = { path = "crates/kardia-logger-console", version = "0.1.1" }
+kardia-fs = { path = "crates/kardia-fs", version = "0.1.1" }
+kardia-loader = { path = "crates/kardia-loader", version = "0.1.1" }
+kardia-include = { path = "crates/kardia-include", version = "0.1.1" }
+kardia-hmr = { path = "crates/kardia-hmr", version = "0.1.1" }
 tokio = { version = "1.47", features = ["rt", "sync", "time", "macros"] }
 futures = "0.3"
 parking_lot = "0.12"
