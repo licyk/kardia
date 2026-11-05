@@ -1,6 +1,6 @@
 # Paper Overview: *A Programming Paradigm for Spatiotemporal Composability*
 
-> **Layer:** Theory (the paper, `docs/2608.25512v1.pdf`, 92 pages, Shi / Zhang / Cui, Peking University & DeepSeek-AI).
+> **Layer:** Theory (the paper, [arXiv:2608.25512](https://arxiv.org/abs/2608.25512), 92 pages, Shi / Zhang / Cui, Peking University & DeepSeek-AI).
 > This document summarizes the paper's problem statement, contributions and vocabulary. It does not describe the Cordis code base (see `docs/cordis/`) or the Rust plan (see `docs/rust-implementation-plan.md`).
 
 ## 1. Problem statement

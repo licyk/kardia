@@ -1,6 +1,6 @@
 # kardia
 
-A Rust implementation of [Cordis](https://github.com/cordiverse/cordis), the plugin framework built on *spatiotemporal composability* ([paper](docs/2608.25512v1.pdf)).
+A Rust implementation of [Cordis](https://github.com/cordiverse/cordis), the plugin framework built on *spatiotemporal composability* ([paper](https://arxiv.org/abs/2608.25512)).
 
 An app is a tree of **plugins**. Each plugin runs in a **fiber**:
 - **Effects:** everything a plugin sets up (listeners, timers, services, child plugins) is tracked and reverted when the plugin stops.
