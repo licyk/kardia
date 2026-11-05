@@ -1,4 +1,4 @@
-//! Guest plugins in Rust for the WASM and dylib backends of `kardia-hmr`.
+//! Guest plugins in Rust for the WASM, dylib and process backends of `kardia-hmr`.
 //!
 //! Implement [`Guest`] and [`export!`] it from a `cdylib` crate. The same
 //! source builds as a WASM module (`--target wasm32-unknown-unknown`) or as

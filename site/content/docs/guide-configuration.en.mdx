@@ -109,7 +109,7 @@ The binary starts `fs` itself and includes the config file with `watch: true`, s
 |---|---|---|---|
 | `levels` | map: logger name → `0`–`3` | `{}` | The most verbose level printed per logger: `0` error, `1` warn, `2` info, `3` debug. `default` applies to loggers not listed; without it, info. |
 | `showTime` | string | `"yyyy-MM-dd hh:mm:ss "` | A time template printed before each line; an empty string hides the time. |
-| `colors` | `false` or `0`–`3` | detected from the terminal | Colour support level; `false` turns colours off. |
+| `colors` | `true`, `false` or `0`–`3` | detected from the terminal | Colour support level. `false` turns colours off; `true` turns them on at the detected level, at least basic colours, also when the output is not a terminal. |
 | `maxLength` | number | `10240` | Lines longer than this are truncated. |
 | `label` | `{ width, margin, align }` | `{ width: 0, margin: 1, align: left }` | Layout of the logger name: padded to `width`, `margin` spaces around it, `align` is `left` or `right`. |
 | `showDiff` | boolean | `false` | Appends the time since the previous message. |

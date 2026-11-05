@@ -137,6 +137,18 @@ async fn failed_fiber_does_not_reenter_on_dependency_refresh() {
 }
 
 #[tokio::test]
+async fn restart_keeps_a_failed_fiber_failed() {
+    let root = Context::new();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fiber = root.plugin_def(&counting(&calls, 1), Value::Null).unwrap();
+    settle().await;
+    assert_eq!(fiber.state(), FiberState::Failed);
+    let _ = fiber.restart().await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fiber.state(), FiberState::Failed);
+}
+
+#[tokio::test]
 async fn update_recovers_a_failed_fiber() {
     let root = Context::new();
     let calls = Arc::new(AtomicUsize::new(0));

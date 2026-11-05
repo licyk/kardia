@@ -24,7 +24,7 @@ pub enum FiberState {
     Loading,
     Active,
     Unloading,
-    /// Its last load failed; only `update` / `restart` / `replace` recover it.
+    /// Its last load failed; only `update` and `registry().replace` recover it.
     Failed,
     Disposed,
 }
@@ -150,7 +150,8 @@ impl Fiber {
         }
     }
 
-    /// Bumps the revision, so the fiber unloads and loads again.
+    /// Bumps the revision, so the fiber unloads and loads again. A failed
+    /// fiber stays failed: only `update` and `registry().replace` clear its error.
     pub fn restart(&self) -> Settle {
         let id = self.ctx.fiber;
         let started = self.ctx.root.run(|st| {

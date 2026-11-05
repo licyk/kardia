@@ -91,6 +91,17 @@ fn label_style() {
 }
 
 #[test]
+fn colors_true_turns_colors_on_and_false_turns_them_off() {
+    let render = |colors: &str| {
+        let config: ConsoleConfig = serde_json_from(&format!(r#"{{ "colors": {colors}, "showTime": "" }}"#));
+        ConsoleExporter::new(config).render(&message(Level::Info, "text", 1_000))
+    };
+    assert!(render("true").contains('\u{1b}'), "{:?}", render("true"));
+    assert!(!render("false").contains('\u{1b}'));
+    assert!(!render("0").contains('\u{1b}'));
+}
+
+#[test]
 fn levels_by_logger_name() {
     let config: ConsoleConfig = serde_json_from(r#"{ "levels": { "default": 1, "test": 3 }, "colors": false }"#);
     let exporter = ConsoleExporter::new(config);

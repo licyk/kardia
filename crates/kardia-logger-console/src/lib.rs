@@ -28,7 +28,9 @@ pub struct LabelStyle {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 pub enum Colors {
-    Off(bool),
+    /// `false` turns colours off; `true` turns them on at the detected level
+    /// (at least basic colours, also when output is not a terminal).
+    Enabled(bool),
     Level(u8),
 }
 
@@ -69,7 +71,8 @@ impl ConsoleExporter {
     pub fn new(config: ConsoleConfig) -> Self {
         let colors = match config.colors {
             Some(Colors::Level(level)) => level,
-            Some(Colors::Off(_)) => 0,
+            Some(Colors::Enabled(false)) => 0,
+            Some(Colors::Enabled(true)) => detect_colors().max(1),
             None => detect_colors(),
         };
         Self { colors, config, timestamp: Mutex::new(now()) }
