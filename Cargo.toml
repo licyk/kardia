@@ -34,6 +34,8 @@ proc-macro2 = "1"
 trybuild = "1"
 globset = "0.4"
 saphyr-parser = "0.3"
+wasmtime = { version = "34", default-features = false, features = ["cranelift", "runtime", "wat", "std"] }
+libloading = "0.8"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [workspace.lints.rust]

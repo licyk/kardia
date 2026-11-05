@@ -6,17 +6,27 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+default = ["wasm", "dylib"]
+wasm = ["dep:wasmtime"]
+dylib = ["dep:libloading"]
+
 [dependencies]
 cordis-core.workspace = true
 cordis-loader.workspace = true
 tokio.workspace = true
 futures.workspace = true
 parking_lot.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 indexmap.workspace = true
+wasmtime = { workspace = true, optional = true }
+libloading = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
-[lints]
-workspace = true
+# the dylib backend needs `unsafe` for dlopen and its C ABI; the rest of the
+# crate stays safe
+[lints.rust]
+unsafe_code = "deny"

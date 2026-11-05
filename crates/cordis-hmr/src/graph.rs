@@ -54,7 +54,7 @@ impl ModuleCode {
     }
 }
 
-/// Where module code comes from (an in-memory table, WASM components,
+/// Where module code comes from (an in-memory table, WASM modules,
 /// dynamic libraries, ...). Loading the same id again yields its current code.
 pub trait ModuleSource: Send + Sync + 'static {
     fn load(&self, id: &str) -> Result<ModuleCode>;

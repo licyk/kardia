@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use cordis_core::{Context, Error, Fiber, FiberId, PluginDef, Result, RuntimeKey, Service, Svc};
 use futures::future::join_all;
@@ -426,6 +426,16 @@ fn partition(
     units.into_iter().map(|(_, unit)| unit).collect()
 }
 
-fn normalize(path: &Path) -> PathBuf {
-    path.components().collect()
+pub(crate) fn normalize(path: &Path) -> PathBuf {
+    let mut normal = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normal.pop();
+            }
+            component => normal.push(component),
+        }
+    }
+    normal
 }

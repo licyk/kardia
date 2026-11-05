@@ -1,0 +1,14 @@
+# A guest plugin for the dylib backend tests, built by `tests/dylib.rs`.
+[package]
+name = "dylib-guest"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+v2 = []
+
+[workspace]
