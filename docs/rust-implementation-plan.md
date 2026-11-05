@@ -508,7 +508,14 @@ pub trait ModuleSource: Send + Sync {
 ## 11. Testing strategy
 
 ### 11.1 Port the TypeScript suite (acceptance)
-Each phase ports the corresponding `*.spec.ts` files as Rust integration tests on a `current_thread` runtime with paused time (`#[tokio::test(start_paused = true)]`), preserving test names for traceability:
+Each phase ports the corresponding `*.spec.ts` files as Rust integration tests, keeping the snake_case of each TS test name for traceability. The runtime follows what a test exercises:
+
+* **`current_thread`** (`#[tokio::test]`) by default: core, loader and hmr tests. Interleavings stay close to the single JS thread.
+* **Paused time** (`start_paused = true`) where a test depends on timers: the timer suite, and the core and loader tests whose effects wait on timers.
+* **`multi_thread`** where real parallelism is the point: every include test, plus the fs and hmr watch cases that need it (e.g. a module load held open with `block_in_place`). The include's IO loop and the file watch then run alongside tree updates, as in the `cordis` binary. These tests found the races fixed in the include's write path and the loader's update path.
+* **Real time** for file-system watch tests, since `notify` reports events from its own thread. An expected event is awaited with bounded polling (`eventually` helpers); a fixed wait is used only to check that something does *not* happen.
+
+The specs per phase:
 
 | Phase | Specs to port |
 |---|---|
