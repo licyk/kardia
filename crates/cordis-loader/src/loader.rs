@@ -4,14 +4,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use cordis_core::{
-    Check, ConfigCommitted, Context, Error, Fiber, FiberId, FiberState, Inject, Key, Overlay, PluginDef, PluginRemoved,
-    RealmId, Result, Service, StatusChanged, merge_shallow,
+    Check, ConfigCommitted, Context, Error, Fiber, FiberId, FiberState, Inject, Key, Overlay, PathSegment, PluginDef,
+    PluginRemoved, RealmId, Result, Service, StatusChanged, merge_shallow,
 };
 use futures::future::{BoxFuture, Shared};
 use parking_lot::Mutex;
 use serde_json::{Map, Value};
 
 use crate::catalog::Resolver;
+use crate::locate::Location;
 use crate::options::{EntryOptions, EntryValidationError, SEP, merge, sort_keys, validate_options};
 
 pub(crate) type EntryId = u64;
@@ -127,6 +128,21 @@ pub trait TreeBackend: Send + Sync + 'static {
     fn handle(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
         None
     }
+
+    /// Where the value at `path` in the options of entry `id` is written.
+    /// With `value`, only if that is the value written there; without, a
+    /// missing value is located at its closest written ancestor.
+    fn locate(&self, id: &str, path: &[PathSegment], value: Option<&Value>) -> Option<Location> {
+        let _ = (id, path, value);
+        None
+    }
+
+    /// Where char `offset` of the expression `expr` at `path` in the
+    /// options of entry `id` is written, if it is written there.
+    fn locate_expr(&self, id: &str, path: &[PathSegment], expr: &str, offset: usize) -> Option<Location> {
+        let _ = (id, path, expr, offset);
+        None
+    }
 }
 
 /// The loader's own tree lives in memory only.
@@ -234,7 +250,12 @@ impl Loader {
         let this = loader.clone();
         ctx.on(move |event: &StatusChanged| this.on_status(&event.fiber, event.new))?;
         let this = loader.clone();
-        ctx.on_config(Arc::new(move |fiber, config, next| next(this.interpolate_config(fiber, config)?)))?;
+        ctx.on_config(Arc::new(move |fiber, config, next| {
+            let source = config.clone();
+            this.interpolate_config(fiber, config)
+                .and_then(next)
+                .map_err(|error| this.locate_config_error(fiber, &source, error))
+        }))?;
         Ok(())
     }
 
@@ -243,22 +264,22 @@ impl Loader {
     /// A group's configuration is its entry list and stays as it is, and
     /// plugins created by plugin code get their config from that code.
     fn interpolate_config(&self, fiber: &Fiber, config: Value) -> Result<Value> {
-        if !crate::expr::has_expr(&config) {
+        if !crate::expr::has_expr(&config) || self.own_entry(fiber).is_none() {
             return Ok(config);
         }
+        crate::expr::interpolate_at(fiber.context(), &config, &mut vec![PathSegment::Key("config".into())])
+    }
+
+    /// The entry whose own (non-group) plugin runs in `fiber`.
+    pub(crate) fn own_entry(&self, fiber: &Fiber) -> Option<EntryId> {
         let ctx = fiber.context();
-        let Some(entry) = self.entry_of_context(ctx) else { return Ok(config) };
-        let own = self.with(|st| {
+        let entry = self.entry_of_context(ctx)?;
+        self.with(|st| {
             let data = st.entries.get(&entry)?;
-            Some(
-                !data.read().group
-                    && ctx.parent_overlay().is_some_and(|overlay| Arc::ptr_eq(&overlay, &data.intercept)),
-            )
-        });
-        if own != Some(true) {
-            return Ok(config);
-        }
-        crate::expr::interpolate(ctx, &config)
+            let own = !data.read().group
+                && ctx.parent_overlay().is_some_and(|overlay| Arc::ptr_eq(&overlay, &data.intercept));
+            own.then_some(entry)
+        })
     }
 
     pub(crate) fn with<R>(&self, f: impl FnOnce(&mut LoaderState) -> R) -> R {
@@ -680,6 +701,20 @@ impl TreeHandle {
     pub fn resolve(&self, id: &str) -> Result<EntryHandle> {
         let entry = self.loader.with(|st| st.resolve(self.id, id))?;
         Ok(EntryHandle { loader: self.loader.clone(), id: entry })
+    }
+
+    /// See [`TreeBackend::locate`]; `id` is a local id of this tree.
+    pub fn locate(&self, id: &str, path: &[PathSegment], value: Option<&Value>) -> Option<Location> {
+        self.backend()?.locate(id, path, value)
+    }
+
+    /// See [`TreeBackend::locate_expr`]; `id` is a local id of this tree.
+    pub fn locate_expr(&self, id: &str, path: &[PathSegment], expr: &str, offset: usize) -> Option<Location> {
+        self.backend()?.locate_expr(id, path, expr, offset)
+    }
+
+    fn backend(&self) -> Option<Arc<dyn TreeBackend>> {
+        self.loader.with(|st| st.trees.get(&self.id).map(|tree| tree.backend.clone()))
     }
 
     /// The group of entry `parent` (the root group for `None`). A group

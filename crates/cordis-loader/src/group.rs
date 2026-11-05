@@ -144,7 +144,12 @@ impl Loader {
                     if !keys.contains(&Key::Id(id.clone())) {
                         keys.push(Key::Id(id));
                     }
-                } else {
+                } else if !options
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| keys.contains(&Key::Id(id.to_string())))
+                {
+                    // an invalid entry under a known id is reached (and rejected) by that id
                     keys.push(Key::Invalid(index));
                 }
             }
@@ -162,8 +167,8 @@ impl Loader {
             async move {
                 match (options, key) {
                     (Some(options), _) => {
-                        if let Err(error) = this.group_create(group, options).await {
-                            this.0.ctx.logger().log_error(&error);
+                        if let Err(error) = this.group_create(group, options.clone()).await {
+                            this.0.ctx.logger().log_error(&this.locate_error(group, &options, &error));
                         }
                     }
                     (None, Key::Id(id)) => this.group_remove(group, &id, false),

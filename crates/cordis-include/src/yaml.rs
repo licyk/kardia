@@ -7,6 +7,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
+use cordis_core::PathSegment;
 use cordis_loader::{EXPR_KEY, expr_source};
 use saphyr_parser::{Event, Marker, Parser, ScalarStyle, Tag};
 use serde_json::{Map, Number, Value};
@@ -35,6 +36,7 @@ pub struct ParseError {
 #[derive(Debug, Clone)]
 pub struct Syntax {
     root: Option<Node>,
+    content: String,
 }
 
 #[derive(Debug, Clone)]
@@ -45,43 +47,112 @@ struct Node {
 
 #[derive(Debug, Clone)]
 enum NodeKind {
-    Scalar,
+    /// With the char index of its first char (an opening quote, if any).
+    Scalar(usize, ScalarStyle),
     Seq(Vec<Node>),
     /// Entries with the position of their key.
     Map(Vec<(String, Position, Node)>),
 }
 
-/// A step into a document: a map key or a sequence index.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Step {
-    Key(String),
-    Index(usize),
-}
-
 impl Syntax {
     /// Where the value at `path` is written: a scalar at itself, a
     /// collection at its key. A path leaving the document falls back to
-    /// its deepest written ancestor.
-    pub fn locate(&self, path: &[Step]) -> Option<Position> {
+    /// its deepest written ancestor. An alias is located at its anchor.
+    pub fn locate(&self, path: &[PathSegment]) -> Option<Position> {
         let mut node = self.root.as_ref()?;
         let mut anchor = node.start;
-        for step in path {
-            let next = match (&node.kind, step) {
-                (NodeKind::Map(entries), Step::Key(key)) => {
-                    entries.iter().find(|(name, ..)| name == key).map(|(_, key, value)| (*key, value))
-                }
-                (NodeKind::Seq(items), Step::Index(index)) => items.get(*index).map(|item| (item.start, item)),
-                _ => None,
-            };
-            let Some((position, value)) = next else { break };
+        for segment in path {
+            let Some((position, value)) = step(node, segment) else { break };
             anchor = position;
             node = value;
         }
-        if matches!(node.kind, NodeKind::Scalar) {
+        if matches!(node.kind, NodeKind::Scalar(..)) {
             anchor = node.start;
         }
         Some(anchor)
     }
+
+    /// Where char `offset` of the expression written at `path` (`!!js`, or
+    /// an expression object in JSON) is.
+    pub fn locate_expr(&self, path: &[PathSegment], offset: usize) -> Option<Position> {
+        let mut node = self.root.as_ref()?;
+        for segment in path {
+            node = step(node, segment)?.1;
+        }
+        if let Some((_, value)) = step(node, &PathSegment::Key(EXPR_KEY.into())) {
+            node = value;
+        }
+        let NodeKind::Scalar(start, style) = node.kind else { return None };
+        let chars: Vec<char> = self.content.chars().collect();
+        let end = match style {
+            ScalarStyle::Plain => skip(&chars, start, offset, |_, _| None),
+            ScalarStyle::SingleQuoted => skip(&chars, start + 1, offset, |chars, i| {
+                (chars[i] == '\'' && chars.get(i + 1) == Some(&'\'')).then_some(2)
+            }),
+            ScalarStyle::DoubleQuoted => skip(&chars, start + 1, offset, |chars, i| {
+                (chars[i] == '\\').then(|| match chars.get(i + 1) {
+                    Some('x') => 4,
+                    Some('u') => 6,
+                    Some('U') => 10,
+                    _ => 2,
+                })
+            }),
+            // block scalars are located at their start
+            _ => return Some(node.start),
+        };
+        Some(advance(node.start, &chars[start..end.min(chars.len())]))
+    }
+}
+
+fn step<'a>(node: &'a Node, segment: &PathSegment) -> Option<(Position, &'a Node)> {
+    match (&node.kind, segment) {
+        (NodeKind::Map(entries), PathSegment::Key(key)) => {
+            entries.iter().find(|(name, ..)| name == key).map(|(_, key, value)| (*key, value))
+        }
+        (NodeKind::Seq(items), PathSegment::Index(index)) => items.get(*index).map(|item| (item.start, item)),
+        _ => None,
+    }
+}
+
+/// The char index of decoded char `count` of a scalar whose content
+/// starts at `index`; `escape` gives the length of an escape at a char.
+/// A line break with the indentation after it reads as one space.
+fn skip(chars: &[char], mut index: usize, count: usize, escape: impl Fn(&[char], usize) -> Option<usize>) -> usize {
+    for _ in 0..count {
+        if index >= chars.len() {
+            break;
+        }
+        if chars[index] == '\n' {
+            index += 1;
+            while chars.get(index).is_some_and(|c| *c == ' ' || *c == '\t') {
+                index += 1;
+            }
+        } else {
+            index += escape(chars, index).unwrap_or(1);
+        }
+    }
+    index
+}
+
+/// The position after `chars`, written from `start` on.
+fn advance(start: Position, chars: &[char]) -> Position {
+    chars.iter().fold(start, |Position { line, column }, c| match c {
+        '\n' => Position { line: line + 1, column: 1 },
+        _ => Position { line, column: column + 1 },
+    })
+}
+
+/// Skips the anchor and tag in front of a node.
+fn skip_properties(chars: &[char], mut index: usize) -> usize {
+    while chars.get(index).is_some_and(|c| *c == '&' || *c == '!') {
+        while chars.get(index).is_some_and(|c| !c.is_whitespace()) {
+            index += 1;
+        }
+        while chars.get(index).is_some_and(|c| c.is_whitespace()) {
+            index += 1;
+        }
+    }
+    index
 }
 
 enum Frame {
@@ -102,6 +173,7 @@ enum Frame {
 
 /// Parses the first document of `content`.
 pub fn parse(content: &str) -> Result<(Value, Syntax), ParseError> {
+    let chars: Vec<char> = content.chars().collect();
     let mut stack: Vec<Frame> = Vec::new();
     let mut anchors: HashMap<usize, (Value, Node)> = HashMap::new();
     let mut result: Option<(Value, Node)> = None;
@@ -117,12 +189,15 @@ pub fn parse(content: &str) -> Result<(Value, Syntax), ParseError> {
                     .get(&id)
                     .cloned()
                     .ok_or_else(|| ParseError { message: "unknown alias".into(), position: start })?;
-                Some((value, Node { start, kind: node.kind }, 0))
+                Some((value, node, 0))
             }
             Event::Scalar(value, style, anchor, tag) => {
                 let value =
                     scalar(&value, style, tag.as_deref()).map_err(|message| ParseError { message, position: start })?;
-                Some((value, Node { start, kind: NodeKind::Scalar }, anchor))
+                let index = skip_properties(&chars, span.start.index());
+                let start = advance(start, &chars[span.start.index()..index]);
+                let node = Node { start, kind: NodeKind::Scalar(index, style) };
+                Some((value, node, anchor))
             }
             Event::SequenceStart(anchor, tag) => {
                 check_collection_tag(tag.as_deref(), "seq", start)?;
@@ -178,9 +253,11 @@ pub fn parse(content: &str) -> Result<(Value, Syntax), ParseError> {
             },
         }
     }
-    let (value, node) =
-        result.unwrap_or((Value::Null, Node { start: Position { line: 1, column: 1 }, kind: NodeKind::Scalar }));
-    Ok((value, Syntax { root: Some(node) }))
+    let (value, node) = result.unwrap_or((
+        Value::Null,
+        Node { start: Position { line: 1, column: 1 }, kind: NodeKind::Scalar(0, ScalarStyle::Plain) },
+    ));
+    Ok((value, Syntax { root: Some(node), content: content.into() }))
 }
 
 const CORE: &str = "tag:yaml.org,2002:";
@@ -388,10 +465,18 @@ mod tests {
                 "12",
             ])
         );
-        let at = |path: Vec<Step>| syntax.locate(&path).unwrap();
-        assert_eq!(at(vec![Step::Index(0), Step::Key("name".into())]), Position { line: 2, column: 9 });
-        assert_eq!(at(vec![Step::Index(0), Step::Key("config".into())]), Position { line: 4, column: 3 });
-        assert_eq!(at(vec![Step::Index(0), Step::Key("missing".into())]), Position { line: 1, column: 3 });
+        let at = |path: Vec<PathSegment>| syntax.locate(&path).unwrap();
+        let key = |key: &str| PathSegment::Key(key.into());
+        assert_eq!(at(vec![PathSegment::Index(0), key("name")]), Position { line: 2, column: 9 });
+        assert_eq!(at(vec![PathSegment::Index(0), key("config")]), Position { line: 4, column: 3 });
+        assert_eq!(at(vec![PathSegment::Index(0), key("missing")]), Position { line: 1, column: 3 });
+        // an alias is located at its anchor, a tagged scalar at its value
+        assert_eq!(at(vec![PathSegment::Index(1), key("a")]), Position { line: 4, column: 19 });
+        assert_eq!(at(vec![PathSegment::Index(0), key("disabled")]), Position { line: 3, column: 18 });
+        assert_eq!(
+            syntax.locate_expr(&[PathSegment::Index(0), key("disabled")], 4),
+            Some(Position { line: 3, column: 23 })
+        );
     }
 
     #[test]

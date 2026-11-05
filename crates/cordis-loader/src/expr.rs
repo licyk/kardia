@@ -7,32 +7,91 @@
 //! `?:`. A free identifier reads the JSON view of the service of that name
 //! through checked access, so the usual `inject` rules apply.
 
-use cordis_core::{Context, Error, Result};
+use cordis_core::{Context, Error, PathSegment, Result};
 use serde_json::{Map, Number, Value};
 
 use crate::options::expr_source;
 
+/// An expression in entry options that failed.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("cannot evaluate `{expr}`: {message}")]
+pub struct ExprError {
+    /// Where the expression sits in the entry options.
+    pub path: Vec<PathSegment>,
+    pub expr: String,
+    /// The char of `expr` the failure points at (its start for a syntax error).
+    pub offset: usize,
+    pub message: String,
+}
+
+/// A failure inside an expression, with the char it points at.
+struct Fault {
+    error: Error,
+    offset: usize,
+}
+
+impl From<Error> for Fault {
+    fn from(error: Error) -> Self {
+        Self { error, offset: 0 }
+    }
+}
+
 /// Evaluates an expression in `ctx`.
 pub fn evaluate(ctx: &Context, source: &str) -> Result<Value> {
-    let tokens = lex(source)?;
-    let mut parser = Parser { tokens, position: 0 };
+    run(ctx, source).map_err(|fault| fault.error)
+}
+
+/// Evaluates the expression at `path` of entry options; fails with an [`ExprError`].
+pub(crate) fn evaluate_at(ctx: &Context, source: &str, path: &[PathSegment]) -> Result<Value> {
+    run(ctx, source).map_err(|fault| {
+        let message = fault.error.to_string();
+        ExprError { path: path.to_vec(), expr: source.to_string(), offset: fault.offset, message }.into()
+    })
+}
+
+fn run(ctx: &Context, source: &str) -> Result<Value, Fault> {
+    let (tokens, offsets) = lex(source)?.into_iter().unzip();
+    let mut parser = Parser { tokens, offsets, position: 0 };
     let expr = parser.ternary()?;
     if parser.position < parser.tokens.len() {
-        return Err(syntax(source, "unexpected token"));
+        return Err(syntax(source, "unexpected token").into());
     }
     eval(ctx, &expr)
 }
 
 /// Replaces every expression inside `value` by its value.
 pub fn interpolate(ctx: &Context, value: &Value) -> Result<Value> {
+    interpolate_at(ctx, value, &mut Vec::new())
+}
+
+/// [`interpolate`] for the value at `path` of entry options.
+pub(crate) fn interpolate_at(ctx: &Context, value: &Value, path: &mut Vec<PathSegment>) -> Result<Value> {
     if let Some(source) = expr_source(value) {
-        return evaluate(ctx, source).map_err(|error| Error::msg(format!("cannot evaluate `{source}`: {error}")));
+        return evaluate_at(ctx, source, path);
     }
     Ok(match value {
-        Value::Array(items) => Value::Array(items.iter().map(|item| interpolate(ctx, item)).collect::<Result<_>>()?),
-        Value::Object(map) => {
-            Value::Object(map.iter().map(|(k, v)| Ok((k.clone(), interpolate(ctx, v)?))).collect::<Result<_>>()?)
-        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    path.push(PathSegment::Index(index));
+                    let value = interpolate_at(ctx, item, path);
+                    path.pop();
+                    value
+                })
+                .collect::<Result<_>>()?,
+        ),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, item)| {
+                    path.push(PathSegment::Key(key.clone()));
+                    let value = interpolate_at(ctx, item, path);
+                    path.pop();
+                    Ok((key.clone(), value?))
+                })
+                .collect::<Result<_>>()?,
+        ),
         other => other.clone(),
     })
 }
@@ -64,7 +123,8 @@ const PUNCTS: [&str; 28] = [
     "<", ">", "!", "+", "-", "*", "/", "%",
 ];
 
-fn lex(source: &str) -> Result<Vec<Token>> {
+/// Tokens with the char offset each starts at.
+fn lex(source: &str) -> Result<Vec<(Token, usize)>> {
     let chars: Vec<char> = source.chars().collect();
     let mut tokens = Vec::new();
     let mut i = 0;
@@ -79,8 +139,9 @@ fn lex(source: &str) -> Result<Vec<Token>> {
             }
             let text: String = chars[start..i].iter().collect();
             let number = text.parse::<f64>().map_err(|_| syntax(source, &format!("invalid number {text}")))?;
-            tokens.push(Token::Number(number));
+            tokens.push((Token::Number(number), start));
         } else if c == '\'' || c == '"' || c == '`' {
+            let start = i;
             let mut text = String::new();
             i += 1;
             loop {
@@ -102,20 +163,20 @@ fn lex(source: &str) -> Result<Vec<Token>> {
                     other => text.push(other),
                 }
             }
-            tokens.push(Token::Str(text));
+            tokens.push((Token::Str(text), start));
         } else if c.is_alphabetic() || c == '_' || c == '$' {
             let start = i;
             while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '$') {
                 i += 1;
             }
-            tokens.push(Token::Ident(chars[start..i].iter().collect()));
+            tokens.push((Token::Ident(chars[start..i].iter().collect()), start));
         } else {
             let rest: String = chars[i..chars.len().min(i + 3)].iter().collect();
             let punct = PUNCTS
                 .iter()
                 .find(|p| rest.starts_with(**p))
                 .ok_or_else(|| syntax(source, &format!("unexpected `{c}`")))?;
-            tokens.push(Token::Punct(punct));
+            tokens.push((Token::Punct(punct), i));
             i += punct.chars().count();
         }
     }
@@ -125,7 +186,8 @@ fn lex(source: &str) -> Result<Vec<Token>> {
 #[derive(Debug)]
 enum Expr {
     Literal(Value),
-    Ident(String),
+    /// With the char offset it is written at.
+    Ident(String, usize),
     Array(Vec<Expr>),
     Object(Vec<(String, Expr)>),
     Member(Box<Expr>, Box<Expr>, bool),
@@ -136,6 +198,7 @@ enum Expr {
 
 struct Parser {
     tokens: Vec<Token>,
+    offsets: Vec<usize>,
     position: usize,
 }
 
@@ -237,7 +300,7 @@ impl Parser {
                 "true" => Expr::Literal(Value::Bool(true)),
                 "false" => Expr::Literal(Value::Bool(false)),
                 "null" | "undefined" => Expr::Literal(Value::Null),
-                _ => Expr::Ident(name),
+                _ => Expr::Ident(name, self.offsets[self.position - 1]),
             },
             Token::Punct("(") => {
                 let inner = self.ternary()?;
@@ -277,14 +340,16 @@ impl Parser {
     }
 }
 
-fn eval(ctx: &Context, expr: &Expr) -> Result<Value> {
+fn eval(ctx: &Context, expr: &Expr) -> Result<Value, Fault> {
     Ok(match expr {
         Expr::Literal(value) => value.clone(),
-        Expr::Ident(name) => ctx.view(name.as_str())?,
-        Expr::Array(items) => Value::Array(items.iter().map(|item| eval(ctx, item)).collect::<Result<_>>()?),
-        Expr::Object(entries) => {
-            Value::Object(entries.iter().map(|(k, v)| Ok((k.clone(), eval(ctx, v)?))).collect::<Result<Map<_, _>>>()?)
+        Expr::Ident(name, offset) => {
+            ctx.view(name.as_str()).map_err(|error| Fault { error: error.into(), offset: *offset })?
         }
+        Expr::Array(items) => Value::Array(items.iter().map(|item| eval(ctx, item)).collect::<Result<_, Fault>>()?),
+        Expr::Object(entries) => Value::Object(
+            entries.iter().map(|(k, v)| Ok((k.clone(), eval(ctx, v)?))).collect::<Result<Map<_, _>, Fault>>()?,
+        ),
         Expr::Member(object, key, optional) => {
             let object = eval(ctx, object)?;
             if object.is_null() {
@@ -294,7 +359,8 @@ fn eval(ctx: &Context, expr: &Expr) -> Result<Value> {
                 return Err(Error::msg(format!(
                     "cannot read properties of null (reading {})",
                     stringify(&eval(ctx, key)?)
-                )));
+                ))
+                .into());
             }
             member(&object, &eval(ctx, key)?)
         }

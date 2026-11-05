@@ -1,12 +1,8 @@
 //! Port of `packages/include/tests/location.spec.ts`.
 //!
-//! Errors the include reports itself (read, parse, file shape) carry
-//! `file:line:col`. Errors the loader reports for an entry (option and
-//! config validation, plugin resolution, expressions) are not relocated to
-//! file positions yet: the cases that check those positions are ignored
-//! until the loader can ask a tree's backend where a value is written.
-//! JavaScript stack-trace mechanics (function frames, module evaluation)
-//! have no counterpart and are not ported.
+//! The messages are the Rust ones, without the TS error class names
+//! (`ValidationError: ...`). JavaScript stack-trace mechanics (function
+//! frames, module evaluation) have no counterpart and are not ported.
 
 mod common;
 
@@ -15,8 +11,6 @@ use std::path::Path;
 use common::{App, write_fixture};
 use cordis_core::Level;
 use serde_json::json;
-
-const RELOCATION: &str = "needs cordis-loader: relocate entry errors through the tree backend";
 
 /// `file:line:column` of the first occurrence of `needle`.
 fn at(filename: &Path, source: &str, needle: &str) -> String {
@@ -55,7 +49,6 @@ impl Located {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn points_a_validation_issue_at_the_value_in_the_file() {
     let app =
         Located::start("location-value.yml", "- id: a\n  name: schema-plugin\n  config:\n    port: \"80\"\n").await;
@@ -64,11 +57,10 @@ async fn points_a_validation_issue_at_the_value_in_the_file() {
         app.at("\"80\""),
         app.file()
     );
-    assert_eq!(app.errors(), vec![expected], "{RELOCATION}");
+    assert_eq!(app.errors(), vec![expected]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn points_a_missing_value_at_the_key_that_should_hold_it() {
     let source =
         "- id: a\n  name: schema-plugin\n  config:\n    hosts: [localhost, 1]\n- id: b\n  name: schema-plugin\n";
@@ -83,7 +75,6 @@ async fn points_a_missing_value_at_the_key_that_should_hold_it() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn locates_entries_nested_in_groups() {
     let source = "- id: g\n  name: group\n  group: true\n  config:\n    - id: a\n      name: schema-plugin\n      config:\n        port: !!js \"'80'\"\n";
     let app = Located::start("location-group.yml", source).await;
@@ -93,7 +84,6 @@ async fn locates_entries_nested_in_groups() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn locates_patched_values_in_the_file_that_declares_the_patch() {
     write_fixture("location-inner.yml", "- id: a\n  name: schema-plugin\n  config:\n    port: 80\n");
     let source = "- id: inc\n  name: include\n  config:\n    path: ./location-inner.yml\n    patches:\n      - id: a\n        config: { port: \"80\" }\n      - insert:\n          - id: b\n            name: schema-plugin\n            config: { port: 80, hosts: [1] }\n";
@@ -103,7 +93,6 @@ async fn locates_patched_values_in_the_file_that_declares_the_patch() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn locates_overrides_of_inserted_entries_in_the_override() {
     write_fixture("location-insert-inner.yml", "[]\n");
     let source = "- id: inc\n  name: include\n  config:\n    path: ./location-insert-inner.yml\n    patches:\n      - insert:\n          - id: a\n            name: schema-plugin\n            config: { port: 80 }\n      - id: a\n        config: { port: \"80\" }\n";
@@ -113,7 +102,6 @@ async fn locates_overrides_of_inserted_entries_in_the_override() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn aliases_locate_a_config_value_at_its_anchor() {
     let source = "- id: a\n  name: schema-plugin\n  config: &c\n    port: &p \"80\"\n- id: b\n  name: schema-plugin\n  config: *c\n- id: c\n  name: schema-plugin\n  config:\n    port: *p\n";
     let app = Located::start("location-alias-config.yml", source).await;
@@ -124,7 +112,6 @@ async fn aliases_locate_a_config_value_at_its_anchor() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn aliases_point_a_missing_value_under_an_alias_at_the_key_that_holds_it() {
     let source = "- id: a\n  name: config-plugin\n  intercept: &c {}\n- id: b\n  name: schema-plugin\n  config: *c\n";
     let app = Located::start("location-alias-missing.yml", source).await;
@@ -133,7 +120,6 @@ async fn aliases_point_a_missing_value_under_an_alias_at_the_key_that_holds_it()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn aliases_locate_an_entry_option_at_its_anchor() {
     let source =
         "- id: a\n  name: config-plugin\n  isolate: { x: &g 1 }\n- id: b\n  name: config-plugin\n  group: *g\n";
@@ -142,7 +128,6 @@ async fn aliases_locate_an_entry_option_at_its_anchor() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn aliases_locate_an_expression_at_its_anchor() {
     let source = "- id: a\n  name: config-plugin\n  intercept: { x: &x !!js \"1 + foo\" }\n- id: b\n  name: config-plugin\n  disabled: *x\n";
     let app = Located::start("location-alias-expr.yml", source).await;
@@ -150,7 +135,6 @@ async fn aliases_locate_an_expression_at_its_anchor() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn locates_entries_of_a_group_config_replaced_by_a_patch() {
     let inner = write_fixture("location-group-inner.yml", "- id: g\n  name: group\n  group: true\n  config: []\n");
     let source = "- id: inc\n  name: include\n  config:\n    path: ./location-group-inner.yml\n    patches:\n      - id: g\n        config:\n          - id: a\n            name: schema-plugin\n            config: { port: \"80\" }\n";
@@ -161,7 +145,6 @@ async fn locates_entries_of_a_group_config_replaced_by_a_patch() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn ignores_patches_that_do_not_apply() {
     let inner =
         write_fixture("location-skip-inner.yml", "- id: a\n  name: schema-plugin\n  config: { port: \"80\" }\n");
@@ -172,7 +155,6 @@ async fn ignores_patches_that_do_not_apply() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn follows_patches_across_nested_includes() {
     let inner = write_fixture("location-nested-inner.yml", "- id: a\n  name: schema-plugin\n  config: { port: 80 }\n");
     let middle = write_fixture(
@@ -212,7 +194,6 @@ async fn leaves_entries_outside_any_file_untraced() {
 // --- entry fields ---
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn entry_fields_point_invalid_fields_at_their_values() {
     let source = "- id: a\n  name: config-plugin\n  disabled: \"no\"\n  inject: [loader, 1]\n- id: b\n  group: true\n";
     let app = Located::start("location-fields.yml", source).await;
@@ -231,20 +212,17 @@ async fn entry_fields_point_invalid_fields_at_their_values() {
     assert!(app.app.tree().resolve("a").is_err());
 }
 
-/// The location of the rejected `name` is pending ([`RELOCATION`]).
 #[tokio::test(flavor = "multi_thread")]
 async fn entry_fields_accept_an_expression_for_disabled_only() {
     let source =
         "- id: a\n  name: config-plugin\n  disabled: !!js \"false\"\n- id: b\n  name: !!js \"'config-plugin'\"\n";
     let app = Located::start("location-expr.yml", source).await;
     let [error] = &app.errors()[..] else { panic!("{:?}", app.errors()) };
-    assert!(error.contains("  - name must be a string (at name"), "{error}");
+    assert!(error.contains(&format!("  - name must be a string (at name, {})", app.at("\"'config"))), "{error}");
     assert!(app.app.tree().resolve("a").unwrap().inner_fiber().is_some_and(|fiber| !fiber.is_removed()));
 }
 
-/// The location of the rejected `group` is pending ([`RELOCATION`]).
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: `group_update` reports an invalid entry that keeps its id twice"]
 async fn entry_fields_unload_an_entry_that_turns_invalid_without_writing_to_the_file() {
     let source = "- id: a\n  name: config-plugin\n";
     let app = Located::start("location-turn.yml", source).await;
@@ -254,7 +232,8 @@ async fn entry_fields_unload_an_entry_that_turns_invalid_without_writing_to_the_
     app.app.write(invalid);
     app.app.settle().await;
     let [error] = &app.errors()[..] else { panic!("{:?}", app.errors()) };
-    assert!(error.contains("group must be a boolean (at group"), "{error}");
+    let location = at(&app.app.filename, invalid, "1\n");
+    assert!(error.contains(&format!("group must be a boolean (at group, {location})")), "{error}");
     assert!(app.app.tree().resolve("a").is_err());
     assert!(fiber.is_removed());
     assert_eq!(app.app.text(), invalid);
@@ -265,7 +244,6 @@ async fn entry_fields_unload_an_entry_that_turns_invalid_without_writing_to_the_
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn entry_fields_locate_entries_nested_in_groups() {
     let source = "- id: g\n  name: group\n  group: true\n  config:\n    - id: a\n      name: [config-plugin]\n";
     let app = Located::start("location-fields-group.yml", source).await;
@@ -310,7 +288,6 @@ async fn entry_fields_leave_invalid_options_passed_at_runtime_unlocated() {
 /// A catalog name is either registered or not, so the TS distinction
 /// between a missing module and a missing package collapses into one case.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn plugin_import_points_a_plugin_that_cannot_be_found_at_its_name() {
     let source = "- id: a\n  name: ./missing-plugin\n- id: b\n  name: missing-package\n";
     let app = Located::start("location-import.yml", source).await;
@@ -345,19 +322,16 @@ async fn points_a_failure_at_the_expression(field: &str, lines: &str, label: &st
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn expressions_point_a_failure_in_inject_at_the_expression() {
     points_a_failure_at_the_expression("inject", "  inject:\n    loader: !!js \"1 + foo\"", "inject.loader").await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn expressions_point_a_failure_in_disabled_at_the_expression() {
     points_a_failure_at_the_expression("disabled", "  disabled: !!js \"1 + foo\"", "disabled").await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn expressions_point_a_failure_in_intercept_at_the_expression() {
     points_a_failure_at_the_expression(
         "intercept",
@@ -368,7 +342,6 @@ async fn expressions_point_a_failure_in_intercept_at_the_expression() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn expressions_point_a_failure_in_config_at_the_expression() {
     points_a_failure_at_the_expression("config", "  config:\n    port: !!js \"1 + foo\"", "config.port").await;
 }
@@ -376,7 +349,6 @@ async fn expressions_point_a_failure_in_config_at_the_expression() {
 /// Only the escapes part of the TS case: the Rust expression language has
 /// no functions to throw from, so there are no frames inside an expression.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn expressions_map_positions_across_lines_and_escapes() {
     let source = "- id: b\n  name: config-plugin\n  disabled: !!js \"\\\"it's\\\" + \\u0020 foo\"\n- id: c\n  name: config-plugin\n  disabled: !!js '\"it''s\" + bar'\n";
     let app = Located::start("location-expr-block.yml", source).await;
@@ -386,7 +358,6 @@ async fn expressions_map_positions_across_lines_and_escapes() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn expressions_point_an_expression_that_does_not_parse_at_its_start() {
     let source = "- id: a\n  name: config-plugin\n  disabled: !!js \"foo bar\"\n";
     let app = Located::start("location-expr-syntax.yml", source).await;
@@ -395,7 +366,6 @@ async fn expressions_point_an_expression_that_does_not_parse_at_its_start() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn expressions_locate_entries_nested_in_groups() {
     let source = "- id: g\n  name: group\n  group: true\n  config:\n    - id: a\n      name: config-plugin\n      disabled: !!js \"foo\"\n";
     let app = Located::start("location-expr-group.yml", source).await;
@@ -405,7 +375,6 @@ async fn expressions_locate_entries_nested_in_groups() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn expressions_locate_an_expression_written_as_an_object_in_json() {
     let source = serde_json::to_string_pretty(&json!([
         { "id": "a", "name": "config-plugin", "disabled": { "__jsExpr": "1 + foo" } },
@@ -417,28 +386,38 @@ async fn expressions_locate_an_expression_written_as_an_object_in_json() {
     assert!(error.ends_with(&frames), "{error}");
 }
 
-/// The rejection of the update and the running plugin are checked; the
-/// location of the failure is pending ([`RELOCATION`]).
 #[tokio::test(flavor = "multi_thread")]
 async fn expressions_point_a_failure_on_update_at_the_new_expression() {
     let app =
         Located::start("location-expr-update.yml", "- id: a\n  name: schema-plugin\n  config:\n    port: 80\n").await;
     let fiber = app.app.tree().resolve("a").unwrap().inner_fiber().unwrap();
-    app.app.write("- id: a\n  name: schema-plugin\n  config:\n    port: !!js \"1 + foo\"\n");
+    let source = "- id: a\n  name: schema-plugin\n  config:\n    port: !!js \"1 + foo\"\n";
+    app.app.write(source);
     app.app.settle().await;
 
     let [error] = &app.errors()[..] else { panic!("{:?}", app.errors()) };
-    assert!(error.contains("foo"), "{error}");
+    let frames =
+        format!("\n    at config.port ({})\n    at a ({}:1:3)", at(&app.app.filename, source, "foo"), app.file());
+    assert!(error.ends_with(&frames), "{error}");
     // the update is rejected, and the plugin keeps running
     assert_eq!(app.app.tree().resolve("a").unwrap().inner_fiber(), Some(fiber.clone()));
     assert!(!fiber.is_removed());
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn expressions_leave_an_expression_changed_at_runtime_unlocated() {
     let app = Located::start("location-expr-runtime.yml", "- id: a\n  name: config-plugin\n").await;
+    // once written back, the expression is in the file: keep it out
+    let readonly = |readonly| {
+        let mut permissions = std::fs::metadata(&app.app.filename).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(readonly);
+        std::fs::set_permissions(&app.app.filename, permissions).unwrap();
+    };
+    readonly(true);
     app.app.update("a", json!({ "disabled": { "__jsExpr": "foo" } })).await;
+    app.app.settle().await;
+    readonly(false);
     let [error] = &app.errors()[..] else { panic!("{:?}", app.errors()) };
     // the expression has no position, but the entry still has one
     assert!(error.ends_with(&format!("\n    at disabled\n    at a ({}:1:3)", app.file())), "{error}");
@@ -469,7 +448,6 @@ async fn points_parse_errors_at_the_source() {
 // --- JSON ---
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs cordis-loader: relocate entry errors through the tree backend"]
 async fn json_points_a_validation_issue_at_the_value_in_the_file() {
     let source =
         serde_json::to_string_pretty(&json!([{ "id": "a", "name": "schema-plugin", "config": { "port": "80" } }]))

@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
-use cordis_core::{Context, Disposer, Error, Inject, Plugin, PluginDef, Result};
+use cordis_core::{Context, Disposer, Error, Inject, PathSegment, Plugin, PluginDef, Result};
 use cordis_fs::{Fs, FsExt, WatchOptions};
-use cordis_loader::{EntryChange, Loader, TreeBackend, TreeHandle};
+use cordis_loader::{EXPR_KEY, EntryChange, Loader, Location, TreeBackend, TreeHandle, expr_source, value_at};
 use futures::FutureExt;
 use futures::future::{BoxFuture, Shared};
 use parking_lot::Mutex;
@@ -15,9 +15,11 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::journal::{Journal, apply_journal, merge, reconcile, record};
-use crate::patch::{PatchIndex, Patched, apply_patches, ensure_ids, ensure_insert_ids, random_id, route_journal};
-use crate::tree::{flatten, group_list, id_of};
-use crate::yaml::{self, Position, Step};
+use crate::patch::{
+    Owner, PatchIndex, Patched, apply_patches, ensure_ids, ensure_insert_ids, random_id, route_journal,
+};
+use crate::tree::{find, flatten, group_list, id_of};
+use crate::yaml::{self, Position, Syntax};
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -120,6 +122,7 @@ struct Snapshot {
     content: String,
     /// Parsed, ids assigned, unpatched.
     data: Vec<Value>,
+    syntax: Syntax,
 }
 
 struct Anonymous {
@@ -381,7 +384,7 @@ impl Include {
         if self.0.state.lock().cache.as_ref().is_some_and(|cache| cache.content == content) {
             return Ok(());
         }
-        let mut data = self.parse(&content)?;
+        let (mut data, syntax) = self.parse(&content)?;
         let mut guard = self.0.state.lock();
         let state = &mut *guard;
         self.assign_ids(state, &mut data);
@@ -397,7 +400,7 @@ impl Include {
                 ));
             }
         }
-        state.cache = Some(Snapshot { content, data });
+        state.cache = Some(Snapshot { content, data, syntax });
         self.schedule_apply(state);
         // the file changed while tree-side changes were pending: write the merge
         if !state.journal.is_empty() {
@@ -406,7 +409,7 @@ impl Include {
         Ok(())
     }
 
-    fn parse(&self, content: &str) -> Result<Vec<Value>, ConfigFileError> {
+    fn parse(&self, content: &str) -> Result<(Vec<Value>, Syntax), ConfigFileError> {
         let error = |stage, issues| ConfigFileError {
             stage,
             path: self.0.filename.clone(),
@@ -419,12 +422,7 @@ impl Include {
                 yaml::parse(content).map_err(|e| vec![ConfigIssue { message: e.message, position: e.position }])
             }
             Kind::Json => match serde_json::from_str::<Value>(content) {
-                Ok(data) => Ok((
-                    data,
-                    yaml::parse(content)
-                        .map(|(_, syntax)| syntax)
-                        .unwrap_or_else(|_| yaml::parse("").expect("empty").1),
-                )),
+                Ok(data) => Ok((data, json_syntax(content))),
                 Err(e) => Err(vec![ConfigIssue {
                     message: e.to_string().split(" at line").next().unwrap_or_default().to_string(),
                     position: Position { line: e.line(), column: e.column() },
@@ -447,7 +445,7 @@ impl Include {
         if !issues.is_empty() {
             return Err(error(Stage::Validate, issues));
         }
-        Ok(data)
+        Ok((data, syntax))
     }
 
     async fn write(&self) -> Result<()> {
@@ -521,8 +519,9 @@ impl Include {
                 .warn(format_args!("failed to write config file {file}, {pending} pending change(s) kept in memory"));
             return Err(error);
         }
+        let syntax = json_syntax(&text);
         let mut state = self.0.state.lock();
-        state.cache = Some(Snapshot { content: text, data });
+        state.cache = Some(Snapshot { content: text, data, syntax });
         self.schedule_apply(&mut state);
         Ok(())
     }
@@ -662,6 +661,61 @@ impl Include {
         assign(data, None, &mut used, &mut previous, &mut state.anonymous, &store);
     }
 
+    /// See [`TreeBackend::locate`]; with `offset`, a char of the expression
+    /// `value`. A value is looked up where its owner writes it: in the file,
+    /// or in a patch in the include's own options.
+    fn locate(&self, id: &str, path: &[PathSegment], value: Option<&Value>, offset: Option<usize>) -> Option<Location> {
+        let in_patch = |index: usize, rest: &[PathSegment]| {
+            let prefix =
+                [PathSegment::Key("config".into()), PathSegment::Key("patches".into()), PathSegment::Index(index)];
+            prefix.into_iter().chain(rest.iter().cloned()).collect::<Vec<_>>()
+        };
+        let path_in_parent = {
+            let state = self.0.state.lock();
+            let cache = state.cache.as_ref()?;
+            let owner = match path.first() {
+                Some(PathSegment::Key(key)) => state.index.key(id, key),
+                _ => state.index.entry(Some(id)),
+            };
+            match owner {
+                Owner::File => {
+                    let mut full = entry_path(&find(&cache.data, id)?);
+                    full.extend_from_slice(path);
+                    let written = match full.split_first() {
+                        Some((PathSegment::Index(index), rest)) => {
+                            cache.data.get(*index).and_then(|v| value_at(v, rest))
+                        }
+                        _ => None,
+                    };
+                    if value.is_some() && written != value {
+                        return None;
+                    }
+                    let position = match offset {
+                        Some(offset) => cache.syntax.locate_expr(&full, offset)?,
+                        None => cache.syntax.locate(&full)?,
+                    };
+                    let Position { line, column } = position;
+                    return Some(Location { file: self.0.filename.clone(), line, column });
+                }
+                Owner::Patch(index) => in_patch(index, path),
+                Owner::Embedded(index, key) => {
+                    let list = state.patches.get(index)?.get(key)?.as_array()?;
+                    let mut rest = vec![PathSegment::Key(key.into())];
+                    rest.extend(entry_path(&find(list, id)?));
+                    rest.extend_from_slice(path);
+                    in_patch(index, &rest)
+                }
+            }
+        };
+        let entry = self.0.loader.entry_of(&self.0.ctx)?;
+        let own = entry.options()["id"].as_str()?.to_string();
+        let tree = entry.parent().tree();
+        match offset {
+            Some(offset) => tree.locate_expr(&own, &path_in_parent, expr_source(value?)?, offset),
+            None => tree.locate(&own, &path_in_parent, value),
+        }
+    }
+
     fn warn(&self, message: String) {
         self.0.ctx.root().logger_named("loader").warn(message);
     }
@@ -711,13 +765,31 @@ fn collect_ids(entries: &[Value], used: &mut std::collections::HashSet<String>) 
     }
 }
 
-fn find_invalid(entries: &[Value], prefix: &mut Vec<Step>, report: &mut dyn FnMut(&[Step])) {
+/// The positions of JSON (and of YAML written by the include itself), which
+/// are YAML too.
+fn json_syntax(content: &str) -> Syntax {
+    yaml::parse(content).map(|(_, syntax)| syntax).unwrap_or_else(|_| yaml::parse("").expect("empty").1)
+}
+
+/// The path of an entry from its index path (see [`find`]).
+fn entry_path(indices: &[usize]) -> Vec<PathSegment> {
+    let mut path = Vec::new();
+    for (depth, index) in indices.iter().enumerate() {
+        if depth > 0 {
+            path.push(PathSegment::Key("config".into()));
+        }
+        path.push(PathSegment::Index(*index));
+    }
+    path
+}
+
+fn find_invalid(entries: &[Value], prefix: &mut Vec<PathSegment>, report: &mut dyn FnMut(&[PathSegment])) {
     for (index, options) in entries.iter().enumerate() {
-        prefix.push(Step::Index(index));
+        prefix.push(PathSegment::Index(index));
         if !options.is_object() {
             report(prefix);
         } else if let Some(list) = group_list(options) {
-            prefix.push(Step::Key("config".into()));
+            prefix.push(PathSegment::Key("config".into()));
             find_invalid(list, prefix, report);
             prefix.pop();
         }
@@ -746,5 +818,14 @@ impl TreeBackend for Backend {
 
     fn handle(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
         Some(self.0.upgrade()?)
+    }
+
+    fn locate(&self, id: &str, path: &[PathSegment], value: Option<&Value>) -> Option<Location> {
+        Include(self.0.upgrade()?).locate(id, path, value, None)
+    }
+
+    fn locate_expr(&self, id: &str, path: &[PathSegment], expr: &str, offset: usize) -> Option<Location> {
+        let value = Value::Object([(EXPR_KEY.to_string(), Value::String(expr.into()))].into_iter().collect());
+        Include(self.0.upgrade()?).locate(id, path, Some(&value), Some(offset))
     }
 }

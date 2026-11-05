@@ -5,12 +5,12 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use cordis_core::{Context, Disposal, Error, Fiber, FiberState, PluginDef, Result};
+use cordis_core::{Context, Disposal, Error, Fiber, FiberState, PathSegment, PluginDef, Result};
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use serde_json::Value;
 
-use crate::expr::{evaluate, interpolate, truthy};
+use crate::expr::{evaluate_at, interpolate_at, truthy};
 use crate::loader::{EntryId, Loader, LoaderState};
 use crate::options::{Disabled, EntryOptions, diff_keys};
 
@@ -64,11 +64,12 @@ impl Loader {
         })?;
         let mut inject = cordis_core::Inject::new();
         for key in declared.keys() {
-            match declared.meta(key).map(|meta| interpolate(&parent, meta)).transpose() {
+            let mut path = vec![PathSegment::Key("inject".into()), PathSegment::Key(key.to_string())];
+            match declared.meta(key).map(|meta| interpolate_at(&parent, meta, &mut path)).transpose() {
                 Ok(Some(meta)) => inject = inject.with_meta(key.clone(), meta),
                 Ok(None) => inject = inject.with(key.clone()),
                 Err(error) => {
-                    self.0.ctx.logger().log_error(&error);
+                    self.report(entry, &error);
                     self.with(|st| {
                         if let Some(data) = st.entries.get_mut(&entry) {
                             data.inject = cordis_core::Inject::new();
@@ -185,7 +186,7 @@ impl Loader {
                 return;
             }
             if let Err(error) = this.patch_context(entry, Vec::new()).await {
-                this.0.ctx.logger().log_error(&error);
+                this.report(entry, &error);
             }
             if this.current_name(entry).is_some_and(|current| current != name) {
                 return this.init_task(entry, None).await;
@@ -231,7 +232,7 @@ impl Loader {
         match resolver.resolve(name).await {
             Ok(def) => Some(def),
             Err(error) => {
-                self.0.ctx.logger().log_error(&error);
+                self.report(entry, &error);
                 None
             }
         }
@@ -272,7 +273,7 @@ impl Loader {
             (admitted.then(|| (data.intercept.clone(), data.read().config)), failures)
         });
         for error in &failures {
-            self.0.ctx.logger().log_error(error);
+            self.report(entry, error);
         }
         let Some((intercept, config)) = prepared else { return };
         self.show_log(entry, "apply");
@@ -284,7 +285,7 @@ impl Loader {
                     data.inner = Some(fiber);
                 }
             }),
-            Err(error) => self.0.ctx.logger().log_error(&error),
+            Err(error) => self.report(entry, &error),
         }
     }
 
@@ -332,7 +333,7 @@ impl Loader {
             (admitted, failures, st.entries[&entry].read())
         });
         for error in &failures {
-            self.0.ctx.logger().log_error(error);
+            self.report(entry, error);
         }
         if !admitted {
             drop(self.dispose_fiber(entry, &inner));
@@ -372,9 +373,9 @@ impl LoaderState {
         let (verdict, failure) = match data.read().disabled {
             None => (false, None),
             Some(Disabled::Bool(disabled)) => (disabled, None),
-            Some(Disabled::Expr(source)) => match evaluate(ctx, &source) {
+            Some(Disabled::Expr(source)) => match evaluate_at(ctx, &source, &[PathSegment::Key("disabled".into())]) {
                 Ok(value) => (truthy(&value), None),
-                Err(error) => (true, Some(Error::msg(format!("cannot evaluate `{source}`: {error}")))),
+                Err(error) => (true, Some(error)),
             },
         };
         data.verdict = Some(verdict);
@@ -424,7 +425,7 @@ impl LoaderState {
     pub(crate) fn apply_intercept(&mut self, entry: EntryId, ctx: &Context) -> Option<Error> {
         let data = self.entries.get_mut(&entry)?;
         let intercept = Value::Object(data.read().intercept);
-        match interpolate(ctx, &intercept) {
+        match interpolate_at(ctx, &intercept, &mut vec![PathSegment::Key("intercept".into())]) {
             Ok(Value::Object(table)) => {
                 data.intercept.set_intercepts(table.into_iter().map(|(key, meta)| (key.into(), meta)).collect());
                 None
