@@ -122,6 +122,61 @@ async fn ticks_fail_when_the_context_is_disposed() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn interval_async_iterator_break_return() {
+    let (_, fiber) = with_context().await;
+    let (calls, callback) = counter();
+    let mut ticks = fiber.context().timer().unwrap().ticks(SECOND).unwrap();
+    let iterate = tokio::spawn(async move {
+        let mut i = 0;
+        loop {
+            ticks.tick().await?;
+            i += 1;
+            if i > 2 {
+                break;
+            }
+            callback();
+        }
+        Ok::<_, Disposed>(())
+    });
+    assert_eq!(n(&calls), 0);
+    advance(1000).await;
+    assert_eq!(n(&calls), 1);
+    advance(1000).await;
+    assert_eq!(n(&calls), 2);
+    advance(1000).await;
+    assert_eq!(n(&calls), 2);
+    assert_eq!(iterate.await.unwrap(), Ok(()));
+    // leaving the loop drops the ticks, which disposes the interval
+    assert_eq!(fiber.effect_count(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn interval_async_iterator_break_throw() {
+    let (_, fiber) = with_context().await;
+    let (calls, callback) = counter();
+    let mut ticks = fiber.context().timer().unwrap().ticks(SECOND).unwrap();
+    let iterate = tokio::spawn(async move {
+        let mut i = 0;
+        loop {
+            ticks.tick().await?;
+            i += 1;
+            if i > 2 {
+                return Err::<(), _>(cordis_core::Error::msg("test"));
+            }
+            callback();
+        }
+    });
+    advance(1000).await;
+    assert_eq!(n(&calls), 1);
+    advance(1000).await;
+    assert_eq!(n(&calls), 2);
+    advance(1000).await;
+    assert_eq!(n(&calls), 2);
+    assert_eq!(iterate.await.unwrap().unwrap_err().to_string(), "test");
+    assert_eq!(fiber.effect_count(), 0);
+}
+
+#[tokio::test(start_paused = true)]
 async fn throttle_basic_support() {
     let (_, fiber) = with_context().await;
     let (calls, callback) = counter();
@@ -188,6 +243,20 @@ async fn throttle_stops_with_its_context_or_disposal() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn throttle_disposed() {
+    let (_, fiber) = with_context().await;
+    let (calls, callback) = counter();
+    let throttled = fiber.context().timer().unwrap().throttle(SECOND, true, move |()| callback()).unwrap();
+    throttled.dispose().await.unwrap();
+    throttled.call(());
+    assert_eq!(n(&calls), 0);
+    advance(500).await;
+    throttled.call(());
+    advance(2000).await;
+    assert_eq!(n(&calls), 0);
+}
+
+#[tokio::test(start_paused = true)]
 async fn debounce() {
     let (_, fiber) = with_context().await;
     let timer = fiber.context().timer().unwrap();
@@ -216,6 +285,9 @@ async fn debounce_stops_with_its_context() {
     let debounced = fiber.context().timer().unwrap().debounce(SECOND, move |()| callback()).unwrap();
     debounced.call(());
     fiber.dispose().await.unwrap();
+    advance(2000).await;
+    assert_eq!(n(&calls), 0);
+    debounced.call(());
     advance(2000).await;
     assert_eq!(n(&calls), 0);
 }

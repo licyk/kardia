@@ -1,6 +1,8 @@
 //! Port of `packages/logger-console/tests/index.spec.ts`.
 
-use cordis_core::{FiberId, Level, Message};
+use std::sync::{Arc, Mutex};
+
+use cordis_core::{AggregateError, Context, Error, Exporter, FiberId, Level, Message};
 use cordis_logger_console::{Align, Colors, ConsoleConfig, ConsoleExporter, LabelStyle, color, format_duration};
 
 fn message(level: Level, text: &str, ts: u64) -> Message {
@@ -26,6 +28,58 @@ fn renders_level_name_text_and_diff() {
     assert_eq!(exporter.render(&message(Level::Info, "{ foo: 'bar' }", 1_002)), "[I] test { foo: 'bar' } +2ms");
 }
 
+/// Collects what the console exporter would print, like the TS spec's `export` override.
+struct Capture {
+    console: ConsoleExporter,
+    data: Mutex<String>,
+}
+
+impl Exporter for Capture {
+    fn export(&self, message: &Message) {
+        let mut data = self.data.lock().unwrap();
+        *data += &self.console.render(message);
+        *data += "\n";
+    }
+
+    fn level(&self, name: &str) -> Option<Level> {
+        self.console.level(name)
+    }
+}
+
+fn capture(ctx: &Context) -> Arc<Capture> {
+    let capture = Arc::new(Capture { console: exporter(LabelStyle::default()), data: Mutex::default() });
+    ctx.add_exporter(capture.clone()).unwrap();
+    capture
+}
+
+/// The output with the trailing ` +<diff>`, which depends on the wall clock.
+fn without_diff(data: &str) -> &str {
+    let (head, diff) = data.rsplit_once(" +").unwrap();
+    assert!(diff.ends_with("ms\n"), "{data:?}");
+    head
+}
+
+#[test]
+fn format_error() {
+    let ctx = Context::new();
+    let capture = capture(&ctx);
+    let outer = Error::new(AggregateError { message: "outer".into(), errors: vec![Error::msg("message")] });
+    ctx.logger_named("test").log_error(&outer);
+    assert_eq!(without_diff(&capture.data.lock().unwrap()), "[E] test message");
+}
+
+#[test]
+fn log_levels() {
+    let ctx = Context::new();
+    let capture = capture(&ctx);
+    let logger = ctx.logger_named("test");
+    logger.debug("foo bar");
+    assert_eq!(*capture.data.lock().unwrap(), "");
+
+    logger.with_level(Level::Debug).debug("foo bar");
+    assert_eq!(without_diff(&capture.data.lock().unwrap()), "[D] test foo bar");
+}
+
 #[test]
 fn label_style() {
     let exporter = exporter(LabelStyle { align: Align::Right, width: 10, margin: Some(2) });
@@ -38,7 +92,6 @@ fn label_style() {
 
 #[test]
 fn levels_by_logger_name() {
-    use cordis_core::Exporter;
     let config: ConsoleConfig = serde_json_from(r#"{ "levels": { "default": 1, "test": 3 }, "colors": false }"#);
     let exporter = ConsoleExporter::new(config);
     assert_eq!(exporter.level("test"), Some(Level::Debug));
