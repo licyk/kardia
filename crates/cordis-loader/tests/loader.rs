@@ -540,3 +540,35 @@ async fn unload_an_entry_whose_options_turn_invalid_and_reload_it_once_fixed() {
     assert_eq!(mock.fiber("a").state(), FiberState::Active);
     assert_eq!(foo.take().0, 3);
 }
+
+// --- patch-context hooks ---
+
+#[tokio::test]
+async fn runs_patch_hooks_in_registration_order_and_only_when_continued() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let hook = |mock: &Mock, name: &'static str, continues: bool| {
+        let order = order.clone();
+        mock.loader
+            .on_patch_context(&mock.root, move |_, next| {
+                order.lock().push(name);
+                async move { if continues { next.await } else { Ok(()) } }
+            })
+            .unwrap()
+    };
+
+    let mock = Mock::boot().await;
+    mock.mock("worker", noop());
+    let _hooks = (hook(&mock, "outer", true), hook(&mock, "inner", true));
+    mock.loader.create(json!({ "id": "a", "name": "worker" }), None, None).await.unwrap();
+    mock.loader.settled().await;
+    assert_eq!(*order.lock(), ["outer", "inner"]);
+
+    // a hook that does not continue keeps the later ones from running
+    order.lock().clear();
+    let mock = Mock::boot().await;
+    mock.mock("worker", noop());
+    let _hooks = (hook(&mock, "blocker", false), hook(&mock, "later", true));
+    mock.loader.create(json!({ "id": "a", "name": "worker" }), None, None).await.unwrap();
+    mock.loader.settled().await;
+    assert_eq!(*order.lock(), ["blocker"]);
+}

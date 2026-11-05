@@ -524,6 +524,10 @@ async fn does_not_rebuild_an_entry_removed_during_unload() {
     assert!(gate.live().is_empty());
 }
 
+/// In Rust the hmr transaction has decided once the held unload completes,
+/// before either re-enable starts, so there is no hmr decision that waits on
+/// them; the case guards that re-enables racing a reload leave exactly one
+/// live instance of the new code, and that hmr adds no apply of its own.
 #[tokio::test]
 async fn waits_for_a_second_re_enable_init_before_deciding_whether_to_rebuild() {
     let (app, gate, entry) = gate_app().await;

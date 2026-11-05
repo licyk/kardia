@@ -294,29 +294,31 @@ impl Loader {
     /// reconciles the running fibers with the changed option keys.
     pub(crate) async fn patch_context(&self, entry: EntryId, diff: Vec<String>) -> Result<()> {
         let (table, diffs) = self.isolate_prepare(entry);
-        let hooks: Vec<PatchHook> = self.with(|st| st.patch_hooks.values().cloned().collect());
-        let result = self.patch_chain(entry, &hooks, table, diff).await;
+        let hooks: Arc<[PatchHook]> = self.with(|st| st.patch_hooks.values().cloned().collect());
+        let result = self.patch_chain(entry, hooks, 0, table, diff).await;
         self.isolate_finish(diffs);
         result
     }
 
-    /// The `on_patch_context` hooks, outermost first, around the patch itself.
+    /// The `on_patch_context` hooks from `index` on, around the patch itself.
+    /// Each `next` builds the rest of the chain only when it is awaited, so a
+    /// hook runs after the ones before it, and not at all if one of them
+    /// does not continue.
     fn patch_chain(
         &self,
         entry: EntryId,
-        hooks: &[PatchHook],
+        hooks: Arc<[PatchHook]>,
+        index: usize,
         table: HashMap<Key, RealmId>,
         diff: Vec<String>,
     ) -> BoxFuture<'static, Result<()>> {
-        match hooks.split_first() {
-            Some((hook, rest)) => {
-                hook(EntryHandle { loader: self.clone(), id: entry }, self.patch_chain(entry, rest, table, diff))
-            }
-            None => {
-                let this = self.clone();
-                async move { this.patch_fibers(entry, table, diff).await }.boxed()
-            }
-        }
+        let this = self.clone();
+        let Some(hook) = hooks.get(index).cloned() else {
+            return async move { this.patch_fibers(entry, table, diff).await }.boxed();
+        };
+        let handle = EntryHandle { loader: self.clone(), id: entry };
+        let next = async move { this.patch_chain(entry, hooks, index + 1, table, diff).await }.boxed();
+        hook(handle, next)
     }
 
     /// Moves the entry's context under its parent's and reconciles its fibers.
