@@ -1,11 +1,13 @@
 # kardia
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 [![CI](https://github.com/licyk/kardia/actions/workflows/ci.yml/badge.svg)](https://github.com/licyk/kardia/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/kardia.svg)](https://crates.io/crates/kardia)
 [![docs.rs](https://img.shields.io/docsrs/kardia)](https://docs.rs/kardia)
 [![License: GPL-3.0-only](https://img.shields.io/crates/l/kardia.svg)](LICENSE)
 
-A Rust implementation of [Cordis](https://github.com/cordiverse/cordis), the plugin framework built on *spatiotemporal composability* ([paper](https://arxiv.org/abs/2608.25512)). Documentation: **https://licyk.github.io/kardia/**.
+A Rust implementation of [Cordis](https://github.com/cordiverse/cordis), the plugin framework built on *spatiotemporal composability* ([paper](https://arxiv.org/abs/2608.25512)). Documentation: **https://kardia-dev.netlify.app**.
 
 An app is a tree of **plugins**. Each plugin runs in a **fiber**:
 - **Effects:** everything a plugin sets up (listeners, timers, services, child plugins) is tracked and reverted when the plugin stops.
@@ -317,17 +319,17 @@ git push
 cargo xtask tag --push
 ```
 
-The tag starts `release.yml`. It reuses CI's run of the tagged commit rather than testing it again, publishes every crate whose new version is not on crates.io yet, and creates a GitHub release. It can also be started by hand to resume a release that stopped part-way. [Contributing](https://licyk.github.io/kardia/docs/development-contributing) has the details.
+The tag starts `release.yml`. It reuses CI's run of the tagged commit rather than testing it again, publishes every crate whose new version is not on crates.io yet, and creates a GitHub release. It can also be started by hand to resume a release that stopped part-way. [Contributing](https://kardia-dev.netlify.app/docs/development-contributing) has the details.
 
 ## Documentation
 
-The documentation site, **https://licyk.github.io/kardia/**, is in Chinese and English. It has:
+The documentation site, **https://kardia-dev.netlify.app**, is in Chinese and English. It has:
 - **Guides** for every feature.
 - **The paper's concepts.**
 - **An analysis of the TypeScript Cordis code.**
-- **The Rust design:** including, under [Implementation status](https://licyk.github.io/kardia/docs/development-status), every place this implementation differs from the TypeScript one.
+- **The Rust design:** including, under [Implementation status](https://kardia-dev.netlify.app/docs/development-status), every place this implementation differs from the TypeScript one.
 
-Its source is in [`site/`](site/). [Contributing](https://licyk.github.io/kardia/docs/development-contributing) explains how to build it.
+Its source is in [`site/`](site/). [Contributing](https://kardia-dev.netlify.app/docs/development-contributing) explains how to build it.
 
 ## License
 
