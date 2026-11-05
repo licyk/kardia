@@ -1,4 +1,4 @@
-# cordis-rs
+# kardia
 
 A Rust implementation of [Cordis](https://github.com/cordiverse/cordis), the plugin framework built on *spatiotemporal composability* ([paper](docs/2608.25512v1.pdf)).
 
@@ -30,18 +30,18 @@ An app is a tree of **plugins**. Each plugin runs in a **fiber**:
 
 ## Quick start
 
-The `cordis` binary loads an app from a YAML (or JSON) config file and keeps it in step with the file:
+The `kardia` binary loads an app from a YAML (or JSON) config file and keeps it in step with the file:
 
 ```sh
-cargo run -p cordis -- examples/cordis.yml
+cargo run -p kardia -- examples/kardia.yml
 ```
 
 While it runs, try these:
-- **Change the config.** In `examples/cordis.yml`, set `disabled: false` on the `console` entry: the console logger starts. Set it back to `true` and it stops.
+- **Change the config.** In `examples/kardia.yml`, set `disabled: false` on the `console` entry: the console logger starts. Set it back to `true` and it stops.
 - **Hot-reload a plugin.** Edit the greeting in `examples/plugins/hello.wat`. The `hmr` entry reloads the WebAssembly plugin in place: the old instance logs its goodbye, then the new one logs your greeting.
 - **Stop the app.** Press Ctrl-C. Shutting down does not write to the config file.
 
-Without an argument, the binary reads `cordis.yml` from the working directory.
+Without an argument, the binary reads `kardia.yml` from the working directory.
 
 ## The configuration file
 
@@ -99,7 +99,7 @@ Add the facade crate:
 
 ```toml
 [dependencies]
-cordis = { git = "https://github.com/licyk/cordis-rs" }
+kardia = { git = "https://github.com/licyk/cordis-rs" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
@@ -108,10 +108,10 @@ Services are plain types. The `#[plugin]` macro reads a plugin's dependencies fr
 ```rust
 use std::time::Duration;
 
-use cordis::prelude::*;
+use kardia::prelude::*;
 
 #[derive(Service)]
-#[service(crate = ::cordis)]
+#[service(crate = ::kardia)]
 struct Database {
     url: String,
 }
@@ -134,7 +134,7 @@ fn db() -> PluginDef {
 }
 
 /// Starts once `database` and `timer` are available, and stops with them.
-#[plugin(crate = ::cordis)]
+#[plugin(crate = ::kardia)]
 async fn greeter(ctx: Injected<(Database, Timer)>) -> Result<()> {
     let (db, timer) = ctx.deps()?;
     ctx.logger().info(format_args!("using {}", db.url));
@@ -158,20 +158,20 @@ async fn main() -> Result<()> {
 A longer, runnable version, which also hot-replaces the database implementation:
 
 ```sh
-cargo run -p cordis --example provider_consumer
+cargo run -p kardia --example provider_consumer
 ```
 
-To load your own plugins from a config file, register them in a `cordis::loader::Catalog` and pass it to `Loader::plugin`. `crates/cordis/src/main.rs` shows the full setup.
+To load your own plugins from a config file, register them in a `kardia::loader::Catalog` and pass it to `Loader::plugin`. `crates/kardia/src/main.rs` shows the full setup.
 
 ## Hot reload and guest plugins
 
 Plugins compiled into the binary can be reconfigured live, but changing their code needs a restart.
 
-**Guest plugins** are separate modules that `hmr` can reload in place. Any entry name that is not a built-in is a guest module path, relative to the config file. The `cordis` binary loads two kinds:
+**Guest plugins** are separate modules that `hmr` can reload in place. Any entry name that is not a built-in is a guest module path, relative to the config file. The `kardia` binary loads two kinds:
 - **WebAssembly modules** (`.wasm`, or `.wat` text): run on wasmtime, sandboxed, one instance per plugin.
 - **Dynamic libraries** (`.so` / `.dylib` / `.dll`): for development. They run in the host process without a sandbox, so a crash in the library brings down the app. Each version stays loaded until the process exits.
 
-A third kind, **child processes**, is available to apps built on the library (`cordis::hmr::ProcessSource`), but not yet to the `cordis` binary, which picks a backend by file extension:
+A third kind, **child processes**, is available to apps built on the library (`kardia::hmr::ProcessSource`), but not yet to the `kardia` binary, which picks a backend by file extension:
 - Each plugin instance is its own process, speaking the guest interface as JSON lines over stdin and stdout.
 - A crashing guest fails only its own calls.
 - Reloading a module respawns its processes.
@@ -194,18 +194,18 @@ To reload guest modules as they change, add an `hmr` entry with watch mode:
 
 ### Writing a guest plugin in Rust
 
-Create a `cdylib` crate that depends on `cordis-guest`:
+Create a `cdylib` crate that depends on `kardia-guest`:
 
 ```toml
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-cordis-guest = { git = "https://github.com/licyk/cordis-rs" }
+kardia-guest = { git = "https://github.com/licyk/cordis-rs" }
 ```
 
 ```rust
-use cordis_guest::{Guest, Host, Level, Map, Meta, Request, Result, Value, json};
+use kardia_guest::{Guest, Host, Level, Map, Meta, Request, Result, Value, json};
 
 struct Counter {
     count: u64,
@@ -235,7 +235,7 @@ impl Guest for Counter {
     }
 }
 
-cordis_guest::export!(Counter);
+kardia_guest::export!(Counter);
 ```
 
 The same source builds a WebAssembly or a dynamic-library guest:
@@ -249,7 +249,7 @@ For a process guest, add a binary to the crate (with `crate-type = ["cdylib", "r
 
 ```rust
 fn main() {
-    cordis_guest::serve::<my_guest::Counter>();
+    kardia_guest::serve::<my_guest::Counter>();
 }
 ```
 
@@ -257,23 +257,23 @@ stdout carries the protocol, so a process guest must not print to it; it logs th
 
 What a guest can do:
 - **Use services.** `Host` can `log`, `provide` services, `view` the JSON value of services the guest declared with `Meta::inject`, and `invoke` services provided by other guests.
-- **Be called from Rust.** Host-side code calls a guest's services through `cordis::hmr::GuestService` (`.value()` and `.call(method, args)`).
+- **Be called from Rust.** Host-side code calls a guest's services through `kardia::hmr::GuestService` (`.value()` and `.call(method, args)`).
 - **Fail safely.** An error or panic in a guest fails only that plugin or call. In a dylib or a process, the SDK catches the panic and returns it as an error. WebAssembly aborts on a panic, and the host reports the abort as a failed call. A process that exits fails its later calls with "the guest process exited".
 
-Guests in other languages implement the JSON-based guest interface described in the `cordis-hmr` crate docs (`cargo doc -p cordis-hmr --open`). `examples/plugins/hello.wat` is a guest written by hand in WebAssembly text.
+Guests in other languages implement the JSON-based guest interface described in the `kardia-hmr` crate docs (`cargo doc -p kardia-hmr --open`). `examples/plugins/hello.wat` is a guest written by hand in WebAssembly text.
 
 ## Crates
 
 | Crate | Contents |
 |---|---|
-| `cordis` | The facade (`cordis::prelude`) and the `cordis` binary |
-| `cordis-core` | Contexts, effects, fibers, services, events, logger |
-| `cordis-macros` | `#[derive(Service)]` and `#[plugin]` |
-| `cordis-timer`, `cordis-logger-console`, `cordis-fs` | Built-in services |
-| `cordis-loader` | Entries, groups, isolation, expressions, catalog |
-| `cordis-include` | YAML/JSON config files, kept in sync both ways |
-| `cordis-hmr` | Module graph, hot reload, watch mode, WASM, dylib and process backends |
-| `cordis-guest` | SDK for guest plugins in Rust |
+| `kardia` | The facade (`kardia::prelude`) and the `kardia` binary |
+| `kardia-core` | Contexts, effects, fibers, services, events, logger |
+| `kardia-macros` | `#[derive(Service)]` and `#[plugin]` |
+| `kardia-timer`, `kardia-logger-console`, `kardia-fs` | Built-in services |
+| `kardia-loader` | Entries, groups, isolation, expressions, catalog |
+| `kardia-include` | YAML/JSON config files, kept in sync both ways |
+| `kardia-hmr` | Module graph, hot reload, watch mode, WASM, dylib and process backends |
+| `kardia-guest` | SDK for guest plugins in Rust |
 
 ## Development
 
@@ -291,6 +291,6 @@ Some tests build fixture crates with cargo while they run, so the first run take
 
 ## License
 
-cordis-rs is licensed under the [GNU General Public License v3.0](LICENSE) (`GPL-3.0-only`).
+kardia is licensed under the [GNU General Public License v3.0](LICENSE) (`GPL-3.0-only`).
 
 It is a port of the TypeScript [Cordis](https://github.com/cordiverse/cordis), which is MIT-licensed. [`NOTICE`](NOTICE) keeps its copyright and license notice.

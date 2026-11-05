@@ -1,4 +1,4 @@
-cordis-rs is a Rust port of Cordis (https://github.com/cordiverse/cordis),
+kardia is a Rust port of Cordis (https://github.com/cordiverse/cordis),
 which is distributed under the following license:
 
 MIT License

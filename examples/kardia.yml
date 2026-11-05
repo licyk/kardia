@@ -1,0 +1,22 @@
+# Run with `cargo run -p kardia -- examples/kardia.yml`, then edit this file:
+# the running app follows (e.g. enable the console logger below).
+- id: timer
+  name: timer
+# Reloads guest modules below `plugins/` in place when they change.
+- id: hmr
+  name: hmr
+  config:
+    watch:
+      enabled: true
+      files:
+        - plugins
+- id: plugins
+  name: group
+  group: true
+  config:
+    - id: console
+      name: logger-console
+      disabled: true
+    # a WebAssembly guest plugin: edit its greeting while the app runs
+    - id: hello
+      name: ./plugins/hello.wat

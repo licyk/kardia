@@ -1,0 +1,24 @@
+[package]
+name = "kardia-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tokio.workspace = true
+futures.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_path_to_error.workspace = true
+indexmap.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
+proptest.workspace = true
+
+[lints]
+workspace = true

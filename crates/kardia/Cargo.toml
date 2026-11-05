@@ -1,0 +1,24 @@
+[package]
+name = "kardia"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+kardia-core.workspace = true
+kardia-macros.workspace = true
+kardia-timer.workspace = true
+kardia-logger-console.workspace = true
+kardia-loader.workspace = true
+kardia-fs.workspace = true
+kardia-include.workspace = true
+kardia-hmr.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
+
+[lints]
+workspace = true

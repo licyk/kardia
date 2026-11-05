@@ -1,4 +1,4 @@
-# Rust Implementation Plan for Cordis (`cordis-rs`)
+# Rust Implementation Plan for Cordis (`kardia`)
 
 > **Layer:** Proposal. This document designs a Rust re-implementation of the framework. It builds on
 > * the **theory** – [`paper/`](paper/01-overview.md) (definitions, rules, theorems), and
@@ -62,7 +62,7 @@
 | proxy access check (Alg. 6) | `ReflectService.handler` + `locate` | `ctx.get::<S>() -> Result<Svc<S>, AccessError>` walking committed views |
 | caller attribution | tracker / shadow proxies | `Svc<S>::caller()`; services hold their own `Context` |
 | events | `EventsService` string events | typed events: `trait Event` + `ctx.on::<E>()`, dispatch modes |
-| loader entry | `EntryOptions`, `Entry` | `EntryOptions` (serde), `Entry` state machine in `cordis-loader` |
+| loader entry | `EntryOptions`, `Entry` | `EntryOptions` (serde), `Entry` state machine in `kardia-loader` |
 | module import | Node ESM loader | `Catalog` of statically registered plugins; optional `ModuleSource` backends |
 
 ---
@@ -72,10 +72,10 @@
 A Cargo workspace at the repository root (next to the untouched `cordis/` reference code and `docs/`):
 
 ```
-cordis-rs/
+kardia/
 ├─ Cargo.toml                 # [workspace]
 ├─ crates/
-│  ├─ cordis-core/            # Phases 1–3: the paper's core library
+│  ├─ kardia-core/            # Phases 1–3: the paper's core library
 │  │  └─ src/
 │  │     ├─ lib.rs            # public re-exports
 │  │     ├─ root.rs           # Root (shared state + lock), Context handle
@@ -92,20 +92,20 @@ cordis-rs/
 │  │     ├─ events.rs         # typed events, dispatch modes, internal hook points
 │  │     ├─ logger.rs         # Logger service, exporters-as-effects, ring buffer
 │  │     ├─ config.rs         # Value → Config deserialization, ValidationError with paths
-│  │     └─ error.rs          # CordisError, AccessError, PluginError
-│  ├─ cordis-macros/          # Phase 6: optional proc macros (ergonomics, compile-time inject checks)
-│  ├─ cordis-timer/           # Phase 3: timer service (tokio::time)
-│  ├─ cordis-logger-console/  # Phase 3: console exporter
-│  ├─ cordis-fs/              # Phase 5: fs.watch service (notify + globset)
-│  ├─ cordis-loader/          # Phase 4: entries, tree, group, realms, catalog, validation, expressions
-│  ├─ cordis-include/         # Phase 5: YAML/JSON-backed trees: parse, journal, patch, sync, atomic write
-│  ├─ cordis-hmr/             # Phase 7 (optional, research): module graph + reconcile algorithm
-│  ├─ cordis-guest/           # guest SDK: write WASM / dylib guest plugins in Rust
-│  └─ cordis/                 # facade crate re-exporting the above + `cordis` binary (bootstrap like core/bin.js)
+│  │     └─ error.rs          # KardiaError, AccessError, PluginError
+│  ├─ kardia-macros/          # Phase 6: optional proc macros (ergonomics, compile-time inject checks)
+│  ├─ kardia-timer/           # Phase 3: timer service (tokio::time)
+│  ├─ kardia-logger-console/  # Phase 3: console exporter
+│  ├─ kardia-fs/              # Phase 5: fs.watch service (notify + globset)
+│  ├─ kardia-loader/          # Phase 4: entries, tree, group, realms, catalog, validation, expressions
+│  ├─ kardia-include/         # Phase 5: YAML/JSON-backed trees: parse, journal, patch, sync, atomic write
+│  ├─ kardia-hmr/             # Phase 7 (optional, research): module graph + reconcile algorithm
+│  ├─ kardia-guest/           # guest SDK: write WASM / dylib guest plugins in Rust
+│  └─ kardia/                 # facade crate re-exporting the above + `kardia` binary (bootstrap like core/bin.js)
 └─ docs/
 ```
 
-Crate dependency direction mirrors the TS packages: `core ← timer, logger-console, fs ← loader ← include, hmr ← cordis (facade)`; `hmr` also uses `fs` for its watch mode, and `cordis-guest` depends on none of them.
+Crate dependency direction mirrors the TS packages: `core ← timer, logger-console, fs ← loader ← include, hmr ← kardia (facade)`; `hmr` also uses `fs` for its watch mode, and `kardia-guest` depends on none of them.
 
 ### 3.1 External dependencies
 Kept deliberately small; each line says why it is needed.
@@ -127,7 +127,7 @@ Kept deliberately small; each line says why it is needed.
 | `trybuild` (dev) | macros | compile-fail tests for undeclared access |
 | `wasmtime` / `libloading` (features `wasm` / `dylib`) | hmr | the WASM and dylib module backends |
 
-Not used: `async-trait` (return-position `impl Future` in traits is stable), `anyhow` (`cordis_core::Error` also serves the binary and the examples), `inventory`/`linkme` (explicit `Catalog::register` is enough), `smallvec` (plain `Vec`s suffice), `tempfile` (the atomic write is a temp file in the same directory plus a rename, with `std`), `anstream`/`anstyle` (console colours are plain ANSI escapes).
+Not used: `async-trait` (return-position `impl Future` in traits is stable), `anyhow` (`kardia_core::Error` also serves the binary and the examples), `inventory`/`linkme` (explicit `Catalog::register` is enough), `smallvec` (plain `Vec`s suffice), `tempfile` (the atomic write is a temp file in the same directory plus a rename, with `std`), `anstream`/`anstyle` (console colours are plain ANSI escapes).
 
 ---
 
@@ -237,7 +237,7 @@ pub struct CommittedView { entries: SmallVec<[(Key, ImplId); 4]> }
 ```
 
 ### 5.5 `IdTable<T>` – commutative-by-construction registry
-The `DisposableList` design (insert returns a fresh id; remove by id; `drain_rev()` returns LIFO order) is exported publicly as `cordis_core::IdTable<T>`. It is what paper §3.4.2 calls a commutative key: service authors should build their registries (routes, listeners, commands) on it.
+The `DisposableList` design (insert returns a fresh id; remove by id; `drain_rev()` returns LIFO order) is exported publicly as `kardia_core::IdTable<T>`. It is what paper §3.4.2 calls a commutative key: service authors should build their registries (routes, listeners, commands) on it.
 
 ### 5.6 Dependency-cycle detection (D9)
 On insertion, compute whether the precedence relation ≺ (`p_n ∩ d_m ≠ ∅`, from declared `provide`/`inject`) closes a cycle among non-disposed fibers in the same realm; if so, log a warning naming the cycle and leave the fiber `Pending` (behaviour otherwise unchanged). It only reads declarations, so it can be computed eagerly (paper §6.5). Declared `provide` is metadata only (as in Cordis); a plugin that provides undeclared keys simply escapes the check.
@@ -261,8 +261,8 @@ pub trait Mergeable { fn merge(self, inner: Self) -> Self; }   // default for JS
 ### 6.2 Providing
 ```rust
 impl Context {
-    pub fn provide<S: Service>(&self, value: S) -> Result<EffectHandle, CordisError>;
-    pub fn provide_arc<S: Service>(&self, value: Arc<S>) -> Result<EffectHandle, CordisError>;
+    pub fn provide<S: Service>(&self, value: S) -> Result<EffectHandle, KardiaError>;
+    pub fn provide_arc<S: Service>(&self, value: Arc<S>) -> Result<EffectHandle, KardiaError>;
 }
 ```
 Semantics follow `ReflectService.provide` exactly: a tracked effect; single source per realm (`AlreadyProvided { key, by }`); notify immediately only if the providing fiber is `Active`, otherwise on its transition to `Active`; the inverse removes the binding, notifies the realm, **waits until `dependents` is empty**, then removes the provision. In-place overwrite (`reflect.set`) is offered as `ctx.replace_value::<S>(..)` and, as in Cordis and the paper, is *not* observed by dependents.
@@ -312,10 +312,10 @@ pub type Disposer = Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send>;
 
 impl Context {
     /// Effect function: run `f`, which returns its inverse.
-    pub fn effect_sync<F>(&self, label: &'static str, f: F) -> Result<EffectHandle, CordisError>
+    pub fn effect_sync<F>(&self, label: &'static str, f: F) -> Result<EffectHandle, KardiaError>
         where F: FnOnce() -> Option<Disposer>;
     /// Effect iterator: `f` receives a scope; each `yield_` is an iteration boundary.
-    pub fn effect<F, Fut>(&self, label: &'static str, f: F) -> Result<EffectHandle, CordisError>
+    pub fn effect<F, Fut>(&self, label: &'static str, f: F) -> Result<EffectHandle, KardiaError>
         where F: FnOnce(EffectScope) -> Fut, Fut: Future<Output = Result<(), PluginError>> + Send + 'static;
     /// Register a plain inverse on the current fiber (e.g. inside `apply`).
     pub fn on_dispose(&self, d: impl FnOnce() + Send + 'static) -> EffectHandle;
@@ -336,7 +336,7 @@ impl EffectHandle {
 ```
 
 ### 7.2 Semantics (from `fiber.ts:292-357`)
-* `assert_active`: effects on a removed fiber fail with `CordisError::InactiveEffect`.
+* `assert_active`: effects on a removed fiber fail with `KardiaError::InactiveEffect`.
 * Inside one effect: disposers run **sequentially in reverse order**.
 * Ownership transfer: a nested `EffectHandle` created inside an effect is registered on the fiber; `scope.adopt(h)` moves it under the outer effect (the TS `collect` → `_disposables.delete`).
 * A failing effect body disposes what it collected; synchronous errors propagate to the caller, async ones are logged and reported via `ready()`.
@@ -365,9 +365,9 @@ pub trait Plugin: Send + Sync + 'static {
         -> impl Future<Output = Result<(), PluginError>> + Send;
 }
 impl Context {
-    pub fn plugin<P: Plugin>(&self, config: P::Config) -> Result<Fiber, CordisError>;
-    pub fn plugin_value<P: Plugin>(&self, config: serde_json::Value) -> Result<Fiber, CordisError>;
-    pub fn inject<F, Fut>(&self, deps: InjectSpec, f: F) -> Result<Fiber, CordisError>;   // closure plugin
+    pub fn plugin<P: Plugin>(&self, config: P::Config) -> Result<Fiber, KardiaError>;
+    pub fn plugin_value<P: Plugin>(&self, config: serde_json::Value) -> Result<Fiber, KardiaError>;
+    pub fn inject<F, Fut>(&self, deps: InjectSpec, f: F) -> Result<Fiber, KardiaError>;   // closure plugin
 }
 ```
 Erased form stored in runtimes: `PluginDef { key: RuntimeKey, name, inject: Arc<InjectSpec>, provide, decode: fn(&Value) -> Result<ErasedConfig, ValidationError>, apply: Arc<dyn Fn(Context, ErasedConfig) -> BoxFuture<'static, Result<(), PluginError>> + Send + Sync> }`. `RuntimeKey` is `TypeId::of::<P>()` for typed plugins and a pointer identity for closure plugins (dynamic modules add their own key kind, §10).
@@ -453,20 +453,20 @@ Listeners are stored in an `IdTable` per event `TypeId`; registration is an effe
 Internal events: `PluginInserted/Removed`, `StatusChanged { fiber, old, new }`, `ServiceChanged { key, realm }`, `ConfigCommitted { fiber, value }`, `Replaced { fiber }`.
 
 ### 9.2 Logger
-`Logger` is a core service: `ctx.logger(name)` → `Logger { name, level, fiber }` (name defaults to the calling fiber's runtime name, overridable by interception metadata `{ name, level }`); `Exporter` trait objects registered via `logger.exporter(e)` **as effects**; ring buffer of the last 1000 `Message { sn, ts, name, level, args }`. Format strings use Rust formatting (`format_args!`) instead of printf directives. A `tracing` bridge (a `tracing_subscriber::Layer` feeding exporters) can be added in `cordis-logger-console`; it is not required by core.
+`Logger` is a core service: `ctx.logger(name)` → `Logger { name, level, fiber }` (name defaults to the calling fiber's runtime name, overridable by interception metadata `{ name, level }`); `Exporter` trait objects registered via `logger.exporter(e)` **as effects**; ring buffer of the last 1000 `Message { sn, ts, name, level, args }`. Format strings use Rust formatting (`format_args!`) instead of printf directives. A `tracing` bridge (a `tracing_subscriber::Layer` feeding exporters) can be added in `kardia-logger-console`; it is not required by core.
 
 ### 9.3 Built-in plugin crates
 | Crate | Port of | Rust building blocks |
 |---|---|---|
-| `cordis-timer` | `plugin-timer` | `tokio::time::{sleep, interval}`, `JoinHandle::abort` as disposers; `timeout(d) -> Result<(), Disposed>` future; `interval(d) -> impl Stream`; `throttle/debounce` handles |
-| `cordis-logger-console` | `plugin-logger-console` | ANSI colours, label alignment, level map |
-| `cordis-fs` | `plugin-fs-node` | `notify` (watch parent dir for single files), `globset` + ported last-match-wins/ancestor predicate |
+| `kardia-timer` | `plugin-timer` | `tokio::time::{sleep, interval}`, `JoinHandle::abort` as disposers; `timeout(d) -> Result<(), Disposed>` future; `interval(d) -> impl Stream`; `throttle/debounce` handles |
+| `kardia-logger-console` | `plugin-logger-console` | ANSI colours, label alignment, level map |
+| `kardia-fs` | `plugin-fs-node` | `notify` (watch parent dir for single files), `globset` + ported last-match-wins/ancestor predicate |
 
 ---
 
 ## 10. Loader, include and dynamic modules
 
-### 10.1 `cordis-loader`
+### 10.1 `kardia-loader`
 Port of `packages/loader` with these Rust adaptations:
 * **Data model**: `EntryOptions` as a serde struct with `#[serde(flatten)] extra: IndexMap<String, Value>` (tolerate unknown keys); `Option<Option<T>>`/`Value::Null` for "delete on merge"; `IsolateLabel::{Private, Shared(String)}`; `Disabled::{Bool, Expr}`.
 * **Id-addressed documents instead of object identity**: TS relies on `entry.options === group.data[i]`; Rust keeps the group's `Vec<EntryOptions>` authoritative and entries hold ids; "came from the file" is a provenance flag, not `===`.
@@ -479,14 +479,14 @@ Port of `packages/loader` with these Rust adaptations:
 * **Validation**: `validate_options(&Value, deep) -> Vec<Issue>` at the boundary (deep for API calls, shallow for file input).
 * **Expressions** (`!!js`): JS `with(ctx) eval` cannot be ported. Decision point (§13): adopt a side-effect-free expression language (recommended: CEL, or a small custom evaluator) whose identifiers resolve through `ctx.get_dyn(name)` and a serializable service view (`trait ExprValue { fn to_value(&self) -> Value }`), respecting the same evaluation-context table as the TS loader. Until then, `Expr` values are rejected with a clear validation issue.
 
-### 10.2 `cordis-include`
+### 10.2 `kardia-include`
 * Pure modules ported almost verbatim and unit-tested in isolation: `journal` (record, merge, flatten, apply, three-way `reconcile` – file wins), `patch` (insert/override patches, `PatchIndex` ownership, `route_journal`), anonymous id assignment.
 * IO loop: one task driven by `dirty_read/dirty_write` flags + `Notify`; latest-wins tree application; `flush()`.
 * Parsing: a YAML parser with spans and custom tags (`saphyr` family) – `!!js` → `Value::Expr`; errors **and** warnings fatal; JSON via `serde_json` plus a spanned pass for locations.
 * Atomic writes: temp file in the same directory, stale-content check before every rename, bounded retry on `PermissionDenied`/`ResourceBusy`, read-only → keep journal in memory.
 * Errors: structured `ConfigFrame { id, file, line, col }` chains instead of rewritten stack strings.
 
-### 10.3 Dynamic modules and HMR (`cordis-hmr`, optional, Phase 7)
+### 10.3 Dynamic modules and HMR (`kardia-hmr`, optional, Phase 7)
 Paper §6.4: *native code exposes no module registry, so introduction and retraction take the form of explicit dynamic linking (dlopen/dlclose) … WebAssembly … released when a native embedder (e.g. Wasmtime) drops it.* The plan separates the **algorithm** (portable) from the **module technology** (a backend):
 
 ```rust
@@ -511,7 +511,7 @@ Each phase ports the corresponding `*.spec.ts` files as Rust integration tests, 
 
 * **`current_thread`** (`#[tokio::test]`) by default: core, loader and hmr tests. Interleavings stay close to the single JS thread.
 * **Paused time** (`start_paused = true`) where a test depends on timers: the timer suite, and the core and loader tests whose effects wait on timers.
-* **`multi_thread`** where real parallelism is the point: every include test, plus the fs and hmr watch cases that need it (e.g. a module load held open with `block_in_place`). The include's IO loop and the file watch then run alongside tree updates, as in the `cordis` binary. These tests found the races fixed in the include's write path and the loader's update path.
+* **`multi_thread`** where real parallelism is the point: every include test, plus the fs and hmr watch cases that need it (e.g. a module load held open with `block_in_place`). The include's IO loop and the file watch then run alongside tree updates, as in the `kardia` binary. These tests found the races fixed in the include's write path and the loader's update path.
 * **Real time** for file-system watch tests, since `notify` reports events from its own thread. An expected event is awaited with bounded polling (`eventually` helpers); a fixed wait is used only to check that something does *not* happen.
 
 The specs per phase:
@@ -539,7 +539,7 @@ These tests check the implementation against the theory with no business logic c
 Pure modules (`IdTable`, `Scope` lookups, target computation, `journal`, `patch`, glob predicate, HMR union-find) get focused unit tests. Mocks are limited to `Catalog`/`ModuleSource` test registries and fault-injecting filesystem shims.
 
 ### 11.4 Tooling
-`cargo fmt`, `cargo clippy -D warnings`, `cargo test --workspace`; `unsafe` is confined to the FFI of the dylib backend (`cordis-hmr/src/dylib.rs`) and the guest SDK (`cordis-guest/src/ffi.rs`); every other crate forbids it; optional `loom` is *not* planned (the single-lock design has no lock-free state to model).
+`cargo fmt`, `cargo clippy -D warnings`, `cargo test --workspace`; `unsafe` is confined to the FFI of the dylib backend (`kardia-hmr/src/dylib.rs`) and the guest SDK (`kardia-guest/src/ffi.rs`); every other crate forbids it; optional `loom` is *not* planned (the single-lock design has no lock-free state to model).
 
 ---
 
@@ -550,10 +550,10 @@ Pure modules (`IdTable`, `Scope` lookups, target computation, `journal`, `patch`
 | **0. Scaffold** | Workspace, crates, CI (fmt, clippy, test) | empty crates build |
 | **1. Effects & store** | ids, `Root`/`Context`/`Scope`, `IdTable`, effect engine (`effect_sync`, `effect`, `EffectScope`, `EffectHandle`), `provide`/`try_get_live`, isolate/intercept overlays; root fiber only | `dispose.spec` ported and green |
 | **2. Fibers & lifecycle** | `Plugin` trait, registry/runtimes, `FiberData`, target/committed views, refresh/reload/unload with inertia, two-level guard, failure, `update`/`restart`, instantiation cascade, `replace`, checked `get` (Algorithm 6), cycle warning | Phase-2 specs green; model-based property tests (§11.2) green |
-| **3. Services & built-ins** | `Service`/`Svc<S>` caller attribution, interception merge, typed events + internal events, logger + exporters, `cordis-timer`, `cordis-logger-console` | Phase-3 specs green; example app with a provider/consumer pair and hot provider replacement |
-| **4. Loader** | `EntryOptions`, validation, `EntryTree`/`EntryGroup`/`Group`, entry state machine, outer/inner fibers, catalog, managed realms + migration, write-back hooks, `loader` barrier; `cordis` binary bootstrapping a root with the loader | loader specs (minus expressions) green |
-| **5. Include & fs** | `cordis-fs` watcher; `cordis-include` parse/journal/patch/sync/atomic write/locations; `cordis.yml` bootstrap identical to `core/bin.js` | include + fs specs green; editing `cordis.yml` live reconfigures a running app |
-| **6. Ergonomics** | `cordis-macros`: `#[plugin]`/`#[service]` derive (NAME, inject tuples, extension traits), compile-time undeclared-access errors for typed deps; optional expression language | macro tests (trybuild) |
+| **3. Services & built-ins** | `Service`/`Svc<S>` caller attribution, interception merge, typed events + internal events, logger + exporters, `kardia-timer`, `kardia-logger-console` | Phase-3 specs green; example app with a provider/consumer pair and hot provider replacement |
+| **4. Loader** | `EntryOptions`, validation, `EntryTree`/`EntryGroup`/`Group`, entry state machine, outer/inner fibers, catalog, managed realms + migration, write-back hooks, `loader` barrier; `kardia` binary bootstrapping a root with the loader | loader specs (minus expressions) green |
+| **5. Include & fs** | `kardia-fs` watcher; `kardia-include` parse/journal/patch/sync/atomic write/locations; `kardia.yml` bootstrap identical to `core/bin.js` | include + fs specs green; editing `kardia.yml` live reconfigures a running app |
+| **6. Ergonomics** | `kardia-macros`: `#[plugin]`/`#[service]` derive (NAME, inject tuples, extension traits), compile-time undeclared-access errors for typed deps; optional expression language | macro tests (trybuild) |
 | **7. Dynamic modules (optional)** | `ModuleSource`, `ModuleGraph`, ported HMR reconcile; WASM backend prototype; dylib dev backend | `reconcile.spec` ported against an in-memory source |
 
 Phases 1–3 deliver the paper's core library; 4–5 the paper's loader; 7 the paper's HMR.
@@ -579,7 +579,7 @@ Phases 1–3 deliver the paper's core library; 4–5 the paper's loader; 7 the p
 ## 14. Worked example (target API)
 
 ```rust
-use cordis::prelude::*;
+use kardia::prelude::*;
 
 struct Database { url: String }
 impl Service for Database { const NAME: &'static str = "database"; }
@@ -631,7 +631,7 @@ async fn main() -> anyhow::Result<()> {
 
 ## 15. Implementation status
 
-All phases of §12 are implemented in `crates/` (`cargo test --workspace`; `cargo run -p cordis -- examples/cordis.yml` boots an app from a watched config file). Every case of every TypeScript spec has been ported, found already covered, or judged not applicable. The not-applicable cases test JavaScript or Node mechanics with no Rust counterpart: decorators, prototypes and Proxy-based callable services, `this` binding, waterfall and the deprecated `dispatch` API, Node module resolution and loader internals (`resolve`, `import`, `create`, `package-manager`, `loader-utils`), file URLs and Windows drive letters, JavaScript stack frames, and concurrent reads of one async iterator.
+All phases of §12 are implemented in `crates/` (`cargo test --workspace`; `cargo run -p kardia -- examples/kardia.yml` boots an app from a watched config file). Every case of every TypeScript spec has been ported, found already covered, or judged not applicable. The not-applicable cases test JavaScript or Node mechanics with no Rust counterpart: decorators, prototypes and Proxy-based callable services, `this` binding, waterfall and the deprecated `dispatch` API, Node module resolution and loader internals (`resolve`, `import`, `create`, `package-manager`, `loader-utils`), file URLs and Windows drive letters, JavaScript stack frames, and concurrent reads of one async iterator.
 
 Where the implementation departs from this plan or from the TypeScript code:
 
@@ -642,7 +642,7 @@ Where the implementation departs from this plan or from the TypeScript code:
 | Provision removal during a drain | Postponed to the end of the provider's drain, so descendants can reach inherited services during their own cleanup without relying on microtask order. |
 | Re-pointable contexts | Scope nodes carry their fiber; the fiber chain of an access is read off the derivation chain, so moving an entry also moves the fibers below it (the TS prototype behaviour). Entry tables are mutable `Overlay` nodes. |
 | Checked typed access | `Injected<D>::get::<S, _>()` (the `_` is the inferred position of `S` in `D`); an undeclared `S` does not compile. |
-| Expressions | A side-effect-free JavaScript subset (`cordis_loader::expr`) over JSON views of services; no function calls. |
+| Expressions | A side-effect-free JavaScript subset (`kardia_loader::expr`) over JSON views of services; no function calls. |
 | Errors | Parse and validation errors of config files carry `file:line:col`. Errors the loader logs for an entry (option and config validation, `ModuleNotFound`, expression failures) are located through `TreeBackend::locate` / `locate_expr`: each issue gets `(at path, file:line:col)`, an expression failure an `at <path> (file:line:col)` frame, and the entry and each ancestor that has a position an `at <id> (file:line:col)` frame, as text instead of rewritten JS stacks. The include locates values where their owner writes them (its file, or a patch in its parent's file), aliases at their anchors, expression chars through YAML escapes. Values changed at runtime are not located. `Entry::evaluate` is not exposed. |
 | Loader API | Resolving a parent group waits for a group entry whose plugin is still loading (its group exists only once its `apply` runs). |
 | Service-to-service calls | A service resolves its own dependencies through the context it stored (its definition site), so interception metadata of the outer caller does not reach the services it calls in turn (it stays on `Svc::caller()`), and effects a service creates through its stored context belong to the service's fiber. In TS, both follow the use site. |
@@ -650,4 +650,4 @@ Where the implementation departs from this plan or from the TypeScript code:
 | Logger | Messages are formatted by the caller (`impl Display`), so exporters receive finished text: no `%`-directives or custom formatters. |
 | Loader hooks | The `loader/patch-context` waterfall is `Loader::on_patch_context(ctx, hook)`: a hook gets the entry and the rest of the chain as a future, which builds the rest only when awaited; hooks run in registration order inside the loader's own isolation step and are removed with `ctx`'s fiber. Unlike TS, the new isolation table is installed together with the re-parenting at the end of the chain, not before the hooks run. `EntryHandle::init` starts an entry or joins its pending start. The hmr `index` case "waits for a second re-enable init" has no hmr decision to wait on in Rust (the transaction has decided once the held unload completes); its port guards that the re-enables leave one live instance and hmr adds no apply. |
 | Model tests | The §11.2 property tests drive real tokio schedules with random delays rather than a deterministic scheduler. They check ordering during every run, and preservation, recovery exactness and confluence (the active fibers are exactly the support set) at quiescence. |
-| Dynamic modules | `ModuleSource` / `ModuleGraph` / `Hmr`, plus three file backends that share one JSON guest ABI (documented in the `cordis-hmr` crate docs) and a bridge plugin instantiating the guest per fiber. `WasmSource` runs core WASM modules on wasmtime, one store per fiber, instead of WIT components, so guests need no component toolchain (the tests are written in WAT). `DylibSource` speaks a C ABI instead of passing Rust types: a cdylib carries its own copies of `cordis-core` and tokio, with separate statics and no runtime context. Each version is loaded from a unique copy and never unloaded. `ProcessSource` runs executables, one child process per fiber, speaking the same ABI as JSON lines over stdin and stdout (respawn = reload; a crashing guest fails only its own calls, and a guest that breaks the protocol is killed). There is no separate broker service: each fiber's `GuestService` is the RPC endpoint. Like the other backends, its calls are synchronous rather than the asynchronous RPC contract of paper §6.2: they block the caller until the guest answers, so a hung guest blocks it too. The `cordis` binary chooses a backend by file extension and does not load process guests. Guest services are JSON views with JSON calls (`GuestService`). `cordis-guest` is the Rust guest SDK: a `Guest` trait and `export!`, which emits the WASM exports on wasm32 and the C symbols elsewhere, so one source builds for both backends. Watch mode (`HmrConfig { base, watch: { enabled, files, debounce } }`) follows the TS code: it watches `base` through `fs` and reloads each debounce window as one batch, one batch at a time. The files of failed imports are retried with the next batch, and changes to host modules are only reported. `base` resolves against the directory of the config file of the hmr entry, as the TS code does with `ctx.baseUrl`, or else against the working directory. The `cordis` binary registers `hmr` and resolves any entry name that is not a built-in plugin as a guest module relative to the config file: `examples/cordis.yml` hot-reloads `plugins/hello.wat`. |
+| Dynamic modules | `ModuleSource` / `ModuleGraph` / `Hmr`, plus three file backends that share one JSON guest ABI (documented in the `kardia-hmr` crate docs) and a bridge plugin instantiating the guest per fiber. `WasmSource` runs core WASM modules on wasmtime, one store per fiber, instead of WIT components, so guests need no component toolchain (the tests are written in WAT). `DylibSource` speaks a C ABI instead of passing Rust types: a cdylib carries its own copies of `kardia-core` and tokio, with separate statics and no runtime context. Each version is loaded from a unique copy and never unloaded. `ProcessSource` runs executables, one child process per fiber, speaking the same ABI as JSON lines over stdin and stdout (respawn = reload; a crashing guest fails only its own calls, and a guest that breaks the protocol is killed). There is no separate broker service: each fiber's `GuestService` is the RPC endpoint. Like the other backends, its calls are synchronous rather than the asynchronous RPC contract of paper §6.2: they block the caller until the guest answers, so a hung guest blocks it too. The `kardia` binary chooses a backend by file extension and does not load process guests. Guest services are JSON views with JSON calls (`GuestService`). `kardia-guest` is the Rust guest SDK: a `Guest` trait and `export!`, which emits the WASM exports on wasm32 and the C symbols elsewhere, so one source builds for both backends. Watch mode (`HmrConfig { base, watch: { enabled, files, debounce } }`) follows the TS code: it watches `base` through `fs` and reloads each debounce window as one batch, one batch at a time. The files of failed imports are retried with the next batch, and changes to host modules are only reported. `base` resolves against the directory of the config file of the hmr entry, as the TS code does with `ctx.baseUrl`, or else against the working directory. The `kardia` binary registers `hmr` and resolves any entry name that is not a built-in plugin as a guest module relative to the config file: `examples/kardia.yml` hot-reloads `plugins/hello.wat`. |

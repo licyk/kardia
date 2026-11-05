@@ -1,0 +1,21 @@
+[package]
+name = "kardia-fs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+kardia-core.workspace = true
+tokio.workspace = true
+parking_lot.workspace = true
+notify.workspace = true
+globset.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

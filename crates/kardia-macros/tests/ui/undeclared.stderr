@@ -1,0 +1,30 @@
+error[E0277]: the trait bound `(Database,): Has<Timer, _>` is not satisfied
+  --> tests/ui/undeclared.rs:14:22
+   |
+14 |     let _timer = ctx.get::<Timer, _>()?;
+   |                      ^^^ the trait `Has<Timer, _>` is not implemented for `(Database,)`
+   |
+   = help: the following other types implement trait `Has<S, I>`:
+             `(A, B)` implements `Has<A, I0>`
+             `(A, B)` implements `Has<B, I1>`
+             `(A, B, C)` implements `Has<A, I0>`
+             `(A, B, C)` implements `Has<B, I1>`
+             `(A, B, C)` implements `Has<C, I2>`
+             `(A, B, C, D)` implements `Has<A, I0>`
+             `(A, B, C, D)` implements `Has<B, I1>`
+             `(A, B, C, D)` implements `Has<C, I2>`
+           and $N others
+   = note: there's an inherent method on `kardia_core::Context` of the same name, which can be auto-dereferenced from `&kardia_core::Context`
+note: required by a bound in `Injected::<D>::get`
+  --> $WORKSPACE/crates/kardia-core/src/deps.rs
+   |
+   |     pub fn get<S: Service, I>(&self) -> Result<Svc<S>, AccessError>
+   |            --- required by a bound in this associated function
+   |     where
+   |         D: Has<S, I>,
+   |            ^^^^^^^^^ required by this bound in `Injected::<D>::get`
+help: to access the inherent method on `kardia_core::Context`, use the fully-qualified path
+   |
+14 -     let _timer = ctx.get::<Timer, _>()?;
+14 +     let _timer = kardia_core::Context::get(&ctx)?;
+   |

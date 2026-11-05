@@ -145,143 +145,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cordis"
-version = "0.1.0"
-dependencies = [
- "cordis-core",
- "cordis-fs",
- "cordis-hmr",
- "cordis-include",
- "cordis-loader",
- "cordis-logger-console",
- "cordis-macros",
- "cordis-timer",
- "futures",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "cordis-core"
-version = "0.1.0"
-dependencies = [
- "futures",
- "indexmap",
- "parking_lot",
- "proptest",
- "serde",
- "serde_json",
- "serde_path_to_error",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "cordis-fs"
-version = "0.1.0"
-dependencies = [
- "cordis-core",
- "globset",
- "notify",
- "parking_lot",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "cordis-guest"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "cordis-hmr"
-version = "0.1.0"
-dependencies = [
- "cordis-core",
- "cordis-fs",
- "cordis-loader",
- "futures",
- "indexmap",
- "libloading",
- "parking_lot",
- "serde",
- "serde_json",
- "tokio",
- "wasmtime",
-]
-
-[[package]]
-name = "cordis-include"
-version = "0.1.0"
-dependencies = [
- "cordis-core",
- "cordis-fs",
- "cordis-loader",
- "futures",
- "indexmap",
- "parking_lot",
- "saphyr-parser",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "cordis-loader"
-version = "0.1.0"
-dependencies = [
- "cordis-core",
- "futures",
- "parking_lot",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "cordis-logger-console"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "cordis-core",
- "parking_lot",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "cordis-macros"
-version = "0.1.0"
-dependencies = [
- "cordis-core",
- "proc-macro2",
- "quote",
- "serde",
- "syn 2.0.119",
- "tokio",
- "trybuild",
-]
-
-[[package]]
-name = "cordis-timer"
-version = "0.1.0"
-dependencies = [
- "cordis-core",
- "futures",
- "parking_lot",
- "serde_json",
- "thiserror",
- "tokio",
-]
-
-[[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -740,6 +603,143 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "kardia"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "kardia-core",
+ "kardia-fs",
+ "kardia-hmr",
+ "kardia-include",
+ "kardia-loader",
+ "kardia-logger-console",
+ "kardia-macros",
+ "kardia-timer",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "kardia-core"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "indexmap",
+ "parking_lot",
+ "proptest",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "kardia-fs"
+version = "0.1.0"
+dependencies = [
+ "globset",
+ "kardia-core",
+ "notify",
+ "parking_lot",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "kardia-guest"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "kardia-hmr"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "indexmap",
+ "kardia-core",
+ "kardia-fs",
+ "kardia-loader",
+ "libloading",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wasmtime",
+]
+
+[[package]]
+name = "kardia-include"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "indexmap",
+ "kardia-core",
+ "kardia-fs",
+ "kardia-loader",
+ "parking_lot",
+ "saphyr-parser",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "kardia-loader"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "kardia-core",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "kardia-logger-console"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "kardia-core",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "kardia-macros"
+version = "0.1.0"
+dependencies = [
+ "kardia-core",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "syn 2.0.119",
+ "tokio",
+ "trybuild",
+]
+
+[[package]]
+name = "kardia-timer"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "kardia-core",
+ "parking_lot",
+ "serde_json",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

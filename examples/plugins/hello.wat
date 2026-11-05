@@ -1,4 +1,4 @@
-;; A guest plugin in WebAssembly text (see the guest ABI in the cordis-hmr
+;; A guest plugin in WebAssembly text (see the guest ABI in the kardia-hmr
 ;; docs). Edit the greeting while the app runs: hmr reloads this module in
 ;; place, disposing the old instance first.
 (module

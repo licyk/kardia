@@ -10,14 +10,14 @@ repository = "https://github.com/licyk/cordis-rs"
 rust-version = "1.85"
 
 [workspace.dependencies]
-cordis-core = { path = "crates/cordis-core" }
-cordis-macros = { path = "crates/cordis-macros" }
-cordis-timer = { path = "crates/cordis-timer" }
-cordis-logger-console = { path = "crates/cordis-logger-console" }
-cordis-fs = { path = "crates/cordis-fs" }
-cordis-loader = { path = "crates/cordis-loader" }
-cordis-include = { path = "crates/cordis-include" }
-cordis-hmr = { path = "crates/cordis-hmr" }
+kardia-core = { path = "crates/kardia-core" }
+kardia-macros = { path = "crates/kardia-macros" }
+kardia-timer = { path = "crates/kardia-timer" }
+kardia-logger-console = { path = "crates/kardia-logger-console" }
+kardia-fs = { path = "crates/kardia-fs" }
+kardia-loader = { path = "crates/kardia-loader" }
+kardia-include = { path = "crates/kardia-include" }
+kardia-hmr = { path = "crates/kardia-hmr" }
 tokio = { version = "1.47", features = ["rt", "sync", "time", "macros"] }
 futures = "0.3"
 parking_lot = "0.12"

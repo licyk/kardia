@@ -1,4 +1,4 @@
-# cordis-rs Documentation
+# kardia Documentation
 
 This directory holds the analysis that comes before a Rust re-implementation of **Cordis**. Cordis is the meta-framework of *spatiotemporal composability* described in the paper [`2608.25512v1.pdf`](2608.25512v1.pdf) (*A Programming Paradigm for Spatiotemporal Composability*, Shi, Zhang & Cui). The documentation has three layers, and every document names its layer at the top:
 

@@ -1,0 +1,23 @@
+# A guest plugin written with kardia-guest, built by `tests/rust_guest.rs`
+# as a dynamic library, an executable or (for wasm32) a WASM module.
+[package]
+name = "rust-guest"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# the same guest as a process
+[[bin]]
+name = "rust-guest-process"
+path = "src/main.rs"
+
+[dependencies]
+kardia-guest = { path = "../../../../kardia-guest" }
+
+[features]
+v2 = []
+
+[workspace]
