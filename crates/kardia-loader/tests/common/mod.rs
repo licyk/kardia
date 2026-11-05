@@ -4,10 +4,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use kardia_core::{Context, EffectHandle, Fiber, PluginDef};
-use kardia_loader::{Catalog, EntryChange, Loader, Resolver, TreeBackend, builtins};
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use kardia_core::{Context, EffectHandle, Fiber, PluginDef};
+use kardia_loader::{Catalog, EntryChange, Loader, Resolver, TreeBackend, builtins};
 use parking_lot::Mutex;
 use serde_json::Value;
 
@@ -33,7 +33,7 @@ pub struct Hold {
     pub entered: Gate,
     pub release: Gate,
     pub fail: bool,
-    pub skip: Arc<AtomicUsize>,
+    pub skip: Arc<Mutex<usize>>,
 }
 
 struct Recorder(Arc<Mutex<Vec<EntryChange>>>);
@@ -54,8 +54,12 @@ impl Resolver for Delayed {
     fn resolve(&self, name: &str) -> BoxFuture<'static, kardia_core::Result<PluginDef>> {
         let delay = self.delay.load(Ordering::SeqCst) as u64;
         let hold = self.hold.lock().clone().filter(|hold| {
-            hold.name == name
-                && hold.skip.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_err()
+            let mut skip = hold.skip.lock();
+            let held = hold.name == name && *skip == 0;
+            if hold.name == name && *skip > 0 {
+                *skip -= 1;
+            }
+            held
         });
         let resolved = self.catalog.resolve(name);
         let name = name.to_string();
@@ -98,7 +102,7 @@ impl Mock {
     /// Like [`Mock::hold`], letting the first `skip` resolutions through.
     pub fn hold_after(&self, name: &str, skip: usize, fail: bool) -> (Gate, Gate) {
         let (entered, release) = (Gate::new(), Gate::new());
-        let skip = Arc::new(AtomicUsize::new(skip));
+        let skip = Arc::new(Mutex::new(skip));
         *self.hold.lock() =
             Some(Hold { name: name.into(), entered: entered.clone(), release: release.clone(), fail, skip });
         (entered, release)

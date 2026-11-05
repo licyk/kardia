@@ -6,7 +6,7 @@ use indexmap::IndexMap;
 use serde_json::Value;
 
 use crate::effect::EffectCell;
-use crate::error::{KardiaError, Error};
+use crate::error::{Error, KardiaError};
 use crate::events::{ConfigHook, ListenerEntry, UpdateHook};
 use crate::fiber::FiberState;
 use crate::id_table::IdTable;

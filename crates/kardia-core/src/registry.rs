@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::context::Context;
 use crate::effect::{Disposer, EffectCell};
-use crate::error::{KardiaError, Error, Result};
+use crate::error::{Error, KardiaError, Result};
 use crate::events::{PluginInserted, PluginRemoved, Replaced};
 use crate::fiber::Fiber;
 use crate::key::FiberId;

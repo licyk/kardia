@@ -1,6 +1,6 @@
-use kardia_core::{Context, Disposer, Error, PluginDef, Result};
 use futures::FutureExt;
 use futures::future::join_all;
+use kardia_core::{Context, Disposer, Error, PluginDef, Result};
 use serde_json::Value;
 
 use crate::loader::{GroupData, GroupId, Loader};

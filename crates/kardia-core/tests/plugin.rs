@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::{Custom, Seq, settle, sleep};
-use kardia_core::{Context, KardiaError, EffectMeta, Error, FiberState, Plugin, PluginDef, Replaced};
+use kardia_core::{Context, EffectMeta, Error, FiberState, KardiaError, Plugin, PluginDef, Replaced};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 

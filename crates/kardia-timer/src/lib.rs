@@ -6,9 +6,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use kardia_core::{Context, EffectHandle, Plugin, Result, Service, Svc};
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use kardia_core::{Context, EffectHandle, Plugin, Result, Service, Svc};
 use parking_lot::Mutex;
 use tokio::sync::{Notify, oneshot};
 use tokio::task::JoinHandle;

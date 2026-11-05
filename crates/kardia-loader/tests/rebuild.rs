@@ -7,10 +7,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::{Counter, Gate, Mock, settle};
-use kardia_core::{Disposer, FiberState, PluginDef};
-use kardia_loader::{EntryChange, Resolver, TreeBackend, group_plugin};
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use kardia_core::{Disposer, FiberState, PluginDef};
+use kardia_loader::{EntryChange, Resolver, TreeBackend, group_plugin};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 

@@ -23,7 +23,7 @@ pub use config::{ErasedConfig, Issue, PathSegment, ValidationError, decode};
 pub use context::{Context, merge_shallow};
 pub use deps::{Deps, Has, Injected, index};
 pub use effect::{Disposal, Disposer, EffectHandle, EffectMeta, EffectScope};
-pub use error::{AccessError, AggregateError, KardiaError, Error, Interrupted, Panicked, Result};
+pub use error::{AccessError, AggregateError, Error, Interrupted, KardiaError, Panicked, Result};
 pub use events::{
     Bailable, ConfigCommitted, ConfigHook, Event, PluginInserted, PluginRemoved, Replaced, ServiceChanged,
     StatusChanged,

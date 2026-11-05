@@ -11,12 +11,12 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use futures::future::BoxFuture;
 use kardia::fs::FsPlugin;
 use kardia::hmr::{DylibSource, Hmr, ModuleCode, ModuleGraph, ModuleSource, WasmSource};
 use kardia::loader::{Catalog, Resolver};
 use kardia::logger_console::{ConsoleConfig, ConsoleExporter};
 use kardia::prelude::*;
-use futures::future::BoxFuture;
 
 #[tokio::main]
 async fn main() -> ExitCode {

@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
-use kardia_core::{Error, Result};
 use globset::{GlobBuilder, GlobMatcher};
+use kardia_core::{Error, Result};
 
 /// Decides whether an entry (path relative to the watched directory,
 /// `/`-separated) is kept.

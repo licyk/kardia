@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use kardia_core::{Error, Plugin, PluginDef};
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use kardia_core::{Error, Plugin, PluginDef};
 use parking_lot::RwLock;
 
 /// Turns an entry's `name` into a plugin definition (the analogue of a

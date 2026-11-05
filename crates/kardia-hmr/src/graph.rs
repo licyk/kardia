@@ -1,11 +1,11 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use kardia_core::{Error, PluginDef, Result};
-use kardia_loader::Resolver;
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use indexmap::IndexMap;
+use kardia_core::{Error, PluginDef, Result};
+use kardia_loader::Resolver;
 use parking_lot::Mutex;
 use serde_json::Value;
 

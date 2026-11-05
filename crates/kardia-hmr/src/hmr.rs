@@ -13,9 +13,9 @@ use std::future::Future;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+use futures::future::join_all;
 use kardia_core::{Context, Error, Fiber, FiberId, PluginDef, Result, RuntimeKey, Service, Svc};
 use kardia_loader::Loader;
-use futures::future::join_all;
 use parking_lot::Mutex;
 use serde::Deserialize;
 

@@ -3,12 +3,12 @@ use std::hash::{BuildHasher, RandomState};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
+use futures::FutureExt;
+use futures::future::{BoxFuture, Shared};
 use kardia_core::{
     Check, ConfigCommitted, Context, EffectHandle, Error, Fiber, FiberId, FiberState, IdTable, Inject, Key, Overlay,
     PathSegment, PluginDef, PluginRemoved, RealmId, Result, Service, StatusChanged, merge_shallow,
 };
-use futures::FutureExt;
-use futures::future::{BoxFuture, Shared};
 use parking_lot::Mutex;
 use serde_json::{Map, Value};
 

@@ -10,7 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      # pinned: the compile-error snapshots of kardia-macros depend on the compiler version
+      - uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: rustfmt, clippy
           # the rust guest test also builds its fixture as a WASM module
