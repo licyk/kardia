@@ -174,6 +174,32 @@ async fn custom_merge() {
     assert_eq!(config.get(), vec![json!({ "tags": ["inject", "outer", "inner"] })]);
 }
 
+/// Accesses `foo` through its def-site context, admitted by its own `inject`.
+struct Bar {
+    ctx: Context,
+}
+
+impl Service for Bar {
+    const NAME: &'static str = "bar";
+}
+
+#[tokio::test]
+async fn takes_injected_config_from_the_def_site() {
+    let root = Context::new();
+    start::<FooPlugin>(&root).await;
+    let def = PluginDef::new(|ctx, _| async move {
+        ctx.provide(Bar { ctx: ctx.clone() })?;
+        Ok(())
+    })
+    .inject(Inject::new().with_meta("foo", json!({ "a": 2 })));
+    root.plugin_def(&def, Value::Null).unwrap().settled().await.unwrap();
+    let bar = root.intercept("foo", json!({ "b": 1 })).get::<Bar>().unwrap();
+    // Unlike the TS shadow, the caller's interception of `foo` stays with the
+    // caller: the service's own access only sees its def site.
+    assert_eq!(bar.ctx.get::<Foo>().unwrap().config(), json!({ "a": 2 }));
+    assert_eq!(bar.caller().intercepts("foo"), vec![json!({ "b": 1 })]);
+}
+
 // --- caller attribution (service.spec.ts "traceable effect", shadow.spec.ts) ---
 
 struct Counter {
@@ -221,6 +247,64 @@ async fn caller_effects_land_in_the_calling_fiber() {
     assert_eq!(root.get::<Counter>().unwrap().value.load(Ordering::SeqCst), 1);
     root.get::<Counter>().unwrap().increase().unwrap();
     assert_eq!(root.get::<Counter>().unwrap().value.load(Ordering::SeqCst), 2);
+}
+
+/// A service forwarding to `counter` through its def-site context.
+struct Traced {
+    ctx: Context,
+}
+
+impl Service for Traced {
+    const NAME: &'static str = "traced";
+}
+
+impl Traced {
+    fn value(&self) -> i64 {
+        self.ctx.get::<Counter>().unwrap().value.load(Ordering::SeqCst)
+    }
+
+    fn increase(&self) -> cordis_core::Result<EffectHandle> {
+        self.ctx.get::<Counter>()?.increase()
+    }
+}
+
+async fn traceable_effect(inject: bool) {
+    let root = Context::new();
+    root.provide(Counter { value: AtomicI64::new(0) }).unwrap();
+    let def = PluginDef::new(|ctx, _| async move {
+        ctx.provide(Traced { ctx: ctx.clone() })?;
+        Ok(())
+    });
+    let def = if inject { def.inject(["counter"]) } else { def };
+    root.plugin_def(&def, Value::Null).unwrap().settled().await.unwrap();
+    root.get::<Traced>().unwrap().increase().unwrap();
+    assert_eq!(root.get::<Traced>().unwrap().value(), 1);
+
+    let values = Seq::new();
+    let (v, outer) = (values.clone(), root.clone());
+    let fiber = root
+        .inject(["traced"], move |ctx| {
+            outer.get::<Traced>().unwrap().increase().unwrap();
+            v.push(ctx.get::<Traced>().unwrap().value());
+            async { Ok(()) }
+        })
+        .unwrap();
+    fiber.settled().await.unwrap();
+    fiber.dispose().await.unwrap();
+    root.get::<Traced>().unwrap().increase().unwrap();
+    assert_eq!(values.get(), vec![2]);
+    assert_eq!(root.get::<Traced>().unwrap().value(), 3);
+    assert!(root.log_buffer().is_empty());
+}
+
+#[tokio::test]
+async fn traceable_effect_with_inject() {
+    traceable_effect(true).await;
+}
+
+#[tokio::test]
+async fn traceable_effect_without_inject() {
+    traceable_effect(false).await;
 }
 
 /// A service that resolves its own dependency through its def-site context.

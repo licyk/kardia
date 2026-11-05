@@ -291,3 +291,119 @@ async fn update_hooks_do_not_accumulate_across_reloads() {
     fiber.update(json!(2)).unwrap().await.unwrap();
     assert_eq!(received.get(), vec![json!(1), json!(2)]);
 }
+
+#[tokio::test]
+async fn removes_empty_event_buckets_after_disposal() {
+    let root = Context::new();
+    let first = root.on(|_: &Custom| {}).unwrap();
+    let second = root.on(|_: &Custom| {}).unwrap();
+    first.dispose().await.unwrap();
+    assert_eq!(root.listener_count::<Custom>(), 1);
+    second.dispose().await.unwrap();
+    assert_eq!(root.listener_count::<Custom>(), 0);
+}
+
+/// An event type is the analogue of a symbol name: a unique identity with its own payload.
+struct Payload(i32);
+
+impl Event for Payload {
+    type Output = Option<i32>;
+}
+
+#[tokio::test]
+async fn supports_symbol_event_names_across_dispatch_modes() {
+    let root = Context::new();
+    let seen = Seq::new();
+    let s = seen.clone();
+    let handle = root
+        .on(move |event: &Payload| {
+            s.push(event.0);
+            Some(event.0)
+        })
+        .unwrap();
+    root.emit(&Payload(1));
+    assert_eq!(root.bail(&Payload(2)), Some(Some(2)));
+    assert_eq!(root.serial(&Payload(3)).await, Some(Some(3)));
+    root.parallel(&Payload(4)).await.unwrap();
+    assert_eq!(seen.get(), vec![1, 2, 3, 4]);
+    handle.dispose().await.unwrap();
+    root.emit(&Payload(5));
+    assert_eq!(seen.len(), 4);
+}
+
+#[tokio::test]
+async fn ctx_serial() {
+    let root = Context::new();
+    root.on(|_: &Session| Err(Error::msg("message"))).unwrap();
+    let result = root.serial(&Session { flag: true }).await;
+    assert_eq!(result.unwrap().unwrap_err().to_string(), "message");
+}
+
+#[tokio::test]
+async fn ctx_bail() {
+    let root = Context::new();
+    root.on(|_: &Session| Err(Error::msg("message"))).unwrap();
+    let result = root.bail(&Session { flag: true });
+    assert_eq!(result.unwrap().unwrap_err().to_string(), "message");
+}
+
+#[tokio::test]
+async fn internal_update_continues_past_a_removed_fiber_listener() {
+    let root = Context::new();
+    let (removed, on_removed) = counter();
+    let (remaining, on_remaining) = counter();
+    let loaded = Seq::new();
+    let l = loaded.clone();
+    let def = PluginDef::new(move |ctx, config| {
+        l.push(config["n"].clone());
+        let (on_removed, on_remaining) = (on_removed.clone(), on_remaining.clone());
+        async move {
+            let slot: Arc<Mutex<Option<EffectHandle>>> = Default::default();
+            let s = slot.clone();
+            ctx.on_update(move |_: &Value| {
+                if let Some(handle) = s.lock().take() {
+                    drop(handle.dispose());
+                }
+                false
+            })?;
+            *slot.lock() = Some(ctx.on_update(move |_: &Value| {
+                on_removed(&Custom);
+                false
+            })?);
+            ctx.on_update(move |_: &Value| {
+                on_remaining(&Custom);
+                false
+            })?;
+            Ok(())
+        }
+    });
+    let fiber = root.plugin_def(&def, json!({ "n": 0 })).unwrap();
+    fiber.settled().await.unwrap();
+    fiber.update(json!({ "n": 1 })).unwrap().await.unwrap();
+    assert_eq!((calls(&removed), calls(&remaining)), (0, 1));
+    assert_eq!(loaded.get(), vec![json!(0), json!(1)]);
+}
+
+#[tokio::test]
+async fn internal_update_can_be_disposed_explicitly() {
+    let root = Context::new();
+    let received = Seq::new();
+    let slot: Arc<Mutex<Option<EffectHandle>>> = Default::default();
+    let (r, s) = (received.clone(), slot.clone());
+    let def = PluginDef::new(move |ctx, _| {
+        let (received, slot) = (r.clone(), s.clone());
+        async move {
+            *slot.lock() = Some(ctx.on_update(move |config: &Value| {
+                received.push(config.clone());
+                false
+            })?);
+            Ok(())
+        }
+    });
+    let fiber = root.plugin_def(&def, json!({ "n": 0 })).unwrap();
+    fiber.settled().await.unwrap();
+    let handle = slot.lock().take().unwrap();
+    handle.dispose().await.unwrap();
+    fiber.update(json!({ "n": 1 })).unwrap().await.unwrap();
+    assert!(received.get().is_empty());
+}

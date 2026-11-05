@@ -324,6 +324,26 @@ async fn multiple_injects() {
     assert_eq!(started.get(), vec!["qux", "foo", "bar"]);
 }
 
+#[tokio::test]
+async fn compare_snapshot() {
+    let root = Context::new();
+    let def = PluginDef::new(|ctx, _| async move {
+        ctx.provide_as("test", ())?;
+        ctx.inject(["test"], |_| async { Ok(()) })?;
+        Ok(())
+    });
+    let snapshot = |root: &Context| (root.registry().size(), root.fiber().effect_count(), root.bindings("test").len());
+    let before = snapshot(&root);
+    let fiber = root.plugin_def(&def, Value::Null).unwrap();
+    fiber.settled().await.unwrap();
+    let after = snapshot(&root);
+    assert_eq!(after, (2, 1, 1));
+    fiber.dispose().await.unwrap();
+    assert_eq!(snapshot(&root), before);
+    root.plugin_def(&def, Value::Null).unwrap().settled().await.unwrap();
+    assert_eq!(snapshot(&root), after);
+}
+
 fn foo_service(seq: &Seq<String>) -> PluginDef {
     let seq = seq.clone();
     PluginDef::new(move |ctx, _| {
