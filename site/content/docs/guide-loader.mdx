@@ -1,0 +1,374 @@
+---
+title: "加载器"
+description: "用声明式条目运行插件：搭建加载器及其插件目录，从 Rust 驱动树、分组与条目，以双向同步的方式引入配置文件，并定位配置错误。"
+---
+
+**加载器**（loader，`kardia-loader`）维护一棵由**条目**（entry，即插件名加上其配置）组成的树，并让它与运行中的纤程（fiber）双向保持一致：对条目的修改会被调和到运行中的纤程，插件自行更新或释放（dispose）时也会被回写到它的条目。**include**（配置文件引入）插件（`kardia-include`）把 YAML 或 JSON 文件中的条目嫁接到这棵树上，并让文件双向保持同步。
+
+本页是库使用者的视角：如何搭建加载器、从 Rust 驱动它、引入文件、查找配置错误。条目字段本身（`id`、`name`、`config`、`group`、`disabled`、`inject`、`intercept`、`isolate`）和表达式列在[配置文件](/docs/guide-configuration)中。加载器如何实现见[加载器内部实现](/docs/development-loader)，它与 TypeScript 加载器的所有不同之处列在[状态与偏差](/docs/development-status)中。
+
+## 搭建加载器 [#setup]
+
+`Loader::plugin(resolver)` 返回加载器插件。它运行后提供 `loader` 服务：
+
+```rust
+use kardia::loader::Catalog;
+use kardia::prelude::*;
+
+let root = Context::new();
+let catalog = kardia::catalog();                        // every built-in plugin
+catalog.register::<Greeter>();                           // your own, under `Greeter::NAME`
+catalog.register_def("db", db());                        // or a `PluginDef` under a name
+catalog.alias("database", "db");
+
+root.plugin_def(&Loader::plugin(catalog), Value::Null)?.settled().await?;
+let loader = (*root.get::<Loader>()?).clone();
+```
+
+**解析名称。** 加载器通过 `Resolver` 把条目的 `name` 转换成 `PluginDef`，相当于模块导入。解析可以是异步的：
+
+```rust
+pub trait Resolver: Send + Sync + 'static {
+    fn resolve(&self, name: &str) -> BoxFuture<'static, Result<PluginDef, Error>>;
+}
+```
+
+`Catalog` 是静态解析器：按名称组织的插件注册表（registry）。
+
+| `Catalog` 方法 | 作用 |
+|---|---|
+| `Catalog::new()` | 空目录 |
+| `catalog.register::<P>()` | 以 `P::NAME` 注册一个类型化插件 |
+| `catalog.register_def(name, def)` | 以给定名称注册一个 `PluginDef` |
+| `catalog.alias(alias, name)` | 让 `alias` 解析为 `name` 所解析的插件 |
+| `catalog.get(name)` | 查找一个名称 |
+
+找不到的名称以 `ModuleNotFound`（`Cannot find plugin 'name'`）失败，加载器报告它时会定位到条目的 `name`（见[定位配置错误](#errors)）。`kardia_loader::builtins()` 是一个含 `group` 插件（也以 `@cordisjs/plugin-group` 注册）的目录；`kardia::catalog()` 在此之上加入 `timer`、`logger-console`、`fs` 和 `include`，每个也以其 TypeScript 包名注册。
+
+解析器可以组合多种来源。`kardia` 二进制从其目录中解析内置插件，并把其他任何名称视为相对于配置文件的访客模块路径：
+
+```rust
+struct Plugins {
+    catalog: Catalog,
+    graph: ModuleGraph,
+    base: PathBuf,       // the directory of the configuration file
+}
+
+impl Resolver for Plugins {
+    fn resolve(&self, name: &str) -> BoxFuture<'static, Result<PluginDef>> {
+        if self.catalog.get(name).is_some() {
+            return self.catalog.resolve(name);
+        }
+        let id: PathBuf = self.base.join(name).components().collect();
+        self.graph.resolve(&id.to_string_lossy())
+    }
+}
+```
+
+`Loader::plugin_with(resolver, backend)` 还可以设置加载器自身那棵树的后端（见[树后端](#backends)）；`Loader::plugin` 使用 `MemoryTree`，只把树保存在内存中。`crates/kardia/src/main.rs` 展示了二进制的完整搭建过程。
+
+## 条目、分组与树 [#model]
+
+<Mermaid chart={"flowchart TD\n  L[\"loader tree (MemoryTree)\"] --> R[\"root group\"]\n  R --> T[\"entry: timer\"]\n  R --> I[\"entry: include\"]\n  I --> FT[\"subtree (kardia.yml)\"]\n  FT --> FR[\"root group\"]\n  FR --> H[\"entry: hmr\"]\n  FR --> G[\"entry: plugins (group: true)\"]\n  G --> SG[\"subgroup\"]\n  SG --> C[\"entry: console\"]\n  SG --> W[\"entry: hello\"]"} />
+
+- **条目**是一个由选项组成的 JSON 对象。JSON 始终是事实来源，因此未知键会被容忍并在回写时保留。键保持稳定的顺序：`id`、`name`，其余按字母序，`config` 最后。
+- **分组**（group）是带 `group: true`、运行 `group` 插件的条目。它的 `config` 是一个条目列表，分组在每次更新时原地调和这个列表而不是重启：条目按 id 并发地创建、更新和移除，一个坏条目不会阻止其他条目。分组本身从不被禁用；它的 `disabled` 判定会传给其成员。
+- **树**（tree）是一组共用一个后端的分组，后端负责持久化它的变化。加载器自己的树位于内存中。插件可以创建子树（`loader.create_tree(ctx, backend)`）；include 为每个文件这样做。
+- **id** 在一棵树内唯一。没有 id 的条目会得到一个随机的八位十六进制 id。在嵌套的树之间，条目有一个**复合 id**：各层树所有者的 id 和它自己的 id 用 `:`（`kardia_loader::SEP`）连接，如 `include:hmr`；因此 `id` 不得包含 `:`。
+- **类型化视图。** `EntryOptions::read(&options)` 把已校验的选项读成类型化视图（`id`、`name`、`config`、`group`、`disabled: Option<Disabled>`（其中 `Disabled::{Bool, Expr}`）、`inject`、`intercept`、`isolate: Vec<(String, IsolateLabel)>`（其中 `IsolateLabel::{Private, Shared(label)}`））；JSON 对象仍是事实来源。
+- **带 `inject` 的条目有两个纤程。** 声明了 `inject` 的条目运行一个外层纤程（标记为 `loader:outer`，即 `kardia_loader::OUTER_TAG`），它持有依赖、解析插件、通过一次 `ctx.checkpoint()?`，然后启动运行插件的内层纤程。没有 `inject` 的条目只有内层纤程。
+
+**条目何时运行。** 字面量 `disabled: true` 或被禁用的祖先分组会阻止条目运行。`disabled` 表达式在外层纤程的上下文（context）中求值（该上下文能看到条目的 `inject`）；求值失败时条目被禁用，并报告失败。接着对条目的 `intercept` 求值；`intercept` 无法求值时插件不会运行。`config` 中的表达式在每次加载时于插件的上下文中插值，源配置保留表达式本身；分组的 `config` 是其条目列表，不做插值。
+
+## 从 Rust 驱动加载器 [#api]
+
+加载器有三类句柄：`TreeHandle`、`GroupHandle` 和 `EntryHandle`。`Loader` 自己的 `create`、`remove`、`update`、`resolve`、`entries` 和 `root` 作用于它自己的树。
+
+### `Loader` [#loader-api]
+
+| 方法 | 作用 |
+|---|---|
+| `Loader::plugin(resolver)` / `Loader::plugin_with(resolver, backend)` | 加载器插件 |
+| `loader.create(options, parent, position).await` | 创建一个条目，返回其复合 id |
+| `loader.update(id, patch, parent, position).await` | 修补一个条目，并可移动它 |
+| `loader.remove(id)` | 移除一个条目 |
+| `loader.resolve(id)` | （复合）id 对应的 `EntryHandle` |
+| `loader.entries()` | 所有树中的所有条目，深度优先 |
+| `loader.root()`、`loader.tree()` | 它自己的根分组和树 |
+| `loader.settled().await` | 等待，直到没有条目在初始化、所有条目纤程都已稳定 |
+| `loader.is_busy()` | 是否仍有条目在初始化 |
+| `loader.create_tree(ctx, backend)` | 一棵归 `ctx` 中运行的插件所有的树 |
+| `loader.entry_of(ctx)` | 某个上下文所属的条目（其派生链上最近的那个） |
+| `loader.on_patch_context(ctx, hook)` | 见[下文](#patch-context) |
+| `loader.set_logs(true)` | 以 `loader` 日志器记录 `apply plugin <name>` / `unload plugin <name>` |
+| `loader.context()` | 加载器的上下文 |
+
+条目也可以等待加载器：声明 `inject: { loader: { await: true } }` 后，只有当所有条目都已稳定，`loader` 服务才对它可用。
+
+### `TreeHandle`、`GroupHandle`、`EntryHandle` [#handles]
+
+| `TreeHandle` | |
+|---|---|
+| `create`、`update`、`remove`、`resolve`、`entries` | 与 `Loader` 上的相同，作用于本树 |
+| `root()`、`context()` | 它的根分组和上下文 |
+| `base_dir()` | 本树中相对路径的基准目录：后端给出的目录，否则为外层树的目录，否则为工作目录 |
+| `handle()` | 树背后的对象（`TreeBackend::handle`），供其所有者再次找到它 |
+| `locate(id, path, value)`、`locate_expr(id, path, expr, offset)` | 某个值写在哪里（见[错误](#errors)） |
+
+| `GroupHandle` | |
+|---|---|
+| `data()` | 分组的条目选项，按顺序 |
+| `update(config).await` | 按键把分组的条目与 `config` 调和 |
+| `stop()` | 移除分组的所有条目，保留其数据 |
+| `owner()` | 其插件拥有本分组的条目（加载器的根分组没有） |
+| `tree()`、`context()` | 它的树和上下文 |
+
+| `EntryHandle` | |
+|---|---|
+| `id()` | 复合 id |
+| `options()` | 当前选项 |
+| `inner_fiber()`、`outer_fiber()` | 插件的纤程，以及持有 `inject` 的纤程（如有） |
+| `is_disabled()` | 条目是否被禁用（或被视为禁用），包括经由祖先禁用 |
+| `parent()`、`subgroup()`、`subtree()` | 它所在的分组，以及其插件拥有的分组或树 |
+| `init().await` | 条目未运行时启动它，或加入其进行中的启动 |
+
+### 创建、更新、移动与移除 [#crud]
+
+```rust
+// create `db` in the root group, then a group with a member
+let db = loader.create(json!({ "name": "db", "config": { "url": "postgres://primary" } }), None, None).await?;
+loader.create(json!({ "id": "jobs", "name": "group", "group": true, "config": [] }), None, None).await?;
+loader.create(json!({ "id": "worker", "name": "worker" }), Some("jobs"), Some(0)).await?;
+
+// reconfigure in place; `null` deletes a key
+loader.update(&db, json!({ "config": { "url": "postgres://replica" }, "intercept": null }), None, None).await?;
+
+// move `worker` to the root group, at the end
+loader.update("worker", json!({}), Some(None), None).await?;
+
+loader.remove("jobs")?;
+loader.settled().await;
+```
+
+- **`create(options, parent, position)`** 在提交任何内容之前深度校验选项（包括分组的成员），在没有 id 时分配一个，把条目插入到条目 `parent` 的分组（`None` 表示根分组）中的 `position` 处（会被截断到有效范围；`None` 表示追加到末尾），然后启动它。分组条目在其插件加载时才创建分组，所以仍在加载中的 `parent` 会被等待。（来自文件或分组更新的条目改为浅层校验，每个分组成员在其分组调和它时校验；校验函数是 `kardia_loader::validate_options(&options, deep)`。）
+- **`update(id, patch, parent, position)`** 把 `patch` 合并进选项（`null` 删除一个键），校验结果并应用。`parent: None` 表示条目留在原处；`Some(None)` 把它移到根分组，`Some(Some(id))` 把它移入条目 `id` 的分组，也可以跨树移动：移入另一棵树时，条目的分组成员会一起移动；若其中某个 id 在目标树中已存在，则移动失败。
+- 更新对运行中插件的影响取决于改了什么：
+  - `name` 或 `inject` 改变，或条目未在运行：重建条目（先释放它的纤程，再重新启动）；
+  - 否则就地修补运行中的纤程：条目连同新的隔离表被重新挂到它（新的）分组之下（重新挂接条目的上下文时，其下的所有纤程也随之移动，就像重新指向的 JavaScript 原型），`intercept` 原地替换，改变后的 `config` 以 `fiber.update_with(config, true)` 的形式到达插件，插件的更新钩子可以接管它而不重启。
+- **`remove(id)`** 释放条目，并把它从所在分组中移除。
+
+**回写。** 插件对自身的修改会到达它的条目：
+- 自行释放的插件被持久化为 `disabled: true`；
+- 自行更新配置的插件（`fiber.update(..)`，它会发出 `ConfigCommitted`）会把新的 `config` 写入其条目；
+- 依赖丢失会卸载条目的外层纤程但不释放它；此后在外层纤程重新激活之前，条目被视为禁用，且不写入任何内容。
+
+应用到树上的每个变化都会在应用之后以 `EntryChange` 的形式报告给它的后端：
+
+| `EntryChange` 字段 | 含义 |
+|---|---|
+| `id`、`group` | 条目的本地 id，以及它当前所在的分组 |
+| 没有 `options` | 条目已从 `group` 中移除 |
+| 没有 `legacy` | 条目是在 `group` 中新建的 |
+| 两者都有 | 条目被更新；若它在树内移动，`from` 是它离开的分组 |
+
+移入另一棵树会报告为从源树中移除，并在目标树中创建。
+
+### 树后端 [#backends]
+
+`TreeBackend` 决定树的变化去向何处。每个方法都有默认实现：
+
+| `TreeBackend` 方法 | 默认 | 用途 |
+|---|---|---|
+| `commit(&change)` | 什么也不做 | 变化应用到树上之后被同步调用 |
+| `resolver()` | `None`（使用加载器的解析器） | 为本树解析插件名 |
+| `base_dir()` | `None` | 本树中相对路径的基准目录 |
+| `handle()` | `None` | 树背后的对象，供其所有者再次找到它 |
+| `locate(id, path, value)` | `None` | 条目 `id` 的选项中 `path` 处的值写在哪里；给出 `value` 时，仅当写在那里的正是这个值；不给时，缺失的值定位到其最近的已写出祖先 |
+| `locate_expr(id, path, expr, offset)` | `None` | `path` 处的表达式 `expr` 的第 `offset` 个字符写在哪里 |
+
+```rust
+struct Recorder(Arc<Mutex<Vec<EntryChange>>>);
+
+impl TreeBackend for Recorder {
+    fn commit(&self, change: &EntryChange) {
+        self.0.lock().push(change.clone());
+    }
+}
+
+let def = Loader::plugin_with(Arc::new(catalog), Arc::new(Recorder(changes.clone())));
+```
+
+## 通过条目隔离与拦截 [#isolation]
+
+条目以声明方式建立[隔离](/docs/guide-services#isolation)（isolation）和[拦截](/docs/guide-services#interception)（interception）。
+
+**`isolate`** 给条目的服务一个自己的领域（realm）：
+- `isolate: { db: true }` 使 `db` 成为该条目私有；
+- `isolate: { db: shared }` 把 `db` 放进一个由所有使用标签 `shared` 的条目共享的领域。
+
+（TypeScript 加载器把这些领域命名为 `db#<id>` 和 `db@shared`；在 kardia 中它们只是普通的 `RealmId`，打印为 `realm#<n>`。）
+
+当条目的有效领域改变时（新的 `isolate`，或移到另一个分组），从条目内部提供的绑定会**迁移**到新领域，而不重启其提供者，前提是新领域空闲；两个领域的消费者都会重新解析。某个共享领域在不再有条目对该服务使用它的标签时被释放。
+
+**`intercept`** 是条目的插件所用服务的元数据，按服务分键：`intercept: { logger: { name: db, level: 3 } }`。它会被求值（可以包含表达式）并原地替换，所以运行中的插件无需重启就能看到新元数据。`intercept` 求值失败会禁用条目。
+
+**`inject`** 写成映射时，可为声明的依赖附加元数据：`inject: { loader: { await: true } }`。元数据可以包含表达式，在父分组的上下文中求值；失败会禁用条目。
+
+```yaml
+- id: db-test
+  name: db
+  isolate: { database: true }          # its own `database`, invisible to the rest
+  intercept:
+    logger: { name: db-test, level: 3 }
+  config: { url: postgres://test }
+```
+
+## 引入配置文件 [#include]
+
+`include` 插件（`kardia_include::IncludePlugin`）把 YAML 或 JSON 文件中的条目作为子树加载，并让文件双向保持同步。它声明依赖 `loader` 服务；开启 `watch` 时还需要 `fs`。
+
+| 选项 | 含义 |
+|---|---|
+| `path` | 文件路径，相对于 include 条目所在树的基准目录（嵌套 include 时为引入它的文件所在目录）；扩展名为 `.json`、`.yaml` 或 `.yml` |
+| `watch` | 文件变化时重新读取（需要 `fs` 服务） |
+| `initial` | 文件尚不存在时写入的条目 |
+| `patches` | 叠加在文件之上的覆盖与追加（见下文） |
+
+```rust
+let entry = json!({ "name": "include", "config": { "path": "kardia.yml", "watch": true } });
+let id = loader.create(entry, None, None).await?;
+if let Some(error) = loader.resolve(&id)?.inner_fiber().and_then(|fiber| fiber.error()) {
+    return Err(error);               // the file could not be read, parsed or validated
+}
+```
+
+**启动。** include 读取文件。若文件不存在且设置了 `initial`，它写入 `initial`（并分配 id）后再读取；没有 `initial` 时以 `config file not found: <path>` 失败。其他任何读取、解析或校验失败都会使插件失败，不支持的扩展名同样如此（`extension "toml" not supported`）。文件必须是由对象组成的顶层数组。
+
+**文件编辑 → 树。** 每次读取都会调和进子树；只应用最新的目标树，较旧的被跳过。编辑过程中无法解析的文件（编辑时出现空文件或截断的文件很常见）会记录为警告，运行中的树保持不变，并且在之后某次读取成功之前不写入任何内容。
+
+**树的变化 → 文件。** 子树在运行时的变化（API 编辑、插件自行更新与自行释放）记录在一个日志（journal）中，并回写给拥有它们的一方：文件，或 include 自身配置中的某个补丁；后者通过 include 在父树中的条目持久化。关闭应用不会写入文件。
+
+**匿名条目。** 文件中没有 id 的条目会在加载器看到它们之前得到 id，id 也会被回写。与上次读取中某个条目完全相同的匿名条目会保留那个 id（除非文件现在显式命名了它），所以编辑相邻条目不会让它重启。
+
+### 补丁 [#patches]
+
+`patches` 让父文件无需编辑被引入的文件就能调整它：
+
+| 补丁 | 效果 |
+|---|---|
+| `{ insert: [..] }` | 把条目追加到被引入文件的根 |
+| `{ id, insert: [..] }` | 把条目追加到分组 `id` |
+| `{ id, name?, ..keys }` | 覆盖条目 `id` 的若干键 |
+
+```yaml
+- id: shared
+  name: include
+  config:
+    path: ./shared.yml
+    patches:
+      - id: db                       # override a key of `db` in shared.yml
+        config: { url: postgres://replica }
+      - insert:                      # add an entry
+          - id: debug
+            name: logger-console
+```
+
+无法应用的补丁（`patch insert: entry x not found`、`… is not a group`）会报告为警告，且不拥有任何内容。每个插入的条目都会得到 id，以便运行时的变化能被路由回它。include 记录每个条目和每个键由谁提供（文件、覆盖该键的补丁，或写在补丁内部的条目），并把补丁所拥有的值在运行时的变化写入补丁而非文件。更新 include 的配置时，新的 `patches` 原地生效；`path` 或 `watch` 改变则会让它重启。
+
+### 写入与冲突 [#writes]
+
+- **原子写入。** include 在同一目录中写一个临时文件（`.<name>.<pid>.<seq>.tmp`），再把它重命名覆盖原文件，因此读者永远不会看到被截断的文件。
+- **过期内容检查。** 每次重命名之前，它都检查文件是否仍是它上次读到的内容。若期间有人写过文件，它先读取并合并，然后再写。
+- **暂时性失败。** 以 `PermissionDenied` 或 `ResourceBusy` 失败的重命名（例如杀毒软件占用了文件）最多重试 10 次，每次多等待 20 ms。
+- **只读或缺失的文件。** 变化保留在内存中，并给出警告：`config file <path> is read-only, N pending change(s) kept in memory`（或 `is missing`）。写入失败时记录 `failed to write config file <path>, N pending change(s) kept in memory`。
+- **冲突：以文件为准。** 运行时变化尚未写出时文件发生了变化，include 会做三方合并。冲突的运行时变化被丢弃，使树跟随文件，每次丢弃都记录为 `config conflict in <path>: entry <id> <reason>; file wins`，原因是以下之一：
+  - `key "k" modified both in file and at runtime`
+  - `removed in file, modified at runtime`
+  - `modified in file, removed at runtime`
+  - `added in file, removed at runtime`
+  - `moved both in file and at runtime`
+
+### `Include` 句柄 [#include-api]
+
+`Include::of(&tree)` 返回创建了某棵树的那个运行中的 include：
+
+| 方法 | 作用 |
+|---|---|
+| `include.filename()` | 文件的绝对路径 |
+| `include.tree()` | 它的 `TreeHandle` |
+| `include.refresh().await` | 重新读取文件并把树与它调和（监视器触发的就是这个），然后等待所有待处理的读写 |
+| `include.flush().await` | 在所有待处理的读写都处理完毕、树已反映其结果时完成 |
+| `include.stop().await` | 先刷新用户最后所做的修改，再移除树的条目 |
+
+`IncludePlugin::with_rename(rename)` 是用自定义重命名函数代替 `std::fs::rename` 的插件，用于故障注入测试。
+
+在 YAML 中，`!!js <source>` 读作表达式对象 `{ "__jsExpr": source }`，并按同样方式写回。未知标签是错误，因为它们会让数据不完整。写出的 YAML 使用块样式，必要时使用单引号字符串。
+
+## 定位配置错误 [#errors]
+
+配置文件中的错误会以 `file:line:col` 指向它所涉及的位置。
+
+文件的**读取、解析与校验错误**是一个 `ConfigFileError { stage, path, cause, issues }`：
+
+```text
+failed to validate config file /app/kardia.yml
+  - entry must be an object (at /app/kardia.yml:3:3)
+```
+
+第一行给出阶段（`read`、`parse` 或 `validate`），读取失败时还给出原因；之后每个问题附带其位置。
+
+加载器记录的**条目错误**（选项与配置校验、`ModuleNotFound`、表达式失败）通过树后端的 `locate` / `locate_expr` 定位。每个问题带上 `(at <path>, file:line:col)`，表达式失败带上一个 `at <path> (file:line:col)` 帧，条目及其每个有位置的祖先各带一个 `at <id> (file:line:col)` 帧：
+
+```text
+invalid config:
+  - port must be a number (at port, /app/kardia.yml:8:13)
+    at a (/app/kardia.yml:5:7)
+    at g (/app/kardia.yml:1:3)
+```
+
+```text
+invalid entry options:
+  - name must be a string (at name, /app/kardia.yml:6:13)
+    at a (/app/kardia.yml:5:7)
+```
+
+```text
+Cannot find plugin 'missing-plugin' (at name, /app/kardia.yml:2:9)
+    at a (/app/kardia.yml:1:3)
+```
+
+值如何被定位：
+- include 在值的所有者写它的地方定位它：在自己的文件中，或在父文件中的某个补丁里；
+- YAML 别名定位到其锚点；
+- 表达式中的字符会穿过 YAML 转义定位；
+- 缺失的值定位到本应持有它的键（其最近的已写出祖先）；
+- JSON 文件也会被当作 YAML 解析一遍（JSON 即 YAML），因此得到同样的位置；
+- 运行时改变的值不做定位；完全无法定位的错误按原样记录。
+
+加载器没有对外提供用于从外部求值条目表达式的 `Entry::evaluate`。
+
+自定义 `TreeBackend` 只要实现 `locate` 和 `locate_expr` 就能得到同样的输出；`TreeHandle::locate` 和 `TreeHandle::locate_expr` 以本地 id 调用它们。
+
+## `on_patch_context` 钩子 [#patch-context]
+
+加载器在条目启动时、以及其选项被就地修改时修补条目的上下文：把上下文重新挂到其分组之下，安装隔离表，并调和运行中的纤程。`loader.on_patch_context(ctx, hook)` 包裹这一步（即 TypeScript 的 `loader/patch-context` waterfall）：
+
+```rust
+let logger = ctx.logger();
+loader.on_patch_context(&ctx, move |entry: EntryHandle, next: PatchNext| {
+    let logger = logger.clone();
+    async move {
+        logger.debug(format_args!("patching {}", entry.id()));
+        let result = next.await;        // the rest of the chain, then the patch itself
+        logger.debug(format_args!("patched {}", entry.id()));
+        result
+    }
+})?;
+```
+
+- 钩子拿到条目和 `next`，即以 future 表示的链的其余部分。`next` 只在被等待时才构建其余部分，所以钩子在先登记的钩子之后运行；不等待 `next` 的钩子会阻止后面的钩子和修补本身。
+- 钩子按登记顺序运行，位于加载器自己的隔离步骤之内。
+- 登记是 `ctx` 所属纤程的一个效应（effect），因此钩子随该纤程一起移除。
+- 与 TypeScript 加载器不同，新的隔离表是在链的末尾与重新挂接一起安装的，而不是在钩子运行之前。
+
+`EntryHandle::init().await` 在条目未运行时启动它，或加入其进行中的启动；并发调用者共享同一次启动。

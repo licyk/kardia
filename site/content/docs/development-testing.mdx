@@ -1,0 +1,59 @@
+---
+title: "测试策略"
+description: "kardia 如何测试：移植的 TypeScript spec 套件及其运行时、针对论文元理论的基于模型的属性测试、单元测试和工具。"
+---
+
+kardia 的测试依据两份规范检查实现：Cordis 的 TypeScript 测试套件（行为）和论文的定理（语义）。测试运行的是真实实现；mock 保持在最低限度。
+
+## 移植 TypeScript 测试套件（验收） [#port-the-suite]
+
+每个阶段都把对应的 `*.spec.ts` 文件移植为 Rust 集成测试，并保留每个 TS 测试名称的 snake_case 形式，以便追溯。运行时取决于测试要检验的内容：
+
+| 运行时 | 用途 |
+|---|---|
+| **`current_thread`**（`#[tokio::test]`） | 默认选项：core、加载器和 hmr 的测试。交错执行的方式接近单线程的 JS。 |
+| **暂停时间**（`start_paused = true`） | 依赖定时器的测试：定时器测试套件，以及效应（effect）需要等待定时器的 core 和加载器测试。 |
+| **`multi_thread`** | 以真实并行为关键的场合：所有 include（配置文件引入）测试，以及需要它的 fs 和 hmr 监视用例（例如用 `block_in_place` 保持打开的模块加载）。这时 include 的 IO 循环和文件监视会与树的更新同时运行，就像在 `kardia` 二进制中一样。这些测试发现了 include 写入路径和加载器更新路径中的竞争，并已修复。 |
+| **真实时间** | 文件系统监视测试，因为 `notify` 从自己的线程报告事件。预期的事件通过有界轮询（`eventually` 辅助函数）等待；固定时长的等待只用于检查某件事*不会*发生。 |
+
+各阶段要移植的 spec（阶段列表见[状态与偏离](/docs/development-status#phases)）：
+
+| 阶段 | 要移植的 spec |
+|---|---|
+| 1 | `dispose.spec`（效应形态、在边界处中止、finally/清理、错误） |
+| 2 | `fiber.spec`（惯性（inertia）锁 1–3、失败、更新、释放 pending/failed 的纤程（fiber））、`update.spec`（并发更新）、`service.spec`、`service-dispose.spec`（守卫、排空顺序、并发的兄弟清理）、`plugin.spec`、`replace.spec`、`isolate.spec`、`reflect.spec` |
+| 3 | `events.spec`、`intercept.spec`、`logger.spec`、`shadow.spec`（改写为 `Svc` 上的定义处/使用处测试）、定时器 `index.spec` |
+| 4 | 加载器 `validate.spec`、`commit.spec`、`group.spec`、`index.spec`、`evaluate.spec`、`rebuild.spec`、`isolate*.spec` |
+| 5 | include `sync.spec`、`patch.spec`、`reload.spec`、`write.spec`（在重命名时注入故障）、`parse.spec`；fs `watch.spec` |
+| 7 | hmr `reconcile.spec`（使用内存中的 `ModuleSource`） |
+
+每个 spec 的每个用例都已移植、确认已被覆盖，或判定为不适用；见[实现状态](/docs/development-status#status)。
+
+## 论文元理论的基于模型测试 [#model-based]
+
+由于生命周期被写成纯粹的临界区（[并发](/docs/development-concurrency#model)），测试中可以用一个**确定性调度器**驱动核心：一个测试框架把派生出的转换放在队列中，由 `proptest` 选择下一个推进的可运行任务。使用效应为写入一张共享表（每次写入都有精确的逆操作）的合成组件，随机的编排序列（insert / retire / provide / withdraw / update）和随机的调度会检查[元理论](/docs/concepts-metatheory)中的定理：
+
+| 性质 | 定理 | 检查方式 |
+|---|---|---|
+| **保持性** | Thm 64 | 每一步之后注册表都是良构的（父纤程存在、每个领域（realm）内的提供互不相交、已提交视图（committed view）指向已安装的纤程）。 |
+| **恢复精确性** | Thm 68 / Cor 69 | 一个纤程的生命周期片段（episode）关闭后，表等于去掉该纤程各步骤之后的运行结果；被移除纤程的提供为空。 |
+| **顺序性** | Thm 70 | 提供者的生命周期片段严格包含每个已提交到它的消费者的生命周期片段；没有消费者会在其提供者的生命周期片段之外读取绑定。 |
+| **解析一致性** | Thm 71 | 每次 `apply` 都只观察到一个已提交视图。 |
+| **进展性** | Thm 73 | 每个调度都在步数上限内到达静止状态（声明无环时）。 |
+| **合流性** | Thm 80 | 对于固定的编排输入，所有调度都会到达相同的 `Active` 纤程集合（= 支撑集 A），以及在纤程重命名意义下相同的表。 |
+
+这些测试依据理论检查实现，没有把任何业务逻辑复制到测试中。
+
+<Callout type="info">
+实际实现（`crates/kardia-core/tests/model.rs`）中，属性测试以带随机延迟的真实 tokio 调度驱动，而不是确定性调度器。它们在每次运行期间检查顺序性，并在静止时检查保持性、恢复精确性和合流性（活跃纤程恰好是支撑集）。属性测试还发现了[已退役提供者的偏离](/docs/development-status#deviations)。
+</Callout>
+
+## 单元测试 [#unit-tests]
+
+纯模块（`IdTable`、`Scope` 查找、目标计算、`journal`、`patch`、glob 谓词、HMR 并查集）有针对性的单元测试。mock 仅限于 `Catalog`/`ModuleSource` 测试注册表和注入故障的文件系统垫片。
+
+## 工具 [#tooling]
+
+- `cargo fmt`、`cargo clippy -D warnings`、`cargo test --workspace`（CI 的确切命令见[参与开发](/docs/development-contributing#ci)）。
+- `unsafe` 仅限于 dylib 后端的 FFI（`kardia-hmr/src/dylib.rs`）和访客 SDK（`kardia-guest/src/ffi.rs`）；其他所有 crate 都禁止使用它。
+- *不*计划引入可选的 `loom`：单锁设计没有需要建模的无锁状态。

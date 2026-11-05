@@ -1,0 +1,349 @@
+---
+title: "API 设计"
+description: "kardia 的 API 设计：服务、键与受检访问、调用者归属、效应与中断、插件与配置、生命周期状态机、事件、日志器以及内置插件 crate。"
+---
+
+本页介绍 `kardia-core` 与内置插件 crate 的公开 API：服务与访问（决策 D3、D4）、效应（effect）（D5、D6）、插件、配置与生命周期（D7），以及事件、日志器与内置服务。这些 API 所操作的数据结构见[核心数据结构](/docs/development-lifecycle)。面向用户的介绍见指南页面[插件](/docs/guide-plugins)、[服务](/docs/guide-services)和[效应](/docs/guide-effects)。
+
+<Callout type="info">
+下面的签名是计划中的设计。其中大多数在代码中以相同的名称存在；凡是名称、参数或返回类型有变化之处，草图下方的说明给出了当前的 API。有意为之的行为偏离列在[状态与偏离](/docs/development-status#deviations)中。
+</Callout>
+
+## 服务、键与访问 [#services]
+
+### `Service` trait [#service-trait]
+
+```rust
+pub trait Service: Send + Sync + 'static {
+    /// Coeffect key. Strings (not TypeIds) because configuration names services.
+    const NAME: &'static str;
+    /// Interception metadata (paper Def. 26); merged right-biased.
+    type Meta: Mergeable + DeserializeOwned + Default + Send + Sync + 'static = ();  // (associated type defaults are unstable → use a separate `Intercept` trait in practice)
+}
+pub trait Mergeable { fn merge(self, inner: Self) -> Self; }   // default for JSON objects: shallow assign
+```
+
+（关联类型默认值尚未稳定；实现会把 `Meta` 放到单独的 `trait Intercepted: Service` 上，并提供一个“无元数据”的通用默认实现。）
+
+<Callout type="info">
+代码中既没有 `Meta` 类型，也没有 `Mergeable` / `Intercepted`。拦截元数据保持为 JSON：`trait Service: Any + Send + Sync { const NAME: &'static str; fn merge_intercept(values: Vec<Value>) -> Value { merge_shallow(values) } }`，其中各值按从最外层到内层的顺序给出，默认实现是对 JSON 对象做右偏的浅合并。服务通过 `ctx.intercept_meta::<T>(key)` 读取带类型的元数据。`#[derive(Service)]`（来自 `kardia-macros`）实现该 trait；`#[service(name = "database")]` 设置键，默认是以连字符连接的类型名。
+</Callout>
+
+### 提供 [#providing]
+
+```rust
+impl Context {
+    pub fn provide<S: Service>(&self, value: S) -> Result<EffectHandle, KardiaError>;
+    pub fn provide_arc<S: Service>(&self, value: Arc<S>) -> Result<EffectHandle, KardiaError>;
+}
+```
+
+语义与 `ReflectService.provide` 完全一致：
+
+- 是一个受跟踪的效应；
+- 每个领域（realm）只有单一来源（`AlreadyProvided { key, by }`）；
+- 只有当提供服务的纤程（fiber）处于 `Active` 时才立即通知，否则在它转换到 `Active` 时通知；
+- 逆操作移除绑定、通知该领域、**等待 `dependents` 变为空**，然后移除该提供。
+
+原地覆盖（`reflect.set`）以 `ctx.replace_value::<S>(..)` 的形式提供，并且与 Cordis 和论文中一样，依赖者*不会*观察到它。
+
+<Callout type="info">
+在代码中，`provide` 与 `provide_arc` 返回 `kardia_core::Result<EffectHandle>`（错误类型是 `kardia_core::Error`，它包装了 `KardiaError::AlreadyProvided` 及其他变体）。其他变体：`provide_as` / `provide_arc_as`（以显式的键提供任意值）、`provide_checked`（带可用性谓词）以及 `provide_serialized_as`（附带供表达式和工具使用的 JSON 视图的值）。`ctx.replace_value` 没有实现：`KardiaError::NotProvided` 和 `ForeignBinding` 是为它声明的，但没有任何 API 返回它们。退役一个提供者会立即解除其仍然有效的提供的绑定（见[已退役的提供者](/docs/development-status#deviations)）。
+</Callout>
+
+### 访问（算法 6） [#accessing]
+
+```rust
+impl Context {
+    pub fn get<S: Service>(&self) -> Result<Svc<S>, AccessError>;      // checked: committed view walk
+    pub fn try_get_live<S: Service>(&self) -> Option<Svc<S>>;          // reflective ctx.get: live store, never fails
+    pub fn get_dyn(&self, key: &str) -> Result<DynSvc, AccessError>;   // by name (loader expressions, tooling)
+}
+pub enum AccessError {
+    Undeclared { key: Key },                   // "cannot get property without inject"
+    Inactive { key: Key },                     // "cannot get required service in inactive context"
+    TypeMismatch { key: Key, expected: &'static str },
+}
+```
+
+`get` 实现了 `locate`：
+
+1. 同一领域中自己的提供；
+2. 沿纤程向上查找；
+3. 在隔离边界处停止；
+4. 第一个其 `committed` 中含有该键的纤程返回它；
+5. 声明了该键但没有已提交实现的纤程 → `Inactive`；
+6. 到达根 → 根对实时存储拥有**不受检**的访问（与 Cordis 中一样）。
+
+读取已提交视图（committed view）而不是存储，使得依赖在消费者自身拆除期间仍然可读（定理 70）。
+
+带类型的声明：`Plugin::Inject` 可以是服务类型的元组（`(Database, Cache)`），通过对元组使用 `macro_rules!` 实现，同时产生运行时的 `InjectSpec` 和一个带类型的访问器 `ctx.deps::<P::Inject>() -> Result<(Svc<Database>, Svc<Cache>)>`。这是朝论文建议的编译期中介迈出的第一步，且不需要过程宏（[§5.1.4](/docs/concepts-implementation)、[§6.4](/docs/concepts-related-work)）。
+
+<Callout type="info">
+在代码中：`get` 与 `AccessError` 与草图一致。`try_get_live` 是 `live::<S>()`（以及 `live_as::<T>(key)`）；`get_dyn` 是 `get_as::<T>(key)`（按名称取带类型的值），以及 `view(key)`（取服务的 JSON 视图，加载器的表达式使用它）。带类型的声明使用 `Deps` trait（通过 `macro_rules!` 为至多八个服务的元组实现）：`Inject::of::<(Database, Cache)>()` 构建运行时声明，`ctx.deps::<(Database, Cache)>()` 返回 `(Svc<Database>, Svc<Cache>)`。`Plugin` 没有 `Inject` 关联类型；它通过 `fn inject() -> Inject` 声明。编译期的那一步是 `Injected<D>`，由 `#[plugin]` 使用（见[受检的带类型访问](/docs/development-status#deviations)）。
+</Callout>
+
+### 调用者归属（D4） [#caller-attribution]
+
+```rust
+pub struct Svc<S: ?Sized> { inner: Arc<S>, caller: Context, impl_id: ImplId }
+impl<S: ?Sized> Deref for Svc<S> { type Target = S; }
+impl<S: ?Sized> Svc<S> { pub fn caller(&self) -> &Context; pub fn intercept(&self) -> S::Meta where S: Intercepted; }
+```
+
+- *代表调用者*创建的效应使用 `svc.caller().effect(..)`：它们落在调用者的纤程中，这正是 Cordis 的 tracker 借助 `this.ctx` 所实现的效果。
+- 服务通过它在构造时保存的 `Context`（其定义处）解析*自己的*依赖，因此不需要 shadow 上下文。
+- 服务 crate 以 **`Svc<S>` 上的扩展 trait** 的形式暴露感知调用者的 API（由于该 trait 是本地的，一致性规则允许这样做）：
+
+```rust
+pub trait TimerExt { fn timeout(&self, d: Duration, f: impl FnOnce() + Send + 'static) -> EffectHandle; }
+impl TimerExt for Svc<Timer> { fn timeout(&self, d, f) -> EffectHandle { self.caller().effect_sync("timer.timeout", …) } }
+```
+
+- 拦截元数据在访问时按 Def. 27 / `resolveIntercept` 解析：`[declared inject meta, outer…, inner]` 做右偏合并。
+
+<Callout type="info">
+在代码中，`Svc<T>` 持有值 `Arc<T>`、调用者 `Context`、`key`、`impl_id` 以及提供服务的纤程，并提供 `caller()`、`key()`、`impl_id()`、`arc()`、`provider()` 和 `logger()`。`intercept()` 变成了 `meta() -> Value`（用 `S::merge_intercept` 合并）和 `intercepts() -> Vec<Value>`（未合并的列表，声明的 `inject` 元数据在最前）。定时器的 `TimerExt::timeout` 返回 `Result<EffectHandle>`，并注册 `self.caller().effect_sync("ctx.timeout()", …)`。服务之间的调用遵循定义处，这与 TS 不同（见[服务之间的调用](/docs/development-status#deviations)）。
+</Callout>
+
+### 关联属性与 mixin [#mixins]
+
+Cordis 的 `foo.bar` 关联服务和 `ctx.mixin` 是针对 JS 对象的便利设施。在 Rust 中：名为 `foo.bar` 的服务只是另一个键；“扩展另一个插件的类型”通过扩展 trait（编译期）或基于 `IdTable` 构建的注册表服务（运行时）来完成。访问器 / mixin 层不移植。
+
+## 效应（D5、D6） [#effects]
+
+### API [#effects-api]
+
+```rust
+pub type Disposer = Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send>;
+
+impl Context {
+    /// Effect function: run `f`, which returns its inverse.
+    pub fn effect_sync<F>(&self, label: &'static str, f: F) -> Result<EffectHandle, KardiaError>
+        where F: FnOnce() -> Option<Disposer>;
+    /// Effect iterator: `f` receives a scope; each `yield_` is an iteration boundary.
+    pub fn effect<F, Fut>(&self, label: &'static str, f: F) -> Result<EffectHandle, KardiaError>
+        where F: FnOnce(EffectScope) -> Fut, Fut: Future<Output = Result<(), PluginError>> + Send + 'static;
+    /// Register a plain inverse on the current fiber (e.g. inside `apply`).
+    pub fn on_dispose(&self, d: impl FnOnce() + Send + 'static) -> EffectHandle;
+    /// Iteration boundary for the fiber's own `apply` (L-Divert checkpoint).
+    pub async fn checkpoint(&self) -> Result<(), Interrupted>;
+}
+pub struct EffectScope { /* local disposers, guard */ }
+impl EffectScope {
+    pub fn defer(&mut self, d: Disposer);                         // collect without a boundary
+    pub fn adopt(&mut self, h: EffectHandle);                     // ownership transfer of a nested effect
+    pub async fn yield_(&mut self, d: Disposer) -> Result<(), Interrupted>;  // collect + boundary check
+}
+#[derive(Clone)] pub struct EffectHandle { /* root, fiber, effect id */ }
+impl EffectHandle {
+    pub async fn dispose(&self);          // at-most-once; waits for setup to finish first
+    pub async fn ready(&self) -> Result<(), PluginError>;  // `await ctx.effect(...)` in TS
+}
+```
+
+<Callout type="info">
+在代码中（`effect.rs`、`fiber.rs`）：
+
+- `Disposer` 是一个在运行时被消耗的结构体（`Disposer::new(FnOnce())`、`fallible(FnOnce() -> Result<()>)`、`future(..)`、`try_future(..)`）；它的闭包在释放开始时同步运行，并且可以返回一个完成剩余工作的 future。panic 会被捕获并作为错误报告。
+- 标签是 `impl Into<String>`。`effect_sync` 接受 `FnOnce(&EffectScope) -> Result<()>`：函数体把它的逆操作收集到作用域上，而不是返回一个逆操作。`effect` 接受 `FnOnce(EffectScope) -> Fut`，其中 `Fut: Future<Output = Result<()>>`；函数体被派生为任务运行。两者都返回 `kardia_core::Result<EffectHandle>`。
+- `on_dispose` 返回 `Result<EffectHandle>`；`ctx.defer(label, disposer)` 注册任意一个 `Disposer`。
+- `ctx.checkpoint()`、`scope.checkpoint()` 和 `scope.yield_(d)` 是同步的：`ctx.checkpoint()?`、`scope.yield_(d)?`。`EffectScope` 的方法接受 `&self`（作用域是 `Clone` 的），并且有一个简写 `defer_fn`；`adopt` 接受 `impl Into<EffectHandle>`（`Fiber` 可以转换过去）。
+- `EffectHandle::dispose()` 返回一个 `Disposal`，它是 `Result<()>` 的 future，也可以直接丢弃；`ready()` 返回 `Result<()>` 的 future。该句柄还有 `label()`、`is_active()` 和 `meta()`。
+</Callout>
+
+### 语义（来自 `fiber.ts:292-357`） [#effects-semantics]
+
+- `assert_active`：在已移除的纤程上创建效应会以 `KardiaError::InactiveEffect` 失败。
+- 在一个效应内部：撤销函数（disposer）**按逆序依次**运行。
+- 所有权转移：在一个效应内部创建的嵌套 `EffectHandle` 注册在纤程上；`scope.adopt(h)` 把它移到外层效应之下（即 TS 中的 `collect` → `_disposables.delete`）。
+- 效应体失败时，会释放它已收集的内容；同步错误传播给调用者，异步错误则被记录到日志并通过 `ready()` 报告。
+- 纤程卸载时按插入的逆序清空累积器，并**并发地**运行撤销函数（`join_all`），记录失败和 panic（`catch_unwind`），因为 Cordis 的测试要求兄弟效应并发地清理（`service-dispose.spec.ts`）。有序的拆除通过把各步骤归入同一个效应来获得。
+- `EffectHandle` 是不持有所有权的句柄：丢弃它**不会**释放。组件的生命周期是动态的，由纤程管理，这恰恰是论文区分 Cordis 与 RAII 之处（[§7.3](/docs/concepts-related-work)：词法作用域是互补的，适用于单个效应内部的局部资源；在撤销函数内部，普通的 `Drop` 类型完全可以使用）。
+
+### 中断与取消安全（D6） [#interruption]
+
+Rust *能够*通过丢弃 future 来取消它，这是 JS 做不到的，因此 Rust 宿主可以提供论文中*中止式*的 L-Divert。计划有意**不**丢弃正在执行的 `apply` future：一个在“获取资源”与“注册其撤销函数”之间被丢弃的 future，恰恰会泄漏时间可组合性所承诺回收的东西。取而代之的是：
+
+- 宿主是**惯性的**（[论文 §4.4](/docs/concepts-metatheory)）：一次过时的加载会完成，然后再卸载；
+- 显式边界 `scope.yield_(..).await?` 和 `ctx.checkpoint().await?` 在纤程的目标自加载开始以来发生变化时返回 `Err(Interrupted)`（即 TS 中的 `while (runner.epoch === oldEpoch)` 检查）。从 `apply` 返回 `Interrupted` 并不是失败；纤程会卸载它已注册的内容。
+
+这是把加载器的外层纤程模式（导入之后的 `yield () => {}`）显式化。
+
+<Callout type="info">
+在代码中这些边界是同步的（`scope.yield_(..)?`、`ctx.checkpoint()?`）。一旦加载已被取代（纤程的目标不再等于其生命周期片段（episode）的目标）或纤程已退役，`ctx.checkpoint()` 就会失败；一旦效应已被释放，`scope.checkpoint()` 就会失败。异步效应体被派生为任务运行，永远不会被中途丢弃；释放会等待效应体运行到结束或到达一个边界。
+</Callout>
+
+## 插件、配置与生命周期 [#plugins]
+
+### Plugin trait [#plugin-trait]
+
+```rust
+pub trait Plugin: Send + Sync + 'static {
+    const NAME: &'static str;
+    type Config: DeserializeOwned + Send + Sync + 'static;     // `()` for no config
+    type Inject: InjectSet = ();                               // (via helper trait; defaults unstable)
+    fn inject_meta() -> InjectSpec { Self::Inject::spec() }    // declared keys + interception metadata
+    fn provide() -> &'static [&'static str] { &[] }            // declarative provision (p), for tooling & cycle check
+    fn apply(ctx: Context, config: Arc<Self::Config>)
+        -> impl Future<Output = Result<(), PluginError>> + Send;
+}
+impl Context {
+    pub fn plugin<P: Plugin>(&self, config: P::Config) -> Result<Fiber, KardiaError>;
+    pub fn plugin_value<P: Plugin>(&self, config: serde_json::Value) -> Result<Fiber, KardiaError>;
+    pub fn inject<F, Fut>(&self, deps: InjectSpec, f: F) -> Result<Fiber, KardiaError>;   // closure plugin
+}
+```
+
+存储在运行时中的类型擦除形式：`PluginDef { key: RuntimeKey, name, inject: Arc<InjectSpec>, provide, decode: fn(&Value) -> Result<ErasedConfig, ValidationError>, apply: Arc<dyn Fn(Context, ErasedConfig) -> BoxFuture<'static, Result<(), PluginError>> + Send + Sync> }`。对于带类型的插件，`RuntimeKey` 是 `TypeId::of::<P>()`；对于闭包插件，它是指针身份（动态模块会添加自己的键类别，见[加载器内部](/docs/development-loader#hmr)）。
+
+<Callout type="info">
+在代码中（`plugin.rs`、`registry.rs`）：
+
+- `Plugin` 有 `const NAME`、`type Config`、`fn inject() -> Inject`（默认：空）、`fn provide() -> Vec<Key>`（默认：空）和 `fn apply(ctx: Context, config: Arc<Self::Config>) -> impl Future<Output = Result<()>> + Send`。`Inject`（有序的键，每个键可附带拦截元数据）取代了 `InjectSet` / `InjectSpec`。
+- `ctx.plugin::<P>(config)`、`ctx.plugin_value::<P>(value)`、`ctx.plugin_def(&def, value)` 和 `ctx.inject(inject, f)` 返回 `kardia_core::Result<Fiber>`；`inject` 的闭包是 `Fn(Context) -> Fut`。`ctx.plugin::<P>(config)` 要求 `P::Config: Serialize`：带类型的配置会被序列化为 `Value`，然后像其他任何配置一样解码，因此只实现了 `Deserialize` 的配置要通过 `plugin_value` 以 JSON 传入。
+- `PluginDef` 是 `Arc<{ key, name: Option<String>, inject, provide, tags, decode, apply }>` 的廉价克隆，通过 `PluginDef::of::<P>()`、`PluginDef::new(apply)` 或 `PluginDef::typed(apply)` 构建，并用 `.name(..)`、`.inject(..)`、`.provides(..)`、`.tag(..)`、`.validate_with(..)` 细化。`RuntimeKey` 是 `Type(TypeId)` 或 `Def(u64)`（由计数器分配的身份，用于基于闭包的定义）。动态模块复用 `Def`；它们不添加自己的键类别。
+</Callout>
+
+### 配置（D7） [#configuration]
+
+- 配置以 `serde_json::Value` 的形式到达（来自文件、加载器 API 或 `plugin_value`），并在每次（重新）加载尝试中用 `serde_path_to_error` **一次性**解码，产生 `ValidationError { issues: Vec<Issue { path, message }> }`，即 Standard Schema issues 的对应物。未知字段会被容忍，除非插件选择启用 `deny_unknown_fields`（仓库规则：容忍未知字段）。
+- `Fiber::update(value)`：
+  1. 先校验（被拒绝的配置不会影响正在运行的实例）；
+  2. 发出 `ConfigCommitted`（加载器回写），除非指定了 `no_save`；
+  3. 把新配置交给插件的**更新钩子**；
+  4. 如果没有钩子接受它，则 `restart()`（`revision += 1` → 新目标 → 卸载 → 重新加载）。
+
+  注册钩子是一个效应：`ctx.on_config_update::<P>(|new| async { …; Ok(Handled::Yes) })`。
+
+<Callout type="info">
+在代码中，`Fiber::update(value)` 和 `Fiber::update_with(value, no_save)` 返回 `Result<Settle>`：校验错误会立即返回，而 `Settle` future 在更新生效时完成（`db.update(json!(..))?.await?`）。更新钩子是 `ctx.on_update::<C>(|new: &C| -> bool)`（返回 `true` 表示接管该更新，不重启）或 `ctx.on_update_with::<C>(..)`（返回 `update` 最终完成时所等待的 future）；`C` 是插件解码后的配置类型。在插件自己解码之前，配置会先经过根上的配置钩子（`ctx.on_config(..)`），加载器用它来对表达式求值。
+</Callout>
+
+### 生命周期状态机（`lifecycle.rs`） [#lifecycle]
+
+对 `_checkImpl` / `_refresh` / `_setEpoch` / `_reload` / `_unload` / `_updateState` 的忠实移植，拆分为返回动作的纯临界区：
+
+```rust
+// critical section: recompute target (refresh)
+fn refresh(st: &mut State, id: FiberId) -> Actions {
+    let f = st.fiber(id);
+    let target = st.compute_target(id);          // Inactive if removed || error || missing key; else Epoch{revision, providers}
+    if target == f.target || f.error.is_some() { return Actions::none() }
+    let old = replace(&mut st.fiber_mut(id).target, target.clone());
+    if st.fiber(id).inertia.is_some() { return Actions::none() }        // inertial
+    match (old, &target) {
+        (Target::Inactive, Target::Epoch { .. }) => st.begin(id, Transition::Reload),   // L-Begin → Loading
+        _                                         => st.begin(id, Transition::Unload),  // L-Leave → Unloading (+ notify consumers)
+    }
+}
+
+// spawned task
+async fn reload(root: Arc<Root>, id: FiberId) {
+    let (start, apply_fut) = root.with(|st| st.commit_view(id));        // ω := resolved; register as dependent; snapshot target
+    tokio::task::yield_now().await;                                     // coalesce superseded updates (TS: await Promise.resolve())
+    let outcome = if root.with(|st| st.target_is(id, &start)) {
+        AssertUnwindSafe(apply_fut).catch_unwind().await                // run apply; effects register themselves
+    } else { Ok(Ok(())) };
+    root.run(|st| st.finish_reload(id, &start, outcome));               // Active | Failed | chain into unload
+}
+
+async fn unload(root: Arc<Root>, id: FiberId) {
+    root.wait_until(|st| st.provisions_free(id)).await;                 // fiber-level guard (relied_n)
+    let disposers = root.with(|st| st.drain_disposables_rev(id));
+    join_all(disposers.into_iter().map(run_logged)).await;              // concurrent, errors logged
+    root.run(|st| st.finish_unload(id));                                // release providers, ω := None, Inactive | chain into reload
+}
+```
+
+- `begin` 设置状态，创建 `inertia` 共享 future，并在离开 `Active` 时为每个仍处于绑定状态的提供发出通知（L-Leave 先于任何逆操作）。
+- `finish_reload`：如果目标没有变化 → `Active`（如果 apply 出错则为 `Failed`；错误只有在仍然是当前的情况下才会被记录，因此一次已被取代的失败只会做清理）；否则衔接到 `unload`。
+- `finish_unload`：从每个已提交实现的 `dependents` 中移除自身，并唤醒那些依赖者集合变为空的提供者；然后进入 `Inactive`（再由 `settled_state()` 转为 `Pending`/`Failed`/`Disposed`），或者在目标不再是 ⊥ 时衔接到 `reload`。
+- `wait_until` 使用 `Notify`，并在释放锁*之前*注册 `Notified::enable()`（不会丢失唤醒）。
+
+<Mermaid chart={"flowchart TD\n  R[refresh: compute target] --> C{target changed and no error?}\n  C -- no --> X[nothing to do]\n  C -- yes --> I{transition in flight?}\n  I -- yes --> X2[record target only: inertia]\n  I -- no --> B{old target inactive?}\n  B -- yes --> L[begin reload: commit view, Loading]\n  B -- no --> U[begin unload: notify consumers, Unloading]\n  L --> FR[finish_reload]\n  FR -- target unchanged --> A[Active or Failed]\n  FR -- target changed --> U\n  U --> G[wait for dependents to drain]\n  G --> D[dispose accumulator concurrently]\n  D --> FU[finish_unload]\n  FU -- target is an epoch --> L\n  FU -- target inactive --> P[Pending, Failed or Disposed]"} />
+
+<Callout type="info">
+代码对工作的拆分略有不同（`lifecycle.rs`）。`refresh` 计算目标并调用 `set_target`（`_setEpoch` 的移植），后者记录目标，并且除非纤程已失败或有转换正在进行（`inertia: bool`），否则调用 `begin_reload`（提交 ω := resolved、注册为依赖者、记录生命周期片段、排队 `Action::Reload`）或 `begin_unload`（排队 `Action::Unload`），并更新状态；`update_state` 发出 `StatusChanged`，并在进入或离开 `Active` 时通知该纤程仍然有效的提供的消费者。派生的 `reload` 先让出执行（以合并已被取代的更新），然后读取插件及其配置（`prepare_execute`），通过配置钩子解析配置，以 `catch_unwind` 运行 `apply`，并调用 `finish_reload`。`unload` 等待直到该纤程的所有绑定都没有依赖者，按从新到旧的顺序清空累积器（`start_drain`），用 `join_all` 并发释放所有效应，记录失败，并调用 `finish_unload`。`wait_until` 在检查谓词之前，先在根级的通知器上注册 `Notified::enable()`。
+</Callout>
+
+### 实例化（O-Insert / O-Retire） [#instantiation]
+
+`ctx.plugin(..)` 创建 `FiberData`（新的 `FiberId`、子 `Scope`），解析依赖声明，并在**父**纤程上注册一个效应：其效应体把纤程插入它的运行时并运行 `refresh`，其逆操作把它标记为已移除、把目标强制设为 ⊥、等待转换链完成并最终落定为 `Disposed`（TS `fiber.ts:178-206`）。因此，卸载父纤程会通过父纤程的累积器级联到子纤程；重新启用会创建一个*全新的*纤程（[论文 §4.4](/docs/concepts-metatheory)，Configuration）。
+
+### 注册表替换 [#replace]
+
+`registry.replace(old, new)`（别名 + 对每个纤程执行 `_replace`：新运行时、新依赖声明、重新解析、清除错误、`revision += 1`、refresh）按原样移植；它是 HMR 背后的原语，本身也很有用（在仍然存活的纤程背后替换实现）。
+
+<Callout type="info">
+在代码中：`ctx.registry().replace(&old_def, &new_def) -> Vec<Fiber>` 返回被移到新定义的纤程，每个被移动的纤程都会发出 `Replaced`。
+</Callout>
+
+### `Fiber` 句柄 API [#fiber-handle]
+
+```rust
+impl Fiber {
+    pub fn id(&self) -> FiberId;  pub fn state(&self) -> FiberState;  pub fn context(&self) -> Context;
+    pub async fn settled(&self) -> Result<(), Arc<PluginError>>;   // TS fiber.await()
+    pub async fn dispose(&self);                                    // retire
+    pub async fn restart(&self) -> Result<(), Arc<PluginError>>;
+    pub async fn update(&self, config: serde_json::Value, no_save: bool) -> Result<(), UpdateError>;
+    pub fn effects(&self) -> Vec<EffectMeta>;                      // introspection (labels, children)
+}
+```
+
+<Callout type="info">
+在代码中（`fiber.rs`）：`context()` 返回 `&Context`。`settled()` 和 `restart()` 返回一个 `Settle`（`kardia_core::Result<()>` 的装箱 future），`dispose()` 返回一个 `Disposal`（`Result<()>` 的 future；释放根纤程会重启它，撤销其上注册的所有内容），`update(config)` / `update_with(config, no_save)` 返回 `Result<Settle>`。此外还有 `config()`、`inject()`、`error()`、`runtime()`、`def()`、`name()`、`parent()`、`is_removed()`、`is_root()`、`effect_handle()` 和 `effect_count()`。`ctx.fiber()` 返回某个上下文所属的纤程。
+</Callout>
+
+## 事件、日志器与内置服务 [#events]
+
+### 带类型的事件 [#typed-events]
+
+```rust
+pub trait Event: Send + Sync + 'static { type Output: Send = (); }
+impl Context {
+    pub fn on<E: Event>(&self, f: impl Fn(&E) -> E::Output + Send + Sync + 'static) -> EffectHandle;
+    pub fn emit<E: Event>(&self, e: &E);
+    pub async fn parallel<E: Event>(&self, e: &E) -> Result<(), AggregateError>;
+    pub async fn serial<E: Event>(&self, e: &E) -> Option<E::Output>;   // first "bailed" result
+    pub fn bail<E: Event>(&self, e: &E) -> Option<E::Output>;
+}
+```
+
+- 监听器按事件的 `TypeId` 存放在 `IdTable` 中；注册监听器是监听器所在纤程的一个效应。
+- 分发时对表做快照，并跳过已移除的监听器。
+- 可选的领域过滤（`E: Scoped`）为 `ServiceChanged` 重现了 `Context.filter`。
+- 瀑布式的扩展点（`internal/config`、`internal/get`、`internal/update`）被**显式的钩子 trait**（加载器的配置变换钩子、每个纤程的更新钩子、提交钩子）取代，而不是使用以字符串区分的事件。
+
+内部事件：`PluginInserted/Removed`、`StatusChanged { fiber, old, new }`、`ServiceChanged { key, realm }`、`ConfigCommitted { fiber, value }`、`Replaced { fiber }`。
+
+<Callout type="info">
+在代码中（`events.rs`）：`trait Event: Any + Send + Sync { type Output: Bailable; fn filter(&self, listener: &Context) -> bool { true } }`。`Bailable`（为 `()`、`bool`、`Option<T>` 和 `Result<T, Error>` 实现）规定哪些结果会终止一次 `bail` / `serial` 分发，以及哪些结果算作 `parallel` 分发的失败。`filter` 取代了 `E: Scoped`：`ServiceChanged` 只会到达那些其上下文把该键解析到同一领域的监听器。监听器按 `TypeId` 保存在 `Vec` 中。`on` 返回 `Result<EffectHandle>`；此外还有 `on_prepend`、`on_async`、`once` 和 `listener_count`。钩子是 `ctx.on_config(..)`（配置变换）、`ctx.on_update::<C>(..)`（每个纤程的更新钩子），以及作为提交点的 `ConfigCommitted` 事件。`ConfigCommitted` 携带 `{ fiber, config }`。`emit` 会记录发生 panic 的监听器并继续执行（见[事件](/docs/development-status#deviations)）。
+</Callout>
+
+### 日志器 [#logger]
+
+`Logger` 是一个核心服务：
+
+- `ctx.logger(name)` → `Logger { name, level, fiber }`（名称默认是调用方纤程的运行时名称，可被拦截元数据 `{ name, level }` 覆盖）；
+- 通过 `logger.exporter(e)` **以效应的形式**注册的 `Exporter` trait 对象；
+- 保存最近 1000 条 `Message { sn, ts, name, level, args }` 的环形缓冲区。
+
+格式字符串使用 Rust 的格式化（`format_args!`），而不是 printf 指令。可以在 `kardia-logger-console` 中添加一个 `tracing` 桥接（一个向导出器输送数据的 `tracing_subscriber::Layer`）；核心并不需要它。
+
+<Callout type="info">
+在代码中（`logger.rs`）：`ctx.logger()` 不接受名称（它由 `intercept("logger", { name })` 命名，或以纤程的插件命名），`ctx.logger_named(name)` 显式地为它命名，`svc.logger()` 代表调用者记录日志。级别有 `error`、`warn`、`info` 和 `debug`，每个都接受 `impl Display`，因此可以直接使用 `format_args!(..)`。导出器通过 `ctx.add_exporter(Arc<dyn Exporter>)` 注册，这是当前纤程的一个效应；`Exporter::export(&Message)`，以及可选的按名称设置的 `level`。`Message` 是 `{ sn, ts, name, level, text, fiber }`：文本已经格式化（见[日志器](/docs/development-status#deviations)）。缓冲区默认保存 1000 条消息（`ctx.log_buffer()`、`ctx.set_log_buffer_size(n)`）。尚未添加 `tracing` 桥接。
+</Callout>
+
+### 内置插件 crate [#built-ins]
+
+| Crate | 移植自 | Rust 构件 |
+|---|---|---|
+| `kardia-timer` | `plugin-timer` | 以 `tokio::time::{sleep, interval}`、`JoinHandle::abort` 作为撤销函数；`timeout(d) -> Result<(), Disposed>` future；`interval(d) -> impl Stream`；`throttle/debounce` 句柄 |
+| `kardia-logger-console` | `plugin-logger-console` | ANSI 颜色、标签对齐、级别映射 |
+| `kardia-fs` | `plugin-fs-node` | `notify`（对单个文件则监视其父目录）、`globset` + 移植的“最后匹配者胜出”/祖先谓词 |
+
+<Callout type="info">
+代码中的定时器 API（`Svc<Timer>` 上的 `TimerExt`）：`timeout(delay, callback)` 和 `interval(delay, callback)` 是返回 `Result<EffectHandle>` 的效应；`sleep(delay)` 是一个 future，如果调用者先被释放，它会以 `Disposed` 失败；`ticks(delay)` 返回 `Ticks`，其 `tick().await` 在下一次触发时完成（而不是一个 `Stream`）；`throttle` 和 `debounce` 返回 `Scheduled<A>` 句柄。`ctx.timer()`（`TimerContext`）是 `ctx.get::<Timer>()` 的简写。
+</Callout>

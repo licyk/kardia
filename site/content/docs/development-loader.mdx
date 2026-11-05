@@ -1,0 +1,88 @@
+---
+title: "加载器、include 与动态模块"
+description: "kardia-loader、kardia-include 与 kardia-hmr 的内部实现：Cordis 加载器的 Rust 适配、基于文件的 include，以及热重载算法及其模块后端。"
+---
+
+本页介绍 Cordis 的加载器、include（配置文件引入）与 HMR 包是如何移植的：数据模型、条目状态机、文件同步与模块图。用法见指南页面[加载器](/docs/guide-loader)、[热重载](/docs/guide-hot-reload)与[访客插件](/docs/guide-guests)；TypeScript 原版见 Cordis 参考中的[加载器](/docs/reference-loader)、[include 与分组](/docs/reference-include)以及 [HMR](/docs/reference-hmr)。
+
+## `kardia-loader` [#loader]
+
+`packages/loader` 的移植，做了以下 Rust 适配：
+
+| 主题 | 适配 |
+|---|---|
+| **数据模型** | `EntryOptions` 是一个 serde 结构体，带有 `#[serde(flatten)] extra: IndexMap<String, Value>`（容忍未知键）；用 `Option<Option<T>>`/`Value::Null` 表示“合并时删除”；`IsolateLabel::{Private, Shared(String)}`；`Disabled::{Bool, Expr}`。 |
+| **以 id 寻址的文档代替对象同一性** | TS 依赖 `entry.options === group.data[i]`；Rust 以分组的 `Vec<EntryOptions>` 为准，条目持有 id；“来自文件”是一个来源标志，而不是 `===`。 |
+| **条目状态机** | `update / _patchContext / _reconcile / init / _init / _start` 一比一移植，沿用“每次 await 之后重新检查”的写法（`fn still_current(&self, snap) -> bool`），`_initTask` 为 `Option<Shared<..>>`。 |
+| **带 `inject` 的条目使用两个纤程（fiber）** | 保留外层的依赖持有者与内层的插件：外层 `apply` 从目录中解析插件，经过 `ctx.checkpoint().await?`，然后启动内层纤程。 |
+| **目录（Catalog）** | 代替模块导入：`Catalog::register::<P>()` / `register_alias("@cordisjs/plugin-group", Group)`；缺失的名称产生 `ModuleNotFound`，定位到条目的 `name`。 |
+| **托管领域（realm）** | `LocalRealm`/`GlobalRealm` 作为带标签的 `RealmId`；忠实移植 7 步的 `patch-context` 算法，其中分界测试通过沿作用域父链直接计算（`scope.is_within(entry_marker)`），而不是借助临时 symbol；提供者迁移无需重启；被阻止的移动记录在 `Impl::realm` 中。**修复**领域回收中过早的 `return`（改用 `continue`）。 |
+| **自我释放 / 自我更新的回写** | 核心传递 `DisposeReason { SelfRequested, Parent, Loader }`，代替 TS 的 `_disposing` 标志加“先注销再释放”的技巧（一项有意的破坏性简化）。 |
+| **`loader` 等待屏障** | `Loader::settled().await`，以及由原子任务计数器驱动的可用性检查。 |
+| **校验** | 在边界处调用 `validate_options(&Value, deep) -> Vec<Issue>`（API 调用做深层校验，文件输入做浅层校验）。 |
+| **表达式**（`!!js`） | JS 的 `with(ctx) eval` 无法移植。待定决策（[风险](/docs/development-risks#risks)）：采用一种无副作用的表达式语言（推荐 CEL，或一个小型自定义求值器），其标识符通过 `ctx.get_dyn(name)` 和可序列化的服务视图（`trait ExprValue { fn to_value(&self) -> Value }`）解析，并遵循与 TS 加载器相同的求值上下文表。在此之前，`Expr` 值会被拒绝，并给出明确的校验问题。 |
+
+<Callout type="info">
+`kardia-loader` 与上表的不同之处：
+
+- **数据模型**：`EntryOptions` 是一个带类型的视图，从已被 `validate_options` 接受的选项中读取（`EntryOptions::read`）；JSON 对象仍是唯一可信来源，因此未知键无需 `flatten` 映射即可在回写中保留。`IsolateLabel::{Private, Shared(String)}` 与 `Disabled::{Bool(bool), Expr(String)}` 与计划一致。
+- **目录**：`Catalog::register::<P>()`、`register_def(name, def)` 与 `alias(alias, name)`（而不是 `register_alias`）；`kardia_loader::builtins()` 注册 `group` 并把 `@cordisjs/plugin-group` 设为它的别名，`kardia::catalog()` 再以名称及其 JavaScript 包名添加其他内置插件。
+- **检查点**：同步的，`ctx.checkpoint()?`。
+- **托管领域**：分界测试是在条目表为带标记的 `Overlay` 节点的上下文上调用 `Context::is_within(..)`；领域回收的修复已完成（`collect_realms` 使用 `continue`）。
+- **自我释放**：没有引入 `DisposeReason`。加载器在它自己的 `fiber.dispose()` 调用前后设置每个条目的 `disposing` 标志（`entry.rs`，`dispose_fiber`），与 TS 的 `_disposing` 标志是同一种模式。
+- **表达式**：实现为一个无副作用的 JavaScript 子集（`kardia_loader::expr`），而不是 CEL；标识符通过服务的 JSON 视图（`ctx.view(name)`，由 `provide_serialized_as` 提供）解析，而不是通过 `ExprValue` trait；见[表达式](/docs/development-status#deviations)。
+</Callout>
+
+## `kardia-include` [#include]
+
+- **纯模块**，几乎逐字移植并单独进行单元测试：`journal`（记录、合并、展平、应用、三方 `reconcile`；以文件为准）、`patch`（插入/覆盖补丁、`PatchIndex` 归属、`route_journal`）、匿名 id 分配。
+- **IO 循环**：一个由 `dirty_read/dirty_write` 标志加 `Notify` 驱动的任务；树的应用以最新者为准；`flush()`。
+- **解析**：一个支持位置信息（span）和自定义标签的 YAML 解析器（`saphyr` 系列）：`!!js` → `Value::Expr`；错误**和**警告都是致命的；JSON 通过 `serde_json` 解析，并额外做一遍带位置信息的处理以获取位置。
+- **原子写入**：在同一目录中写临时文件，每次重命名前检查内容是否已过期，遇到 `PermissionDenied`/`ResourceBusy` 时进行有限次数的重试，只读时 → 把 journal 保留在内存中。
+- **错误**：使用结构化的 `ConfigFrame { id, file, line, col }` 链，而不是改写后的栈字符串。
+
+<Callout type="info">
+在代码中，`serde_json::Value` 没有表达式变体：`!!js` 变为对象 `{ "__jsExpr": "…" }`（`kardia_loader::EXPR_KEY`）。错误是 `ConfigFileError` / `ConfigIssue` 值，其位置为 `file:line:col`，加载器把带位置的帧打印为文本（`at <id> (file:line:col)`），而不是使用 `ConfigFrame` 类型；见[错误](/docs/development-status#errors)。
+</Callout>
+
+## 动态模块与 HMR（`kardia-hmr`） [#hmr]
+
+可选，第 7 阶段。[论文 §6.4](/docs/concepts-related-work)：*原生代码不暴露模块注册表，因此引入与撤回采取显式动态链接（dlopen/dlclose）的形式……WebAssembly……在原生嵌入方（例如 Wasmtime）丢弃它时释放*。计划把**算法**（可移植）与**模块技术**（一个后端）分开：
+
+```rust
+pub trait ModuleSource: Send + Sync {
+    fn load(&self, id: &ModuleId) -> Result<LoadedModule, LoadError>;   // exports: Vec<PluginDef>, deps: Vec<ModuleId>
+}
+```
+
+<Callout type="info">
+在代码中（`graph.rs`）：`trait ModuleSource: Send + Sync + 'static { fn load(&self, id: &str) -> Result<ModuleCode>; }`。`ModuleId` 是一个 `String`（绝对路径），`ModuleCode { deps: Vec<ModuleId>, evaluate }` 基于其依赖的导出进行求值，模块导出 `Exports::{None, Plugin(PluginDef), Value(Value)}`。`ModuleGraph::new(source)` 维护一张已加载记录（`deps`、`exports`）的有序表，以及宿主模块的集合。
+</Callout>
+
+- 宿主持有一个 `ModuleGraph { records: HashMap<ModuleId, ModuleRecord { deps, kind: Host|Dynamic, instance } > }`，代替 Node 的缓存。
+- Cordis 的协调（reconcile）算法被移植为纯粹的图代码，测试来自 `reconcile.spec.ts`。这遵循的是**代码**，而不是论文的算法 10（见 [HMR：论文与代码对照](/docs/reference-hmr)）。
+
+<Steps>
+<Step>按路径祖先关系把变更的文件匹配到已加载的模块。</Step>
+<Step>反向依赖接受：找出必须重新加载的模块。</Step>
+<Step>按运行时对受影响的纤程分组。</Step>
+<Step>阶段 1：加载并校验全部内容。</Step>
+<Step>在旧闭包 ∪ 新闭包上构建并查集单元。</Step>
+<Step>恢复被中止的单元。</Step>
+<Step>阶段 2：原地执行 `registry.replace`。</Step>
+<Step>阶段 3：并发地等待稳定。</Step>
+</Steps>
+
+事务串行执行，并通过任务局部的事务 id 拒绝重入。
+
+后端，按优先顺序：
+
+1. **WASM 组件（wasmtime）**：新旧实例可以安全共存，丢弃是可靠的，天然沙箱（[论文 §6.3](/docs/concepts-related-work) 的桥接纤程）。代价：服务需要跨越 WIT 边界。
+2. **dylib（`libloading`）**：仅用于开发期：相同的工具链，每个版本从一个唯一的复制路径加载，**永不卸载**（由于 TLS 析构函数和泄漏的 `'static` 引用，卸载 Rust dylib 是不可靠的），C-ABI 入口点。
+3. **进程外插件**（重新派生进程 = 重新加载），采用[论文 §6.2](/docs/concepts-related-work) 的服务代理/RPC 模式。
+
+静态链接的插件天然就是“宿主模块”；修改它们需要重启进程，而运行中的*重新*配置仍由加载器完整支持。
+
+<Callout type="info">
+三种后端都已实现：`WasmSource`（核心 WASM 模块，而不是 WIT 组件）、`DylibSource` 与 `ProcessSource`，它们共享同一套 JSON 访客 ABI，另有 `kardia-guest` 用于以 Rust 编写访客插件。监视模式是 `HmrConfig { base, watch }`。它们与本计划的不同之处，完整说明见[动态模块](/docs/development-status#dynamic-modules)。
+</Callout>

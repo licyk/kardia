@@ -1,0 +1,84 @@
+---
+title: "快速开始"
+description: "用配置文件运行一个应用，并在它运行时修改它。"
+---
+
+`kardia` 可执行文件从一个 YAML（或 JSON）配置文件加载应用，并让应用与文件保持同步：编辑文件会重新配置运行中的应用，应用对自身条目（entry）所做的修改也会写回文件。
+
+## 运行示例 [#run-the-example]
+
+<Steps>
+<Step>
+
+**在仓库的克隆中运行**。
+
+```sh
+git clone https://github.com/licyk/kardia
+cd kardia
+cargo run -p kardia -- examples/kardia.yml
+```
+
+</Step>
+<Step>
+
+**或者从 crates.io 安装可执行文件**，并让它读取你自己的配置文件：
+
+```sh
+cargo install kardia
+kardia path/to/kardia.yml
+```
+
+</Step>
+</Steps>
+
+不带参数时，可执行文件读取工作目录下的 `kardia.yml`。环境要求见[安装](/docs/installation)。
+
+## 示例应用 [#the-example-app]
+
+`examples/kardia.yml` 是一个条目列表，每个条目运行一个插件（plugin）：
+
+```yaml
+# Run with `cargo run -p kardia -- examples/kardia.yml`, then edit this file:
+# the running app follows (e.g. enable the console logger below).
+- id: timer
+  name: timer
+# Reloads guest modules below `plugins/` in place when they change.
+- id: hmr
+  name: hmr
+  config:
+    watch:
+      enabled: true
+      files:
+        - plugins
+- id: plugins
+  name: group
+  group: true
+  config:
+    - id: console
+      name: logger-console
+      disabled: true
+    # a WebAssembly guest plugin: edit its greeting while the app runs
+    - id: hello
+      name: ./plugins/hello.wat
+```
+
+- `timer` 是内置的定时器服务。
+- `hmr` 在 `plugins/` 下的访客模块文件变化时重新加载它们。
+- `plugins` 是一个包含两个条目的分组（group）：控制台日志（暂时禁用），以及 `hello`，一个直接用 WebAssembly 文本格式手写的访客插件（guest plugin）（`examples/plugins/hello.wat`）。
+
+[配置文件](/docs/guide-configuration)解释了每个字段。
+
+## 运行时可以尝试的操作 [#things-to-try-while-it-runs]
+
+- **修改配置**。在 `examples/kardia.yml` 中，把 `console` 条目的 `disabled` 设为 `false`：控制台日志随即启动。改回 `true`，它就停止。
+- **热重载（hot reload）一个插件**。编辑 `examples/plugins/hello.wat` 中的问候语。`hmr` 条目会原地重新加载这个 WebAssembly 插件：旧实例先输出告别语，然后新实例输出你的问候语。
+- **停止应用**。按 Ctrl-C。关闭应用不会写入配置文件。
+
+## 下一步 [#next-steps]
+
+<Cards>
+  <Card title="配置文件" href="/docs/guide-configuration" description="条目、表达式、双向同步与内置插件。" />
+  <Card title="编写插件" href="/docs/guide-plugins" description="用 Rust 编写服务和插件，并从配置文件加载它们。" />
+  <Card title="热重载" href="/docs/guide-hot-reload" description="在文件变化时重新加载访客模块。" />
+  <Card title="访客插件" href="/docs/guide-guests" description="WebAssembly、动态库与进程访客。" />
+</Cards>

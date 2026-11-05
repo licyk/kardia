@@ -1,0 +1,243 @@
+---
+title: "论文中的实现"
+description: "论文 §5：论文所描述的 Cordis 做法，从理论与运行时的对照表（表 2），到效应、余效应、生命周期、加载器和 HMR 的算法 1–10，再到 Koishi 案例研究。"
+---
+
+本页记录*论文*（[arXiv:2608.25512](https://arxiv.org/abs/2608.25512)，§5）所描述的 Cordis 做法：算法 1–10 与表 2。它处在理论与设计之间。实际的 TypeScript 代码在若干细节上有所不同，这些差异汇总在[论文与代码对照](/docs/reference-paper-vs-code)中；代码本身见 [Cordis 参考](/docs/reference)。
+
+Cordis 是一个**元框架**（meta-framework）：它不规定任何领域（没有路由、ORM 或 UI）；它唯一的职责是通用的动态组合语义。它分三层：
+
+1. **核心库**：效应（effect）与余效应（coeffect）系统（§5.1）；
+2. **组件加载器**：配置协调与 HMR（§5.2）；
+3. **应用框架**，例如 Koishi（§5.3）。
+
+## 表 2：理论 ↔ 运行时
+
+| 理论 | 运行时 |
+|---|---|
+| `Γ∞` | `ctx`，一等公民的上下文 |
+| `γ ∈ Γ` | 上下文树，加上运行中的系统触及的一切 |
+| `𝔈Γ`、`ℑΓ` | 返回 / 产出逆操作的效应回调 |
+| `effect(e)` | `ctx.effect(callback)` |
+| `Σ`、`Σ_iso`、`Σ_inter` | `ctx[@@store]`、`ctx[@@isolate]`、`ctx[@@intercept]`（以 symbol 为键的槽位） |
+| get / set | `ctx.get(key)`、`ctx.set(key, value)` |
+| isolate / intercept | `ctx.isolate(key, realm)`、`ctx.intercept(key, metadata)` |
+| 纤程 `⟨d,p,e,π,σ,τ,θ⟩` | `fiber` |
+| `dom(F)` | 通过 `ctx.registry` 枚举 |
+| 名字 `n` | `fiber.uid` |
+| `d` | `fiber.inject` |
+| `p` | 组件的 `provide` |
+| `e` | `fiber.apply` |
+| `π` | `fiber.parent.fiber.uid` |
+| 派生实现 | `fiber.ctx`，纤程运行于其中的子上下文 |
+| `θ` | `fiber.state`（`LOADING` = Reloading；`FAILED` 携带错误） |
+| 累加器 `g` / recover | `fiber.dispose` |
+| `ω` | `fiber.committed` |
+| `provider_k` | 其提供者纤程为 `ACTIVE` 的 `Impl` |
+| 目标 | `fiber.target`，由 `refresh` 重新计算；`⊥` 即 `INACTIVE` |
+| Future / 惯性 | `fiber.inertia`，正在进行的转移的句柄 |
+| O-Insert、O-Retire | `ctx.use` 及其回调的逆操作 |
+| O-Remove | 纤程从其运行时中丢弃，uid 被清除 |
+| L-Begin/Iter/Finish | `execute` 的迭代循环 |
+| L-Divert | 守卫在迭代边界处失败，或 reload 链接到 unload |
+| L-Leave | `refresh` 把纤程标记为 `UNLOADING` |
+| L-Unload | `unload` 及其惯性链接 |
+| 守卫 | `unload` 等待被通知的依赖者 |
+| 失败 | 错误记录在纤程上，目标设为 `⊥` |
+
+扩展到 kardia Rust 类型的同一对照，见[开发](/docs/development)中的概念对照表。
+
+## 效应追踪（§5.1.1，算法 1）
+
+每一种上下文修改（提供、实例化、监听器……）都归结为同一个原语 `ctx.effect`，因此通过上下文执行的任何操作都会被自动追踪。
+
+```text
+async function execute(callback, guard)
+    iter ← callback(); inverse ← id
+    while guard()
+        (value, done) ← await iter.next()
+        if value then inverse ← value ∘ inverse     // prepend ⇒ LIFO
+        if done then break
+    return inverse
+
+function effect(ctx, callback)
+    armed ← true
+    task ← execute(callback, () ↦ armed)
+    async function dispose()
+        if not armed then return
+        armed ← false            // halts in-flight iteration; at-most-once
+        recover ← await task
+        recover()
+    ctx.dispose ← dispose ∘ ctx.dispose    // parent composition (∂²Γ)
+    return dispose
+```
+
+（注释含义：前置组合即 LIFO；`armed ← false` 让正在进行的迭代停止，并保证至多一次；最后一行是向父级的组合（`∂²Γ`）。）
+
+- `effect` 既接受效应函数也接受迭代器（特设多态）；守卫在每个迭代边界处检查。
+- **不检查**：见证（逆操作确实能撤销）和余效应交换性的见证。这些是作者和提供者的义务。
+- 组件层复用 `execute`，其守卫检查 `fiber.target` 是否稳定。
+
+## 余效应操作（§5.1.2，算法 2–3）
+
+每个上下文携带三个以 symbol 为键的槽位：`@@store`（领域 symbol → 值）、`@@isolate`（键 → 领域 symbol）和 `@@intercept`（键 → 元数据）。
+
+```text
+get(ctx, key):   realm ← ctx[@@isolate][key];  return ctx[@@store][realm]
+set(ctx, key, v): ctx.effect(() ⇒ {
+                    realm ← ctx[@@isolate][key]; ctx[@@store][realm] ← v; notify(ctx, [key])
+                    return () ⇒ { delete ctx[@@store][realm]; notify(ctx, [key]) } })
+
+notify(ctx, keys):
+    for fiber in all_fibers
+        for key in keys
+            if key ∈ fiber.inject and fiber.ctx[@@isolate][key] = ctx[@@isolate][key]
+                refresh(fiber); affected ∪= {fiber}; break
+    return affected
+```
+
+- 绑定只在设置它的纤程为 `ACTIVE` 时才算可用；进入 `UNLOADING` 的提供者停止提供，因此依赖者重新计算出一个未满足的目标，并*在其绑定仍然存在时*开始自己的拆除。
+- `isolate` 和 `intercept` 派生一个覆盖某张继承表的子上下文；恢复是隐式的（丢弃子上下文）。`isolate` 默认使用一个新生成的 symbol；`intercept` 把新元数据合并到继承来的值之上（新值优先）。
+
+## 组件生命周期（§5.1.3，算法 4–5）
+
+```text
+function use(ctx, component, config)
+    function callback()
+        refresh(fiber)
+        return () ⇒ { fiber.target ← ⊥; unload(fiber) }     // O-Retire
+    fiber ← Fiber(parent: ctx, inject: component.inject)
+    fiber.ctx ← ctx[fiber ↦ fiber]
+    fiber.apply ← () ↦ component.apply(fiber.ctx, config)  // config bound in
+    ctx.effect(callback)                                    // O-Insert as a tracked effect
+    return fiber
+
+function refresh(fiber)
+    target ← target(γ, n)
+    if target = fiber.target then return
+    fiber.target ← target
+    if fiber.inertia then return                          // transition in flight: inertial
+    if target ≠ ⊥ then fiber.state ← LOADING;   fiber.inertia ← task(reload(fiber))
+    else               fiber.state ← UNLOADING; fiber.inertia ← task(unload(fiber))   // L-Leave
+
+async function reload(fiber)
+    target0 ← fiber.target
+    fiber.committed ← resolve(fiber.inject)               // commit the view
+    recover ← await execute(fiber.apply, () ↦ fiber.target = target0)
+    fiber.dispose ← recover ∘ fiber.dispose
+    if fiber.target = target0 then
+        fiber.state ← ACTIVE; notify(fiber.ctx, provided(fiber)); fiber.inertia ← null
+    else
+        fiber.state ← UNLOADING; fiber.inertia ← task(unload(fiber))
+
+async function unload(fiber)
+    await all(notify(fiber.ctx, provided(fiber)).map(f ↦ f.await()))   // the guard: drain dependents
+    await fiber.dispose(); fiber.dispose ← id; fiber.committed ← ⊥
+    if fiber.target = ⊥ then fiber.state ← INACTIVE; fiber.inertia ← null
+    else fiber.state ← LOADING; fiber.inertia ← task(reload(fiber))
+```
+
+（注释含义：配置在 `use` 中绑定；O-Insert 作为一个被追踪的效应；有转移在进行时为惯性的；`reload` 开始时提交视图；`unload` 中的守卫等待依赖者清空。）
+
+`refresh`、`reload` 和 `unload` 之间的相互链接：
+
+<Mermaid chart={"flowchart LR\n  R[\"refresh：目标变化\"] -->|\"有转移在进行\"| W[\"等待：正在运行的转移会重新检查\"]\n  R -->|\"target ≠ ⊥\"| L[\"reload：LOADING\"]\n  R -->|\"target = ⊥\"| U[\"unload：UNLOADING\"]\n  L -->|\"目标未变\"| A[\"ACTIVE，通知依赖者\"]\n  L -->|\"目标已变\"| U\n  U -->|\"target = ⊥\"| I[\"INACTIVE\"]\n  U -->|\"target ≠ ⊥\"| L"} />
+
+脚注 2 明确提到了 Rust：*“在惰性调度下（例如 Python 协程、Rust future），宿主必须派生（spawn）任务，任务才会推进”*。为了与语言无关，算法中显式写出了 `create_task`。
+
+<Callout type="info">
+**在 kardia 中**：转移和异步效应体都被派生为 tokio 任务，因此无需调用者轮询也会推进，并且从不在中途被丢弃。所有生命周期簿记都在每个根一把状态锁下的短临界区中完成；持锁期间不运行任何用户代码。见[并发](/docs/development-concurrency)。
+</Callout>
+
+- `fiber.target` 是一个摘要，由每个声明键的提供者 uid 组成元组。**uid 永不复用**，因此即使值相等，被替换的提供者也不会被误认为旧的那个。由此，提供者*原地*覆盖自己的绑定不会被观察到：要传播一次替换，需先撤回再重新设置。
+- 检查分两层：转移层（`reload`/`unload` 在完成时检查目标，形成惯性链接）和迭代层（`execute` 在每个边界检查，形成部分回滚）。
+- 有三行代码承载了定理 70：在 reload 开始时提交视图，并且只在所有逆操作之后才丢弃已提交视图；在调度任务之前先标记 `UNLOADING`；`unload` 等待每个被通知的依赖者。等待位于整个恢复过程**之前**，因为 `fiber.dispose` 会并发地启动纤程各效应的撤销。
+- 终止性依据定理 73（[元理论](/docs/concepts-metatheory)）：提供者图按需遍历。
+
+## 上下文访问（§5.1.4，算法 6）
+
+除了反射式的 `ctx.get`/`ctx.set`，余效应还可以通过 JavaScript `Proxy` 作为**属性**（`ctx[key]`）读取：
+
+```text
+function resolve(ctx, key)
+    fiber ← ctx.fiber
+    repeat
+        if key ∈ fiber.committed then return fiber.committed[key]
+        if key ∈ fiber.inject then throw INACTIVE_ACCESS
+        if fiber = root then throw UNDECLARED_ACCESS
+        fiber ← fiber.parent.fiber
+```
+
+与 `ctx.get`（从不失败）不同，代理针对访问者纤程的**已提交视图**进行解析，并在使用处强制执行规约。读取视图而不是存储，正是让依赖在消费者自身拆除期间仍可读取的原因（定理 70）。这一检查在运行时进行，但由于 `inject` 是静态的，它也可以在编译期进行（§6.4，例如借助 Rust 过程宏或 trait；见[讨论与相关工作](/docs/concepts-related-work)）。
+
+<Callout type="info">
+**在 kardia 中**：没有代理。`ctx.get::<S>()` 针对已提交视图执行算法 6，失败时返回 `AccessError::Undeclared`、`AccessError::Inactive` 或 `AccessError::TypeMismatch`；`ctx.live::<S>()` 是对实时存储的反射式读取，对未声明的键也不会失败。编译期检查同样存在：接收 `Injected<(A, B)>` 的 `#[plugin]` 函数声明了 `A` 和 `B`，对未声明的 `S` 调用其 `get::<S, _>()` 无法通过编译。见[服务](/docs/guide-services)与[插件](/docs/guide-plugins)。
+</Callout>
+
+## 组件加载器（§5.2）
+
+### 声明式配置（§5.2.1）
+
+**定义 81：条目（entry）**：`id`（稳定的协调键）、`url`（组件模块）、`isolate`、`intercept`、`config`、`disabled`。条目是一份忠实的规约，因为它恰好记录了支撑集所读取的东西：`disabled` → `τ`，树中的父节点 → `π`，`url` → `(d, p)`。条目构成一棵**配置树**；`@cordisjs/group` 加载一组子条目；`@cordisjs/include` 嫁接一个外部 YAML 或 JSON 文件。绑定是**双向的**：组件修订自己的配置或禁用自身时，变更会被写回。
+
+**协调**是增量的，其合理性来自：定理 80（终点是最终配置的函数）、定理 73（它会静止）、推论 69（重建一个条目不影响其邻居）以及定理 70（条目可以一起实例化，纤程会在 L-Begin 处等待，因此**模块是并发加载的**）。变更按字段分派：
+
+| 变更的字段 | 动作 |
+|---|---|
+| `id`、`url` | 重建该条目 |
+| `isolate` | 重新分配领域（算法 7） |
+| `intercept` | 原地更新（在读取时查询；不重新加载） |
+| `config` | 交给组件，组件通常做差异比较，只在有实质变化时重新加载。分组（group）的配置就是其子条目列表，因此对子条目 id 做按键差异比较，并递归处理 |
+| `disabled` | 设置时卸载，清除时重新加载 |
+
+**托管领域。**`isolate: true` 给出一个条目私有的*局部*领域，以条目 id 标记，并在条目移动时随之移动；`isolate: "name"` 给出一个*全局*领域，由所有指明该字符串的条目共享。当不再有条目指明某个领域时，它被丢弃。
+
+**算法 7：借助定界符重新分配领域**。每个键有一个定界符 symbol `δ_k`；每个上下文在 `δ_k` 下存储一个标签，由后代继承，并在每次重新分配时重新生成，因此 `γ′[δ_k] = d₁ ⇔ γ′` 派生自该条目的上下文。
+
+```text
+patch_isolation(entry, ρ′):
+    ρ ← entry.ctx[@@isolate]; store ← entry.ctx[@@store]
+    Δ ← {k | ρ(k) ≠ ρ′(k)}
+    for k in Δ: entry.ctx[δ_k] ← fresh tag
+                diff[k] ← (ρ(k), ρ′(k), entry.ctx[δ_k], store[ρ(k)].fiber.ctx[δ_k])
+    entry.ctx[@@isolate] ← ρ′
+    reload(entry.fiber)
+    for k in Δ: (s1,s2,d1,d2) ← diff[k]
+                if d1 = d2 and store[s1] and not store[s2]:     // binding is the entry's own
+                    store[s2] ← store[s1]; delete store[s1]
+    affected(fiber, k) := fiber.ctx[@@isolate][k] ∈ {s1,s2} and (fiber.ctx[δ_k] = d1) ≠ (d2 = d1)
+    notify(entry.ctx, Δ, affected)
+```
+
+（注释含义：该绑定属于条目自身时才移动它。）当且仅当这次移动把依赖者与提供者分开（或合到一起）时，依赖者失去（或获得）该绑定。
+
+<Callout type="info">
+**在 kardia 中**：声明式加载器是 `kardia-loader` crate（条目、分组、领域和插件 `Catalog`），带双向同步的文件式 include（配置文件引入）是 `kardia-include`。见[加载器](/docs/guide-loader)与[加载器内部实现](/docs/development-loader)。
+</Callout>
+
+### 模块热替换（§5.2.2）
+
+由于纤程界定了组件的全部效应，一个作为组件的模块只需通过纤程操作即可被替换，**不需要开发者标注的接受边界**（这一点不同于 Webpack 或 Vite）。
+
+<Steps>
+<Step>
+**阶段 1：分类（算法 8）**。输入是 `stashed`（发生变化的文件）和 `externals`（不可替换的模块，它们的变化需要完全重启）。在 `get_imports` 上求不动点：若一个待定模块的某个导入被接受，则它被*接受*；若其所有导入都被拒绝，则它被*拒绝*；剩下的（环）默认为拒绝。
+</Step>
+<Step>
+**阶段 2：过期条目检测（算法 9）**。对每个条目，收集 `entry.url` 的传递导入，遇到被拒绝的模块即停止；若这棵树与 `accepted` 相交，则该条目过期，其树被并入 `accepted`。
+</Step>
+<Step>
+**阶段 3：事务式重新加载（算法 10）**。使被接受模块的缓存失效（并备份），重新导入每个过期条目，并换入一个新纤程；一旦出现任何错误，就恢复缓存，用备份重建每个过期条目，然后重新抛出错误。系统从不进入半重载的状态。（在 Node.js 上，ESM 和 CJS 缓存都会被清除。）
+</Step>
+</Steps>
+
+<Callout type="info">
+**在 kardia 中**：Rust 没有模块注册表，因此 `kardia-hmr` 自己维护一个 `ModuleGraph`，从 `ModuleSource`（WebAssembly、动态库或子进程）加载，并通过 `registry.replace` 替换变化模块所导出的插件。宿主模块的变化只会被报告、需要重启，而不会被应用。一次失败的导入只中止它自己的单元（与它共享模块的那些插件），该单元的缓存条目被恢复，其他单元照常应用。见[热重载](/docs/guide-hot-reload)与[加载器内部实现](/docs/development-loader)。
+</Callout>
+
+## 案例研究：Koishi（§5.3）
+
+- Koishi 是一个聊天机器人框架，已有 4 年以上历史，拥有超过 4000 个社区插件（IM 适配器、数据库驱动、控制台、功能插件）；它的 Web 控制台是浏览器中的第二个独立 Cordis 应用。因此该模型是**有表达力的**（足以支撑生产系统）和**通用的**（不预设任何领域或运行时）。
+- 从控制台禁用插件会就地撤销其效应；HMR 在保存时重新应用被编辑的插件，同时保留其他地方的缓存和连接。作者无需编写卸载路径就能得到有序的清理。
+- 存在真实的依赖拓扑（适配器、数据库、功能）。重新配置一个提供者只会重新激活那些已解析依赖发生变化的依赖者；依赖不可用的插件会等待而不报错。
+- **有效性威胁**：单一生态、单一语言、观察性证据；开销与生产力的测量留待未来工作。

@@ -1,0 +1,110 @@
+---
+title: "Include 与分组"
+description: "@cordisjs/plugin-include 如何把 YAML/JSON 文件嫁接进条目树并保持文件与纤程的双向同步，以及 @cordisjs/plugin-group 是什么。"
+---
+
+本页介绍 `cordis/packages/include/src/{index,journal,patch}.ts` 与 `packages/group/src/index.ts`。对应的论文内容是 §5.2.1（“`@cordisjs/include` loads an external configuration file (YAML or JSON) and grafts its entries in as a nested subtree”，见[实现](/docs/concepts-implementation)）。论文没有描述下文的同步机制；它是实现层面的贡献。
+
+## 分组 [#group]
+
+`packages/group/src/index.ts` 只是从加载器（loader）重新导出 `Group`（见 [`EntryTree` 与 `EntryGroup`](/docs/reference-loader#entry-tree)）。它的配置就是子条目（entry）列表；配置更新以按键差异的方式被原地吸收。
+
+## Include：以文件支撑的 `EntryTree` [#include]
+
+`class Include extends EntryTree`，`inject = ['loader']`，用法：
+
+```ts
+{ name: '@cordisjs/plugin-include', config: { path, initial?, patches?, enableLogs?, watch? } }
+```
+
+它是一个类插件，其异步生成器 `[Service.init]` 读取文件、产出 `() => this.stop()`，然后应用这棵树。其条目的复合 id 为 `<includeEntryId>:<localId>`；include（配置文件引入）可以嵌套。
+
+- `path` 相对于父树的 `baseUrl` 解析；include 自己的 `ctx.baseUrl` 变为该文件所在目录（嵌套的名称与 include 相对于该文件解析）。
+- 文件不存在时（仅 ENOENT）写入 `initial`；已存在但无法解析的文件**永远不会被覆盖**。
+- `watch: true` → `ctx.inject(['fs'], ctx => ctx.fs.watch(filename).on('change', () => this.refresh()))`。
+- 一个 `internal/update` 监听器原地重新配置（新的 `patches`），除非 `path`/`watch` 发生变化（此时完全重启）。
+
+### 状态 [#state]
+
+| 字段 | 含义 |
+|---|---|
+| `filename` | 解析后的文件 |
+| `type` | 按扩展名为 `application/json` 或 `application/yaml` |
+| `cache?` | `{ content, data (parsed, ids assigned, unpatched), syntax? }` |
+| `journal` | `Map<id, JournalRecord>`：尚未写入文件的树侧变更 |
+| `index?` | `PatchIndex`（归属关系） |
+| `anonymous` | 为无 id 的文件条目生成的 id |
+| `dirtyRead` / `dirtyWrite` | IO 标志 |
+| `_draining` | 正在运行的 IO 循环 |
+| `_pendingTree` / `_applyTask` | 最新者胜出的应用 |
+
+## IO 循环 [#io-loop]
+
+`index.ts:365-397`。单飞（single-flight）的 `_drain` 运行 `while (dirtyRead || dirtyWrite) { read-if-dirty; write-if-dirty }`。读取错误只是**警告**（编辑期间文件写到一半是常态），并在不写入的情况下停止循环（文件状态未知）；写入错误被记录，循环继续。`commit(change)`（来自树）记录到变更记录（journal）中，设置 `dirtyWrite` 并排空。`refresh()`（监听器）设置 `dirtyRead`。
+
+<Mermaid chart={"flowchart LR\n  tree[\"树变更：commit(change)\"] -->|\"journal + dirtyWrite\"| drain[\"_drain 循环\"]\n  watcher[\"监听器：refresh()\"] -->|\"dirtyRead\"| drain\n  drain --> read[\"_read()\"]\n  drain --> write[\"_write()\"]\n  read -->|\"调度应用\"| apply[\"root.update(tree)\"]\n  write --> file[(\"配置文件\")]\n  file --> read"} />
+
+### `_read()` [#read]
+
+1. 读取；内容相同 ⇒ 什么也不做（这也抑制了自身写入引起的监听器回馈）。
+2. 解析 YAML（无论 `%YAML` 如何都使用 core schema，自定义标签 `!!js`，**错误与警告都是致命的**）或 JSON；把问题映射到 `file:line:col`（从 1 开始，**UTF-16 列**）。
+3. 校验顶层数组与各对象条目；失败时保留之前的树。
+4. 为匿名条目分配 id（跨读取稳定：若父级相同且选项深度相等，则复用之前的 id）。
+5. 若不是第一次读取：对 journal 与新旧文件状态做三方**协调**；冲突时**文件胜出**，每个冲突都会被记录。
+6. 缓存并调度一次应用；若 journal 非空，调度一次写入。
+
+### `_write()` [#write]
+
+- 重新读取；若文件被外部修改，先合并。
+- 对 journal 做快照并交换；`routeJournal` 把每个变更发送给其**所有者**：文件数据、include 自身配置中的某个补丁，或嵌入在补丁中的某个条目。
+- 补丁变更通过 `this.ctx.fiber.update(newConfig)`（不 await）持久化，它经 `internal/commit` 流入**父**树的文件。
+- 文件变更被整体导出（**整文件重新生成：注释与格式会丢失**）并原子写入：在同一目录下的临时文件 `.<base>.<pid>.<seq>.tmp`，在**每次**重命名尝试前检查内容是否过时，遇到 EACCES/EPERM/EBUSY 时重试重命名（11 次尝试，线性退避）。
+- 只读文件把变更保留在内存中，并给出警告。
+
+### 树的应用 [#apply]
+
+`applyPatches(cache.data, patches)`（每次都是新克隆，因此移除补丁即可还原）→ `applyJournal(data, journal)`（叠加尚未写入的运行时变更）→ 最新者胜出的 `root.update(tree)` → `EntryGroup` 按键协调。
+
+## 变更记录（journal） [#journal]
+
+`journal.ts` 由纯函数组成：
+
+```ts
+type JournalRecord =
+  | { kind: 'remove' }
+  | { kind: 'upsert'; created: boolean; parent: string | null | undefined; position: number; changes: Dict }
+```
+
+| 函数 | 用途 |
+|---|---|
+| `record` | 在报告时捕获的增量 |
+| `mergeRecords` | remove∘created-upsert = 无；remove 之后的 upsert ⇒ `created:false`；changes 按较新者胜出合并 |
+| `flatten`、`applyChanges`、`detach`、`place`、`applyJournal` | 把记录应用到条目列表 |
+| `reconcile(journal, base, theirs, fileOwned)` | 三方合并，冲突的键/移动/移除会从 journal 中丢弃（“文件胜出”） |
+
+## 补丁 [#patches]
+
+`patch.ts`：
+
+- **插入补丁** `{ id?, insert: [...] }` 把条目追加到某个分组（或根）中。
+- **覆盖补丁** `{ id, name?, ...keys }` 覆盖现有条目的键。若给出 `name`，它必须匹配（防止误给另一个插件打补丁）；覆盖分组的 `config` 会替换其子级列表。
+- `applyPatches` 构建一个 `PatchIndex`，记录每个条目与键的**所有者**：`file`、`patch{index}` 或 `embedded{index, key}`。后面的补丁可以引用前面补丁插入的条目。
+- `routeJournal` 把每次运行时编辑写回其所有者：补丁拥有的键 → 该补丁；由补丁插入的条目 → 补丁内部；其余 → 文件。
+
+## 源位置 [#source-locations]
+
+`_route(id, path)` 找到某个值被写在哪里（文件、补丁、嵌入），并沿嵌套的 include 向上委托，生成形如 `at a (inner.yml:1:3)` / `at inc (middle.yml:1:3)` 的虚拟栈帧。`walk` 下降遍历 YAML AST（把别名解析到锚点）；`seekExpr`/`scanScalar` 把表达式内部的偏移映射为文件偏移（解码带引号标量中的转义）。
+
+## 错误 [#errors]
+
+| 错误 | 所在 |
+|---|---|
+| `ConfigFileError(stage: 'read'\|'parse'\|'validate', path, cause, issues[])` | include |
+| `StaleWriteError` | include（内部） |
+| `EntryValidationError`、`ModuleNotFoundError`、重定位后的 `ValidationError` | 加载器 |
+
+## 设计说明 [#design-notes]
+
+- include 是论文中配置与纤程（fiber）之间*双向*绑定最清晰的例子：运行时变更（插件自我更新或自我禁用、API 编辑）流回文件，文件编辑流入纤程，冲突以确定性的方式解决。
+- 正确性依赖于合流性（定理 80，见[元理论](/docs/concepts-metatheory)）：include 可以应用中间树、跳过它们（最新者胜出）或以不同顺序应用；静止状态只取决于最终的树。
+- 同步核心（journal、补丁、协调、路由、id 分配）是对条目列表的**纯数据变换**，也是整个代码库中最易移植的部分。

@@ -1,0 +1,88 @@
+---
+title: "辅助包"
+description: "timer、logger-console、fs-node、package-manager、loader-utils 与 create：普通的 Cordis 服务如何建立在核心原语之上。"
+---
+
+论文没有描述这些包；它们展示了普通服务（service）如何建立在核心原语之上。
+
+<Callout type="info">
+**共同主题：** 每个资源都通过*调用方*纤程（fiber）上的 `ctx.effect` 注册（经服务 tracker 找到调用方，见[服务与可追溯性](/docs/reference-services)），因此在调用方卸载时被释放。服务中没有针对每个消费者的簿记。
+</Callout>
+
+## `@cordisjs/plugin-timer` [#timer]
+
+`timer/src/index.ts`。服务 `timer`，以 `ctx.timeout / interval / throttle / debounce / setTimeout / setInterval` 的形式混入上下文。
+
+| API | 语义 |
+|---|---|
+| `timeout(cb, ms) → dispose` | 围绕 `setTimeout` 的效应；触发时先释放自身（把该效应从纤程中移除），再调用 `cb` |
+| `timeout(ms) → Promise<void>` | 休眠；释放纤程会以 `Error('Context has been disposed')` 拒绝它；promise 落定时移除该效应 |
+| `interval(cb, ms) → dispose` | 围绕 `setInterval` 的效应 |
+| `interval(ms) → AsyncIterableIterator` | 每次 tick 只 resolve 最早的待处理 `next()`；没有等待者的 tick 被丢弃；具有异步迭代器的 `return()`/`throw()` 语义；释放纤程会拒绝待处理的读取 |
+| `throttle(cb, ms, noTrailing?)` | 前沿调用，除非 `noTrailing` 否则以最新参数做后沿调用；`.dispose()` |
+| `debounce(cb, ms)` | 每次调用重启定时器；`.dispose()` |
+
+## `@cordisjs/plugin-logger-console` [#logger-console]
+
+`shared.ts`、`index.ts`、`browser.ts`。一个类插件（`name = 'logger-console'`），其构造函数调用 `ctx.logger.exporter(this)`，因此导出器的生存期与插件完全一致（见[日志器](/docs/reference-events#logger)）。
+
+- 配置：`colors`（Node 下默认取自 `supports-color`）、`maxLength`、按名称的 `levels`、`showDiff`、`showTime` 模板、`label { width, margin, align }`。
+- 它渲染 `[E]/[W]/[I]/[D]` 前缀、哈希着色的标签、对齐的续行以及可选的 `+Nms` 时间差；`%o` 使用 `util.inspect`。
+- 浏览器构建委托给 `console.*`。
+
+## `@cordisjs/plugin-fs-node` [#fs-node]
+
+`index.ts`、`watcher.ts`。服务 `fs`，目前只有 `watch(path, { filter }) → Watcher`。
+
+- 路径相对于**调用方的** `ctx.baseUrl` 解析；接受 `file:` URL；拒绝 Windows 的驱动器相对路径形式。
+- 单个文件**通过其父目录**监听（`depth: 0`），因此基于重命名的原子写入不会丢失监听。
+- `Watcher` 是一个包装 chokidar（`ignoreInitial`）的异步效应，在初始扫描之后注册。只转发 `change` 事件；`ready` 会异步地向后加入的监听器重放；分发使用快照；监听器错误交给 `error` 监听器（其自身的错误只被记录）。
+- 过滤器由类 gitignore 的规则组成：**最后一个匹配胜出**，对条目*或其任一祖先*进行测试。若后面某条包含规则的字面基础路径与某目录相关，该目录仍会被遍历；离开根目录的模式会被拒绝。
+
+## `@cordisjs/plugin-package-manager` [#package-manager]
+
+`index.ts`、`agent.ts`、`manifest.ts`、`backup.ts`、`process.ts`、`state.ts`。服务 `packageManager`：驱动 npm / pnpm / yarn classic / yarn berry 的事务式依赖安装（仅限提升式 `node_modules`）。
+
+`install(changes, { signal })` 串行执行：
+
+<Steps>
+<Step>
+从 `package.json#packageManager` 检测代理（精确版本，经 `--version` 验证），要求存在锁文件，并检查目录布局。
+</Step>
+<Step>
+对安装状态做快照，并备份清单、锁文件与 rc 文件（保留权限模式与符号链接）。
+</Step>
+<Step>
+编辑 `package.json`（保留缩进、行尾与排序）。
+</Step>
+<Step>
+以**无活动超时**和中止支持运行代理。
+</Step>
+<Step>
+对比安装状态（`added/removed/updated`，附真实路径）。
+</Step>
+</Steps>
+
+- 失败时：恢复文件并运行一次**不可取消的恢复安装**；若这也失败，则抛出 `AggregateError`。
+- 进程在自己的进程组中启动（POSIX），并杀死整个进程树（SIGTERM → SIGKILL；Windows 上为 `taskkill /T`）。环境中会清除外层 `yarn run` 泄漏的变量。
+- 真实路径使用 Node 的 JS `realpath` 算法，以便与模块 URL 匹配（本意是为 hmr 提供根；仓库中尚未接通）。
+
+## `@cordisjs/loader-utils` [#loader-utils]
+
+`index.ts`、`internal.ts`。`unwrapExports`（ESM/esbuild 互操作）以及 `ModuleLoader.fromInternal()`，后者提供对 Node 内部级联 ESM 加载器的访问（在 Node 22–24.12+ 之间按 API 是否存在来检测其形态）。纯粹的 Node 胶水代码；**没有 Rust 对应物**。
+
+## `create-cordis` [#create]
+
+`create/src/index.ts`、`bin.ts`。一个独立的脚手架 CLI（不使用 core）：
+
+1. 提示输入名称并准备目录；
+2. 从配置的 npm 注册表获取模板包（`@cordisjs/boilerplate`）的 tarball，并以 `strip: 1` 解压；
+3. 可选地放置一个固定版本的 Yarn 二进制（五条成文规则）；
+4. 改写 `package.json`，可选地 `git init`，安装并启动。
+
+错误时打印固定消息并 `process.exit(1)`（测试以子进程方式运行它）。`--mirror` 标志会被解析但未被使用。
+
+## 对移植的启示 [#port]
+
+- timer、fs 与日志导出器都是薄包装，证明了 **“由效应决定生存期” + 调用方归属** 足以让任意资源变得可撤销：这正是论文 §6.1 中“在边界内获取资源”的模式（见[讨论与相关工作](/docs/concepts-related-work)）。
+- package-manager 与 create 是 Node 生态的工具；对 Rust 框架而言，它们是可选的，或必须重新定位目标（例如 Cargo / WASM 组件包）。

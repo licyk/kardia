@@ -1,0 +1,26 @@
+---
+title: "Guide"
+description: "How to use kardia: config files, plugins, services, effects, the loader, hot reload and guest plugins."
+icon: BookOpen
+---
+
+The guide explains how to build apps with kardia, from the config file of the `kardia` binary to plugins written in Rust and guest plugins that reload in place. It assumes kardia is [installed](/docs/installation); [Quick start](/docs/quick-start) shows a running app first.
+
+<Cards>
+  <Card title="The configuration file" href="/docs/guide-configuration" description="Entries and their fields, expressions, two-way sync, and the built-in plugins." />
+  <Card title="Writing plugins" href="/docs/guide-plugins" description="Services and plugins in Rust: #[derive(Service)], #[plugin], PluginDef, and registering plugins for the loader." />
+  <Card title="Services" href="/docs/guide-services" description="Providing and using services, caller attribution, interception, events and the logger." />
+  <Card title="Effects" href="/docs/guide-effects" description="Revertible effects, disposers, effect scopes and how a plugin is torn down." />
+  <Card title="Loader" href="/docs/guide-loader" description="Entries, groups, isolation, include and the catalog, driven from Rust." />
+  <Card title="Hot reload" href="/docs/guide-hot-reload" description="Reloading guest modules in place, and watch mode." />
+  <Card title="Guest plugins" href="/docs/guide-guests" description="WebAssembly, dynamic-library and process guests, and the guest interface." />
+</Cards>
+
+## Which page do I need? [#which-page-do-i-need]
+
+- **Running an app from a config file:** [The configuration file](/docs/guide-configuration), then [Hot reload](/docs/guide-hot-reload).
+- **Writing plugins compiled into your app:** [Writing plugins](/docs/guide-plugins), [Services](/docs/guide-services) and [Effects](/docs/guide-effects).
+- **Building your own host around the loader:** [Loader](/docs/guide-loader).
+- **Writing plugins that reload without restarting the app:** [Guest plugins](/docs/guide-guests).
+
+The guide describes how to use kardia. Why it is designed this way is on [Development](/docs/development), and the theory behind it on [Concepts](/docs/concepts).

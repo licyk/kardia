@@ -1,0 +1,207 @@
+---
+title: "Context and reflection"
+description: "How Cordis core represents contexts, stores service bindings per realm, notifies dependents and resolves coeffects through a Proxy."
+---
+
+This page covers `cordis/packages/core/src/context.ts`, `reflect.ts` and `utils.ts`. The paper counterparts are §3.2 (coeffects, see [Reactive coeffects](/docs/concepts-reactive-coeffects)), §5.1.2 (Algorithms 2–3) and §5.1.4 (Algorithm 6), both in [Implementation](/docs/concepts-implementation).
+
+## `Context`: the first-class context [#context]
+
+`context.ts` declares:
+
+```ts
+export interface Context {
+  [symbols.root]: this                // the root context (proxied)
+  [symbols.isolate]: Dict<symbol>     // ρ: key → realm symbol (prototype-chained)
+  [symbols.intercept]: Dict           // ι: key → metadata (prototype-chained)
+  baseUrl?: string
+  events: EventsService; logger: LoggerService; reflect: ReflectService; registry: RegistryService
+  fiber: Fiber                        // (declared in fiber.ts)
+}
+```
+
+### Construction [#construction]
+
+`new Context()` builds the **root** (`context.ts:36-49`):
+
+<Steps>
+<Step>
+It creates empty `isolate`/`intercept` tables (`Object.create(null)`).
+</Step>
+<Step>
+It wraps itself in a `Proxy` with `ReflectService.handler`. This proxy *is* the context everybody sees; `this[symbols.root] = self`.
+</Step>
+<Step>
+It creates the **root fiber** `new Fiber(self, {}, {}, null, …)` (runtime `null` ⇒ root, uid 0, `ACTIVE`).
+</Step>
+<Step>
+It instantiates the four built-in services on the root: `reflect`, `registry`, `events`, `logger`.
+</Step>
+<Step>
+It calls `this.fiber._disposables.clear()`. The built-in mixins and accessors registered during construction are *not* part of the root fiber's revertible effects: they must survive `root.fiber.dispose()`.
+</Step>
+</Steps>
+
+### Derivation with `extend()` [#extend]
+
+`context.ts:55-63`:
+
+```ts
+extend(meta = {}) {
+  const self = Object.create(getTraceable(this, this))   // prototype-chain child
+  // copy own descriptors of meta onto self
+  // preserve a shadow wrapper if `this` is a shadow context
+}
+```
+
+Every derived context is a **prototype-chain child** of its parent. This realizes the paper's *derived realization* (Definition 23): the child overrides some slots and inherits everything else. Nothing needs to be undone; dropping the child object discards the adjustment.
+
+- `isolate(name, label?)` (`context.ts:65`) creates `Object.create(this[symbols.isolate])`, sets `shadow[name] = label ?? Symbol(name)` and extends with it. A fresh symbol gives a private realm; a shared `label` gives a shared realm.
+- `intercept(name, config)` (`context.ts:73`) follows the same pattern for the intercept table.
+- A fiber's context is `parent.extend({ fiber: this })` (`fiber.ts:150`).
+
+<Callout type="info">
+**Key property:** the isolation and interception tables are *prototype chains*. A lookup (`table[name]`) sees the nearest override; `Object.hasOwn(table, name)` detects an isolation boundary introduced at exactly that level (used by [`locate`](#locate)).
+</Callout>
+
+### Realm symbols [#realm-symbols]
+
+`ReflectService.provide` lazily assigns a root realm: `ctx[symbols.root][symbols.isolate][name] ??= Symbol(name)` (`reflect.ts:222`). Thus *every* service name has a realm symbol in the root table once it has been provided; isolated contexts override it. The **store is keyed by realm symbol**, which gives the two-layer `k → ρ(k) → σ(ρ(k))` resolution of Definition 24.
+
+## `ReflectService` [#reflect-service]
+
+`reflect.ts` holds the shared, root-level tables:
+
+| Field | Paper | Meaning |
+|---|---|---|
+| `store: Dict<Impl, symbol>` | σ (`@@store`) | realm symbol → current `Impl` (binding) |
+| `props: Dict<Property>` | – | declared context properties: `{type:'service'}` or `{type:'accessor', get, set}` |
+| `_implCounter` | fresh names | uid source for `Impl`s (never reused) |
+
+### `Impl`: a binding [#impl]
+
+`reflect.ts:65-75`:
+
+```ts
+interface Impl {
+  uid: number            // fresh per provision ⇒ provider identity for target views
+  name: string
+  ctx: Context           // provider's context (impl.ctx.fiber = provider fiber)
+  dependents: Set<Fiber> // fibers whose committed view references this impl
+  release?: () => void   // resolver for the provider-side guard
+  value?: any
+  check?: () => boolean  // Service[symbols.check] – extra availability predicate
+  isolate: symbol        // actual realm symbol (may differ from provider ctx after a blocked move)
+}
+```
+
+### `provide(name, value?, check?)`: coeffect provision [#provide]
+
+`reflect.ts:213-249`. `provide` is a `fiber.effect` (therefore tracked and revertible) whose callback:
+
+1. registers or validates `props[name]` as a service (an error if it is already an accessor);
+2. ensures a root realm symbol and computes `key = ctx[isolate][name]`;
+3. performs the **single-source check**: it throws `service "x" has been registered at <fiber>` if `store[key]` exists (O-Insert's disjointness, per realm);
+4. sets `store[key] = impl` and `fiber.provisions.add(impl)`;
+5. if the providing fiber is already `ACTIVE`, calls `notify([name])` immediately; otherwise notification happens when the fiber becomes `ACTIVE` (`Fiber._updateState`), matching "only Active fibers provide".
+
+Its **inverse** is async:
+
+1. delete the store entry (if it still holds this impl) and `notify` dependents in the impl's realm;
+2. the **provider-side guard**: `await` until `impl.dependents` is empty (`impl.release` is resolved by the last dependent's unload). It always yields at least once, so child cleanup can still access the inherited service;
+3. remove the impl from `fiber.provisions`.
+
+### `set(name, value)` [#set]
+
+`reflect.ts:200-211`. An in-place overwrite of the *own* binding (`impl.value = value`); an error if the name is not provided or is provided by another fiber. There is **no notification**: as the paper notes, an in-place overwrite is not observed by dependents.
+
+### `get(name, strict = true)` and `_getImpl` [#get]
+
+`reflect.ts:188-198`. Resolves `ctx[isolate][name]` → `store[key]`. In `strict` mode it returns nothing unless `impl.ctx.fiber.state === ACTIVE` (**provider availability = Active**). It never throws.
+
+### `notify(names, filter?)`: reactive notification [#notify]
+
+`reflect.ts:251-270`:
+
+```text
+for runtime of registry.values()
+  for fiber of runtime.fibers
+     for name of names
+       if name ∈ fiber.inject && filter(fiber.ctx, name):   // default: same realm symbol
+         fiber._checkImpl(name)                             // recompute this key's resolution
+     if any: fiber._refresh()                                // recompute target, maybe transition
+emit 'internal/service'(name, value) with a realm filter on listeners
+```
+
+This is Algorithm 3. The *filter* parameter exists so that the loader can replace the realm test during realm reassignment (Algorithm 7, see [Managed realms](/docs/reference-loader#managed-realms)).
+
+### `accessor` and `mixin` [#accessor-mixin]
+
+`accessor(name, {get, set})` and `mixin(source, keys)` live at `reflect.ts:272-308`.
+
+- `accessor` declares a computed context property (as a revertible effect).
+- `mixin('events', ['on', 'emit', …])` exposes members of a service as context properties (`ctx.on` → `ctx.events.on`) bound to the accessing context. It is a generator effect that yields one accessor per key.
+
+The root wires (`reflect.ts:182-185`):
+
+| Source | Keys mixed into the context |
+|---|---|
+| `reflect` | `get`, `set`, `provide`, `accessor`, `mixin` |
+| `fiber` | `runtime`, `effect` |
+| `registry` | `inject`, `plugin` |
+| `events` | `on`, `once`, `parallel`, `emit`, `serial`, `bail`, `waterfall` |
+
+## Property access through the Proxy [#proxy]
+
+`ReflectService.handler` (`reflect.ts:105-170`) mediates `ctx.foo` in its `get` trap:
+
+1. *special* properties (symbols, `prototype`, `then`, numeric strings, names starting with `_`) bypass mediation;
+2. ordinary own or inherited properties are returned through `getTraceable` (see [Services and traceability](/docs/reference-services#traceable-proxies));
+3. a declared **accessor** → its getter;
+4. if the *def site* (the shadow, see [Services and traceability](/docs/reference-services#traceable-proxies)) is the **root fiber** → unchecked `reflect.get(prop, false)` (root code cannot declare `inject`);
+5. otherwise a `waterfall('internal/get', …)` (which lets plugins hook access) around `locate(defSite, prop)`:
+   - impl found → its value (traced);
+   - the fiber declares the key but has no committed impl → `cannot get required service "x" in inactive context`;
+   - nobody declares it → `cannot get property "x" without inject`.
+
+The `set` trap: an undeclared property on a non-root fiber → the error `cannot set property without provide`; an accessor → its setter; a service → `waterfall('internal/set')` → `reflect.set`.
+
+Errors are created as cheap placeholders and only materialized with a trimmed stack when thrown (`createAccessError`/`enhanceAccessError`).
+
+### `locate(ctx, name)`: the committed-view walk [#locate]
+
+`reflect.ts:83-102` implements Algorithm 6, extended with own provisions and isolation boundaries:
+
+```text
+key ← ctx[isolate][name]; table ← ctx[isolate]; fiber ← ctx.fiber
+loop
+  if fiber provides `name` in the same realm  → { impl }          (own provision)
+  walk `table` up to fiber.ctx[isolate]; if an own override of `name` is met → undefined
+                                                                     (isolation boundary)
+  if fiber.committed[name] or name ∈ fiber.inject → { fiber, impl }  (impl may be undefined ⇒ inactive)
+  if fiber is root → undefined
+  fiber ← fiber.parent.fiber
+```
+
+Consequences, all covered by `tests/isolate.spec.ts` and `reflect.spec.ts`:
+
+- a consumer reads the **committed** impl, not the live store, so it keeps seeing its dependency during its own teardown (Theorem 70);
+- a child plugin *inherits* the injection of an ancestor (`inject` declared on an ancestor admits access in descendants);
+- an isolation boundary stops inheritance (`does not inherit the injected view across isolation boundaries`).
+
+## Interception [#interception]
+
+`Service[symbols.resolveIntercept]` (`service.ts:57-70`) resolves the metadata for a service named `name` at access time:
+
+1. walk the context's intercept prototype chain, collecting own values **outer → inner**;
+2. prepend the *component-declared* metadata `locate(caller, name).fiber.inject[name]` (the value given in `inject: { name: meta }` of the declaring fiber) at the lowest priority. There is none for own provisions, and the walk stops at an isolation boundary;
+3. merge with `service[symbols.mergeIntercept]` (default `Object.assign({}, ...values)`, so right-biased).
+
+This is exactly `σ(k)(d(k) ⊕ ι(k))` from Definition 27, with ⊕ = shallow object merge (customizable per service). The `logger` service uses it for `{ name, level }` (`logger.ts:213-224`).
+
+## Design observations [#design-observations]
+
+- **Everything is in the root.** There is one `store`, one `props` and one `registry` per root; derived contexts differ only by their prototype-chained `isolate`/`intercept` tables and their `fiber`. This keeps "is key k provided in realm r?" a single map lookup.
+- **Provider identity** is the `Impl.uid`, a fresh counter value. This implements the "name, not value" discipline of the committed and target views.
+- **Isolation per realm symbol** implements the relaxed calculus "disjoint within a realm" (§4.4, see [Metatheory](/docs/concepts-metatheory)).
+- **No compile-time checking**: declared vs. accessed keys are checked only at runtime, by the proxy (paper §5.1.4 notes this could be static).

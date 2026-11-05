@@ -1,0 +1,207 @@
+---
+title: "上下文与反射"
+description: "Cordis 核心如何表示上下文、按领域存储服务绑定、通知依赖方，并通过 Proxy 解析余效应。"
+---
+
+本页介绍 `cordis/packages/core/src/context.ts`、`reflect.ts` 与 `utils.ts`。对应的论文内容是 §3.2（余效应（coeffect），见[响应式余效应](/docs/concepts-reactive-coeffects)）、§5.1.2（算法 2–3）与 §5.1.4（算法 6），后两者见[实现](/docs/concepts-implementation)。
+
+## `Context`：一等上下文 [#context]
+
+`context.ts` 声明：
+
+```ts
+export interface Context {
+  [symbols.root]: this                // the root context (proxied)
+  [symbols.isolate]: Dict<symbol>     // ρ: key → realm symbol (prototype-chained)
+  [symbols.intercept]: Dict           // ι: key → metadata (prototype-chained)
+  baseUrl?: string
+  events: EventsService; logger: LoggerService; reflect: ReflectService; registry: RegistryService
+  fiber: Fiber                        // (declared in fiber.ts)
+}
+```
+
+### 构造 [#construction]
+
+`new Context()` 构建**根**上下文（`context.ts:36-49`）：
+
+<Steps>
+<Step>
+创建空的 `isolate`/`intercept` 表（`Object.create(null)`）。
+</Step>
+<Step>
+用 `ReflectService.handler` 把自身包装进一个 `Proxy`。这个代理*就是*所有人看到的上下文；`this[symbols.root] = self`。
+</Step>
+<Step>
+创建**根纤程（fiber）** `new Fiber(self, {}, {}, null, …)`（runtime 为 `null` ⇒ 根，uid 0，`ACTIVE`）。
+</Step>
+<Step>
+在根上实例化四个内置服务（service）：`reflect`、`registry`、`events`、`logger`。
+</Step>
+<Step>
+调用 `this.fiber._disposables.clear()`。构造期间注册的内置 mixin 与访问器*不*属于根纤程的可撤销效应（revertible effect）：它们必须在 `root.fiber.dispose()` 之后依然存在。
+</Step>
+</Steps>
+
+### 用 `extend()` 派生 [#extend]
+
+`context.ts:55-63`：
+
+```ts
+extend(meta = {}) {
+  const self = Object.create(getTraceable(this, this))   // prototype-chain child
+  // copy own descriptors of meta onto self
+  // preserve a shadow wrapper if `this` is a shadow context
+}
+```
+
+每个派生上下文都是其父上下文的**原型链子对象**。这实现了论文中的*派生实现*（derived realization，定义 23）：子对象覆盖部分槽位，其余全部继承。无需撤销任何东西：丢弃子对象即丢弃了这次调整。
+
+- `isolate(name, label?)`（`context.ts:65`）创建 `Object.create(this[symbols.isolate])`，设置 `shadow[name] = label ?? Symbol(name)` 并以此扩展。新符号给出私有领域（realm）；共享的 `label` 给出共享领域。
+- `intercept(name, config)`（`context.ts:73`）以相同模式处理拦截（interception）表。
+- 纤程的上下文是 `parent.extend({ fiber: this })`（`fiber.ts:150`）。
+
+<Callout type="info">
+**关键性质：** 隔离（isolation）表与拦截表都是*原型链*。查找（`table[name]`）看到最近的覆盖；`Object.hasOwn(table, name)` 检测恰好在这一层引入的隔离边界（[`locate`](#locate) 使用了这一点）。
+</Callout>
+
+### 领域符号 [#realm-symbols]
+
+`ReflectService.provide` 惰性地分配根领域：`ctx[symbols.root][symbols.isolate][name] ??= Symbol(name)`（`reflect.ts:222`）。因此，一旦被提供，*每个*服务名在根表中都有一个领域符号；被隔离的上下文会覆盖它。**存储以领域符号为键**，从而得到定义 24 的两层解析 `k → ρ(k) → σ(ρ(k))`。
+
+## `ReflectService` [#reflect-service]
+
+`reflect.ts` 持有共享的根级表：
+
+| 字段 | 论文 | 含义 |
+|---|---|---|
+| `store: Dict<Impl, symbol>` | σ（`@@store`） | 领域符号 → 当前 `Impl`（绑定） |
+| `props: Dict<Property>` | – | 已声明的上下文属性：`{type:'service'}` 或 `{type:'accessor', get, set}` |
+| `_implCounter` | 新鲜名称 | `Impl` 的 uid 来源（从不复用） |
+
+### `Impl`：一个绑定 [#impl]
+
+`reflect.ts:65-75`：
+
+```ts
+interface Impl {
+  uid: number            // fresh per provision ⇒ provider identity for target views
+  name: string
+  ctx: Context           // provider's context (impl.ctx.fiber = provider fiber)
+  dependents: Set<Fiber> // fibers whose committed view references this impl
+  release?: () => void   // resolver for the provider-side guard
+  value?: any
+  check?: () => boolean  // Service[symbols.check] – extra availability predicate
+  isolate: symbol        // actual realm symbol (may differ from provider ctx after a blocked move)
+}
+```
+
+### `provide(name, value?, check?)`：余效应的提供 [#provide]
+
+`reflect.ts:213-249`。`provide` 是一个 `fiber.effect`（因此被追踪且可撤销），其回调：
+
+1. 把 `props[name]` 注册或校验为服务（若已是访问器则报错）；
+2. 确保存在根领域符号，并计算 `key = ctx[isolate][name]`；
+3. 执行**单一来源检查**：若 `store[key]` 已存在，抛出 `service "x" has been registered at <fiber>`（O-Insert 的不相交性，按领域计）；
+4. 设置 `store[key] = impl` 与 `fiber.provisions.add(impl)`；
+5. 若提供者（provider）纤程已是 `ACTIVE`，立即调用 `notify([name])`；否则在该纤程变为 `ACTIVE` 时通知（`Fiber._updateState`），对应“只有 Active 纤程提供服务”。
+
+它的**逆操作**是异步的：
+
+1. 删除存储条目（若仍指向此 impl），并 `notify` 该 impl 所在领域中的依赖方；
+2. **提供者侧守卫**：`await` 直到 `impl.dependents` 为空（`impl.release` 由最后一个依赖方的卸载来 resolve）。它总会至少让出一次，使子级清理仍能访问继承来的服务；
+3. 从 `fiber.provisions` 中移除该 impl。
+
+### `set(name, value)` [#set]
+
+`reflect.ts:200-211`。原地覆盖*自己的*绑定（`impl.value = value`）；若该名称未被提供或由其他纤程提供则报错。**不发出通知**：正如论文所说，原地覆盖不会被依赖方观察到。
+
+### `get(name, strict = true)` 与 `_getImpl` [#get]
+
+`reflect.ts:188-198`。解析 `ctx[isolate][name]` → `store[key]`。在 `strict` 模式下，除非 `impl.ctx.fiber.state === ACTIVE`，否则什么也不返回（**提供者可用 = Active**）。它从不抛出异常。
+
+### `notify(names, filter?)`：响应式通知 [#notify]
+
+`reflect.ts:251-270`：
+
+```text
+for runtime of registry.values()
+  for fiber of runtime.fibers
+     for name of names
+       if name ∈ fiber.inject && filter(fiber.ctx, name):   // default: same realm symbol
+         fiber._checkImpl(name)                             // recompute this key's resolution
+     if any: fiber._refresh()                                // recompute target, maybe transition
+emit 'internal/service'(name, value) with a realm filter on listeners
+```
+
+这就是算法 3。*filter* 参数的存在是为了让加载器（loader）在领域重新分配时替换领域判定（算法 7，见[托管领域](/docs/reference-loader#managed-realms)）。
+
+### `accessor` 与 `mixin` [#accessor-mixin]
+
+`accessor(name, {get, set})` 与 `mixin(source, keys)` 位于 `reflect.ts:272-308`。
+
+- `accessor` 声明一个计算出的上下文属性（作为可撤销效应）。
+- `mixin('events', ['on', 'emit', …])` 把某个服务的成员暴露为上下文属性（`ctx.on` → `ctx.events.on`），并绑定到发起访问的上下文。它是一个生成器效应，每个键产出一个访问器。
+
+根上下文的接线（`reflect.ts:182-185`）：
+
+| 来源 | 混入上下文的键 |
+|---|---|
+| `reflect` | `get`、`set`、`provide`、`accessor`、`mixin` |
+| `fiber` | `runtime`、`effect` |
+| `registry` | `inject`、`plugin` |
+| `events` | `on`、`once`、`parallel`、`emit`、`serial`、`bail`、`waterfall` |
+
+## 经由 Proxy 的属性访问 [#proxy]
+
+`ReflectService.handler`（`reflect.ts:105-170`）在其 `get` 陷阱中中介 `ctx.foo`：
+
+1. *特殊*属性（符号、`prototype`、`then`、数字字符串、以 `_` 开头的名称）绕过中介；
+2. 普通的自有或继承属性经 `getTraceable` 返回（见[服务与可追溯性](/docs/reference-services#traceable-proxies)）；
+3. 已声明的**访问器** → 其 getter；
+4. 若*定义点*（def site，即影子，见[服务与可追溯性](/docs/reference-services#traceable-proxies)）是**根纤程** → 不加检查的 `reflect.get(prop, false)`（根代码无法声明 `inject`）；
+5. 否则在 `locate(defSite, prop)` 外包一层 `waterfall('internal/get', …)`（允许插件钩住访问）：
+   - 找到 impl → 其值（经追踪）；
+   - 纤程声明了该键但没有已提交的 impl → `cannot get required service "x" in inactive context`；
+   - 无人声明 → `cannot get property "x" without inject`。
+
+`set` 陷阱：非根纤程上未声明的属性 → 错误 `cannot set property without provide`；访问器 → 其 setter；服务 → `waterfall('internal/set')` → `reflect.set`。
+
+错误先以廉价占位符创建，只在被抛出时才以裁剪过的栈具体化（`createAccessError`/`enhanceAccessError`）。
+
+### `locate(ctx, name)`：已提交视图的遍历 [#locate]
+
+`reflect.ts:83-102` 实现算法 6，并扩展了自有提供与隔离边界：
+
+```text
+key ← ctx[isolate][name]; table ← ctx[isolate]; fiber ← ctx.fiber
+loop
+  if fiber provides `name` in the same realm  → { impl }          (own provision)
+  walk `table` up to fiber.ctx[isolate]; if an own override of `name` is met → undefined
+                                                                     (isolation boundary)
+  if fiber.committed[name] or name ∈ fiber.inject → { fiber, impl }  (impl may be undefined ⇒ inactive)
+  if fiber is root → undefined
+  fiber ← fiber.parent.fiber
+```
+
+推论（均由 `tests/isolate.spec.ts` 与 `reflect.spec.ts` 覆盖）：
+
+- 消费者（consumer）读取的是**已提交**的 impl，而非实时存储，因此在自身拆除期间仍能看到其依赖（定理 70）；
+- 子插件*继承*祖先的依赖声明（在祖先上声明的 `inject` 允许后代访问）；
+- 隔离边界会终止继承（`does not inherit the injected view across isolation boundaries`）。
+
+## 拦截 [#interception]
+
+`Service[symbols.resolveIntercept]`（`service.ts:57-70`）在访问时解析名为 `name` 的服务的元数据：
+
+1. 遍历上下文的拦截原型链，按**外 → 内**收集自有值；
+2. 以最低优先级前置*组件（component）声明*的元数据 `locate(caller, name).fiber.inject[name]`（声明方纤程在 `inject: { name: meta }` 中给出的值）。自有提供没有这一项，且遍历在隔离边界处停止；
+3. 用 `service[symbols.mergeIntercept]` 合并（默认 `Object.assign({}, ...values)`，即右侧优先）。
+
+这正是定义 27 中的 `σ(k)(d(k) ⊕ ι(k))`，其中 ⊕ = 浅层对象合并（每个服务可自定义）。`logger` 服务用它处理 `{ name, level }`（`logger.ts:213-224`）。
+
+## 设计观察 [#design-observations]
+
+- **一切都在根上。** 每个根只有一个 `store`、一个 `props` 和一个 `registry`；派生上下文之间的区别只在于原型链上的 `isolate`/`intercept` 表及其 `fiber`。这让“键 k 是否在领域 r 中被提供？”保持为一次映射查找。
+- **提供者身份**是 `Impl.uid`，一个新鲜的计数器值。它实现了已提交视图与目标视图中“看名称而非值”的原则。
+- **按领域符号隔离**实现了放宽后的演算规则“在领域内不相交”（§4.4，见[元理论](/docs/concepts-metatheory)）。
+- **没有编译期检查**：声明的键与访问的键只在运行时由代理检查（论文 §5.1.4 指出这本可以静态完成）。

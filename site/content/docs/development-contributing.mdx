@@ -1,0 +1,86 @@
+---
+title: "参与开发"
+description: "如何参与 kardia 的开发：构建与测试工作区、CI、发布到 crates.io 的流程，以及文档站点。"
+---
+
+kardia 在 [github.com/licyk/kardia](https://github.com/licyk/kardia) 上开发。本页介绍 Rust 工作区、它的 CI 与发布，以及本文档站点。
+
+<Callout type="info">
+仓库的 [`AGENTS.md`](https://github.com/licyk/kardia/blob/main/AGENTS.md) 列出了代码规则。简而言之：允许破坏性重构，不加兼容层；外部数据只在边界处校验一次，并容忍未知字段；未经事先同意，不为推测性的竞态或边界情况增加复杂度；主函数只保留正常流程，细节放在其下方的小型辅助函数中；只为不明显的约束写注释；生成的文件应重新生成而不是手动编辑；测试真实的实现，尽量少用 mock；遵循仓库现有的工具和工作流；只有当函数会被复用、逻辑复杂或代表一个可以命名的概念时才提取它。
+</Callout>
+
+## 构建与测试 [#building]
+
+```sh
+cargo test --workspace          # the WASM guest test needs the wasm32-unknown-unknown target
+cargo clippy --workspace --all-targets
+cargo fmt --all
+```
+
+- WASM 访客插件测试会把它的测试夹具构建为 WebAssembly 模块，因此请先安装该目标：`rustup target add wasm32-unknown-unknown`。
+- 有些测试会在运行时用 cargo 构建夹具 crate，因此第一次运行会稍慢一些。
+- 这些 crate 的最低支持 Rust 版本是 1.85（工作区 `Cargo.toml` 中的 `rust-version`）；CI 使用一个固定的、更新的工具链（见下文）。
+- 测试如何组织，以及每个测试套件使用哪个运行时，见[测试](/docs/development-testing)。
+
+## CI [#ci]
+
+`.github/workflows/ci.yml` 在每次推送到 `main` 以及每个拉取请求上运行：
+
+1. 检出仓库。
+2. 安装 Rust **1.96.0**（`dtolnay/rust-toolchain@1.96.0`），以及 `rustfmt`、`clippy` 和 `wasm32-unknown-unknown` 目标。工具链之所以固定版本，是因为 `kardia-macros` 的编译错误快照（trybuild 测试）依赖于编译器版本。
+3. 恢复 cargo 缓存（`Swatinem/rust-cache`）。
+4. `cargo fmt --all --check`
+5. `cargo clippy --workspace --all-targets -- -D warnings`
+6. `cargo test --workspace`
+
+## 发布 [#releases]
+
+所有 crate 共用一个版本号，即根 `Cargo.toml` 中 `[workspace.package]` 下的 `version`（kardia 各 crate 在 `[workspace.dependencies]` 中的条目也带有该版本号）。
+
+<Steps>
+<Step>
+在工作区 `Cargo.toml` 中提升版本号并提交。
+</Step>
+<Step>
+推送一个 `v*` 标签（例如 `v0.1.1`）。该标签会运行 `.github/workflows/publish.yml`。
+</Step>
+<Step>
+该工作流运行与 CI 相同的检查（fmt、clippy、测试，使用 Rust 1.96.0），然后按依赖顺序发布每个新版本尚未出现在 crates.io 上的 crate（`cargo publish --workspace`）。
+</Step>
+</Steps>
+
+发布步骤是**可续传的**：
+
+- 每次尝试之前，它会向 crates.io API 查询哪些 `name@version` 组合已经存在，并排除这些 crate，因此同一个 crate 永远不会被发布两次。
+- crates.io 只允许一个账号一次创建少量新 crate，之后每十分钟一个。当 `cargo publish` 以 `429 Too Many Requests` 失败时，工作流会等待 610 秒后重试，最多尝试八次；其他任何失败都会使该步骤失败。新 crate 的首次发布会等过这一限制。
+- 该工作流也可以手动启动（`workflow_dispatch`），以续传中途停止的发布。
+- 它使用仓库密钥 `CARGO_REGISTRY_TOKEN` 进行发布。
+
+## 文档站点 [#site]
+
+本站点位于 `site/`：基于 TanStack Start（React）的 [Fumadocs](https://fumadocs.dev)，用 Vite 和 Tailwind CSS 构建，以 Bun 作为包管理器和脚本运行器。它位于 Cargo 工作区之外，因此不影响 `cargo` 命令。
+
+```sh
+cd site
+bun install
+bun run dev       # local server
+bun run check     # TypeScript
+bun run test      # Vitest
+bun run build     # static output in site/.output/public
+```
+
+`bun.lock` 已提交到仓库；`bun install --frozen-lockfile` 会严格安装锁定的版本，部署工作流就是这样做的。
+
+### 内容 [#content]
+
+- 页面是 `site/content/docs/` 中的 MDX 文件，使用按前缀分组的扁平 slug（`guide-*`、`concepts-*`、`reference-*`、`development-*`）。
+- 站点是双语的。中文是默认语言：`<slug>.mdx`，不带前缀提供。英文是 `<slug>.en.mdx`，在 `/en/` 下提供。每个页面都有两种语言的版本，并有一个测试检查这一点。
+- 侧边栏的顺序及其分节标题来自 `meta.json`（中文）和 `meta.en.json`（英文）。两者必须以相同的顺序列出相同的 slug；同样有一个测试检查这一点。
+- 页面之间的链接使用 `/docs/<slug>`（站点会自行加上 `/en`）。除 Fumadocs 的默认组件外，页面无需导入即可使用 `Cards`、`Callout`、`Steps`、`Tabs`、`Accordions` 和 `Mermaid` 组件。
+- 代码、标识符、配置示例和论文的记号在两种语言中都保持原样。
+
+### 部署 [#deployment]
+
+`.github/workflows/site.yml` 把站点部署到 GitHub Pages。在推送到 `main` 且涉及 `site/` 时，它以 `VITE_BASE_PATH=/kardia/` 构建站点，并把输出发布到 `gh-pages` 分支，由 GitHub Pages 在 **[https://licyk.github.io/kardia/](https://licyk.github.io/kardia/)** 提供服务。
+
+基础路径仅用于 GitHub Pages，因为它在 `/kardia/` 下提供站点；不设置 `VITE_BASE_PATH` 时，构建产物从 `/` 提供服务。

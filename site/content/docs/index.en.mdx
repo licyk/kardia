@@ -1,0 +1,95 @@
+---
+title: "kardia"
+description: "A Rust implementation of Cordis, the plugin framework built on spatiotemporal composability."
+icon: House
+---
+
+kardia is a Rust implementation of [Cordis](https://github.com/cordiverse/cordis), the plugin framework built on *spatiotemporal composability* ([paper](https://arxiv.org/abs/2608.25512)).
+
+An app is a tree of **plugins**. Each plugin runs in a **fiber**:
+
+- **Effects:** everything a plugin sets up (listeners, timers, services, child plugins) is tracked and reverted when the plugin stops.
+- **Services:** plugins provide services and declare the services they depend on. A plugin starts once its dependencies are available, restarts when one is replaced, and stops when one goes away.
+- **Live changes:** you can reconfigure, replace or hot-reload any plugin while the app runs, and the rest of the app follows.
+
+<Cards>
+  <Card title="Quick start" href="/docs/quick-start" description="Run the example app and change it while it runs." />
+  <Card title="Installation" href="/docs/installation" description="Requirements, crates.io and the list of crates." />
+  <Card title="Guide" href="/docs/guide" description="Configuration files, plugins, services, effects, the loader, hot reload and guest plugins." />
+  <Card title="Concepts" href="/docs/concepts" description="The paper: revertible effects, reactive coeffects, the calculus and its theorems." />
+  <Card title="Cordis reference" href="/docs/reference" description="What the TypeScript code of Cordis actually does." />
+  <Card title="Development" href="/docs/development" description="How kardia is designed and built, and where it departs from Cordis." />
+</Cards>
+
+## kardia, Cordis and the paper [#kardia-cordis-and-the-paper]
+
+**Cordis** is the meta-framework of spatiotemporal composability described in the paper *A Programming Paradigm for Spatiotemporal Composability* (Shi, Zhang & Cui, [arXiv:2608.25512](https://arxiv.org/abs/2608.25512)). Its reference implementation is written in TypeScript.
+
+**kardia** rebuilds it in Rust. It is published on [crates.io](https://crates.io/crates/kardia) as `kardia` and nine `kardia-*` crates, with API docs on [docs.rs](https://docs.rs/kardia). The source is on [GitHub](https://github.com/licyk/kardia).
+
+## How this documentation is organised [#how-this-documentation-is-organised]
+
+Besides the user documentation (Getting started and the [Guide](/docs/guide)), the documentation has three layers. Each one is a section of this site:
+
+| Layer | What it describes | Section |
+|---|---|---|
+| **Theory** | What the paper defines, proves and prescribes | [Concepts](/docs/concepts) |
+| **Implementation** | What the TypeScript code of Cordis actually does (Cordis v4, `cordis@4.0.0-rc.12`) | [Cordis reference](/docs/reference) |
+| **Proposal** | How kardia rebuilds it in Rust | [Development](/docs/development) |
+
+<Mermaid chart={"flowchart LR\n  T[\"Concepts<br/>(the paper)\"] --> I[\"Cordis reference<br/>(the TypeScript code)\"]\n  T --> P[\"Development<br/>(the Rust design)\"]\n  I --> P\n  P --> G[\"Guide<br/>(using kardia)\"]"} />
+
+Where the paper and the code differ, the difference is recorded in [Paper vs. code](/docs/reference-paper-vs-code). The Rust design says which side it follows at each such point, and [Implementation status](/docs/development-status) lists where kardia differs from the TypeScript implementation.
+
+### Concepts: the paper [#concepts-the-paper]
+
+1. [Overview, motivation, contributions, glossary](/docs/concepts)
+2. [Revertible effects (§3.1)](/docs/concepts-revertible-effects)
+3. [Reactive coeffects, isolation, interception (§3.2)](/docs/concepts-reactive-coeffects)
+4. [Context paradigm, observational equivalence, independence (§3.3–3.4)](/docs/concepts-context-paradigm)
+5. [The calculus: components, fibers, the nine rules (§4.1–4.2)](/docs/concepts-calculus)
+6. [Metatheory and extensions (§4.3–4.4)](/docs/concepts-metatheory)
+7. [Implementation as described in the paper: Algorithms 1–10, loader, HMR, Koishi (§5)](/docs/concepts-implementation)
+8. [Discussion, related work, conclusion (§6–8)](/docs/concepts-related-work)
+
+### Cordis reference: the TypeScript code [#cordis-reference-the-typescript-code]
+
+1. [Repository overview, packages, tooling](/docs/reference)
+2. [Context, reflection, coeffect resolution](/docs/reference-context)
+3. [Effect tracking](/docs/reference-effects)
+4. [Fibers, registry, lifecycle state machine](/docs/reference-fibers)
+5. [Services, traceable proxies, caller attribution](/docs/reference-services)
+6. [Events and logger](/docs/reference-events)
+7. [Loader](/docs/reference-loader)
+8. [Include and group](/docs/reference-include)
+9. [Hot module replacement](/docs/reference-hmr)
+10. [Auxiliary packages (timer, logger-console, fs-node, package-manager, loader-utils, create)](/docs/reference-auxiliary)
+11. [Paper vs. implementation: correspondences, deviations, defects](/docs/reference-paper-vs-code)
+
+### Development: the Rust design [#development-the-rust-design]
+
+The Rust design covers the architecture, crate layout, concurrency model, data structures, APIs, dependencies, phases, testing strategy and risks, and the implementation status of the crates in [`crates/`](https://github.com/licyk/kardia/tree/main/crates):
+
+- [Overview: goals, concept mapping, crate layout](/docs/development)
+- [Concurrency and execution model](/docs/development-concurrency)
+- [Lifecycle: state, fibers, targets, inertia](/docs/development-lifecycle)
+- [API design: plugins, services, effects, events, logger](/docs/development-design)
+- [Loader, include and HMR internals](/docs/development-loader)
+- [Testing strategy](/docs/development-testing)
+- [Phases and implementation status](/docs/development-status)
+- [Risks and open decisions](/docs/development-risks)
+- [Contributing](/docs/development-contributing)
+
+## Suggested reading order [#suggested-reading-order]
+
+- **For the ideas:** [Overview](/docs/concepts) → [The calculus](/docs/concepts-calculus) → [Implementation in the paper](/docs/concepts-implementation).
+- **For the port:** [Fibers and lifecycle](/docs/reference-fibers) → [Paper vs. code](/docs/reference-paper-vs-code) → [the Rust design](/docs/development).
+
+## Where to go next [#where-to-go-next]
+
+| You are… | Start with |
+|---|---|
+| **A user** running an app from a config file | [Quick start](/docs/quick-start), then [The configuration file](/docs/guide-configuration) and [Hot reload](/docs/guide-hot-reload) |
+| **A plugin author** writing plugins in Rust or as guest modules | [Installation](/docs/installation), then [Writing plugins](/docs/guide-plugins), [Services](/docs/guide-services), [Effects](/docs/guide-effects) and [Guest plugins](/docs/guide-guests) |
+| **A contributor** to kardia | [Development](/docs/development), then [Implementation status](/docs/development-status) and [Contributing](/docs/development-contributing) |
+| **A researcher** interested in the theory | [Concepts](/docs/concepts), then [Metatheory](/docs/concepts-metatheory) and [Paper vs. code](/docs/reference-paper-vs-code) |

@@ -1,0 +1,145 @@
+---
+title: "核心数据结构"
+description: "kardia-core 中的标识符、作用域覆盖层、绑定、纤程、目标与已提交视图、IdTable 以及依赖环检测。"
+---
+
+`kardia-core` 的核心数据结构：生命周期所依托的状态。纤程（fiber）存放在注册表（registry）的 arena 中，以永不复用的 id 寻址；每一个交叉引用（父纤程、依赖者、已提交视图（committed view））都是 id，而不是指针（[指导决策](/docs/development#decisions)中的决策 **D2**）。推动纤程在各状态间转换的算法（refresh、reload、unload、实例化）位于 API 设计页的[生命周期状态机](/docs/development-design#lifecycle)一节。
+
+<Callout type="info">
+本页的草图是计划中的设计。代码保留了它们的含义，但并不总是保留它们的形态；每个草图下方的说明给出了 `crates/kardia-core/src` 中当前的名称和字段。
+</Callout>
+
+## 标识符（`key.rs`） [#identifiers]
+
+```rust
+pub struct Key(Arc<str>);                 // service name, e.g. "database", "foo.bar"
+pub struct RealmId(u64);                   // realm symbol; debug label "db#entry1" / "db@shared"
+pub struct ImplId(u64);                    // provider binding identity, never reused
+pub struct FiberId(u64);                   // fiber name (paper 𝔑), never reused; 0 = root
+pub struct EffectId(u64);
+```
+
+永不复用的 id 实现了论文中的原子生成式名称，并使“被一个相等的值替换”变得可观察（Def. 53）。
+
+<Callout type="info">
+在代码中：`Key`、`RealmId`、`ImplId` 和 `FiberId` 与草图一致（`FiberId::ROOT` 为 `0`，`RealmId::new()` 创建一个新的领域（realm））。`RealmId` 打印为 `realm#n`；可读的标签 `svc#id` / `svc@label` 属于加载器的领域。没有 `EffectId`：效应（effect）是存放在 `IdTable` 中的 `EffectCell`，其 id 是普通的 `u64`。
+</Callout>
+
+## 作用域覆盖层（`scope.rs`）：派生实现与实时重新挂接父节点 [#scope]
+
+```rust
+pub struct Scope {
+    parent: RwLock<Option<Arc<Scope>>>,               // re-pointable (loader moves entries)
+    isolate: RwLock<HashMap<Key, RealmId>>,           // own overrides (ρ)
+    intercept: RwLock<HashMap<Key, serde_json::Value>>,// own metadata (ι)
+    entry_marker: Option<EntryMarkerId>,              // loader: "contexts inside entry E"
+}
+impl Scope {
+    fn realm(&self, key: &Key, root_realms: &RootRealms) -> RealmId;  // nearest override, else root realm of key
+    fn has_own_isolate(&self, key: &Key) -> bool;                     // isolation boundary test (locate)
+    fn intercept_chain(&self, key: &Key) -> Vec<serde_json::Value>;   // outer → inner
+}
+```
+
+它取代了 JS 的原型链（`Object.create`、`setPrototypeOf`、`swap`）。自有与继承的区分是显式的。
+
+<Callout type="info">
+在代码中，一个 `Scope` 是上下文派生链上的一个节点：`Scope { parent: RwLock<Option<Arc<Scope>>>, kind: ScopeKind }`，其中 `ScopeKind::{Fiber(FiberId), Isolate(Key, RealmId), Intercept(Key, Value), Overlay(Arc<Overlay>)}`。每个派生上下文（纤程自己的上下文、`isolate`、`intercept`、`extend`）都会添加一个节点；重新指向某个父节点会移动它下面的一切。加载器中按条目划分的可变表是公开的 `Overlay` 节点（`set_isolations`、`set_intercepts`），而条目标记是一个 `Overlay::tagged(tag)`，可通过 `Context::tag()` 重新找到。由于作用域节点携带着各自的纤程，一次访问的纤程链可以直接从派生链上读出（见[可重新指向的上下文](/docs/development-status#deviations)）。
+</Callout>
+
+## 绑定（`store.rs`） [#bindings]
+
+```rust
+pub(crate) struct Impl {
+    id: ImplId,
+    key: Key,
+    realm: RealmId,                        // where it actually lives (may differ after a blocked realm move)
+    provider: FiberId,
+    value: Arc<dyn Any + Send + Sync>,
+    type_id: TypeId,                       // detects key collisions across unrelated types (paper §6.6)
+    check: Option<Arc<dyn Fn() -> bool + Send + Sync>>,  // extra availability predicate; must not touch the runtime
+    dependents: HashSet<FiberId>,          // fibers whose committed view names this impl (relied_n)
+    released: Arc<Notify>,                 // woken when `dependents` becomes empty
+}
+pub(crate) struct State {
+    fibers: HashMap<FiberId, FiberData>,
+    runtimes: HashMap<RuntimeKey, RuntimeData>,
+    aliases: HashMap<RuntimeKey, RuntimeKey>,   // registry.replace forwarding
+    store: HashMap<RealmId, Impl>,
+    root_realms: HashMap<Key, RealmId>,         // lazily assigned root realm per key
+    props: HashMap<Key, PropKind>,              // service vs accessor declarations
+    counters: Counters,
+}
+```
+
+`type_id` 检查对应[论文 §6.6](/docs/concepts-related-work)。
+
+<Callout type="info">
+在代码中，这两个结构体都位于 `state.rs`：
+
+- `Impl` 有 `key`、`realm`、`provider`、`provider_scope`、`value`、`check: Option<Check>`、`view: Option<View>`（值的 JSON 视图，供表达式和工具使用）以及 `dependents`。它没有 `id`（绑定在 `State::impls` 中以 `ImplId` 为键），没有 `type_id`（键冲突表现为值向下转型失败时的 `AccessError::TypeMismatch`），也没有 `released` 通知器（卸载守卫在根级通知器上等待）。`Check` 是 `Arc<dyn Fn(&[Value]) -> bool + Send + Sync>`：它接收消费者针对该键的拦截元数据，并在锁内运行，因此不得调用运行时（runtime）。
+- `State` 有 `fibers`、`runtimes: IndexMap<RuntimeKey, RuntimeData>`（按注册顺序）、`aliases: HashMap<RuntimeKey, PluginDef>`、`impls: HashMap<ImplId, Impl>`（每个仍然存在的绑定，无论是活跃的，还是已撤回但仍被引用的）、`store: HashMap<RealmId, ImplId>`（每个领域的活跃绑定，即论文的 Σ）、`root_realms`、`listeners`（按事件 `TypeId`）、`config_hooks`、id 计数器以及排队的 `actions`。没有 `props` 表：访问器（accessor）和混入（mixin）未被移植（见[关联属性](/docs/development-design#mixins)）。
+</Callout>
+
+## 纤程（`fiber.rs`） [#fibers]
+
+```rust
+pub enum FiberState { Pending, Loading, Active, Unloading, Failed, Disposed }
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum Target {
+    Inactive,                                   // ⊥
+    Epoch { revision: u64, providers: SmallVec<[ImplId; 4]> },   // ordered by inject declaration
+}
+
+pub(crate) struct FiberData {
+    id: FiberId,
+    parent: FiberId,                            // root's parent is itself
+    scope: Arc<Scope>,                          // the fiber's derived context scope
+    runtime: RuntimeKey,
+    inject: Arc<InjectSpec>,                    // d (+ declared interception metadata)
+    config: Arc<ConfigSlot>,                    // raw Value + typed config (validated once)
+    state: FiberState,
+    revision: u64,                              // bumped by restart / update / replace
+    resolved: HashMap<Key, ImplId>,             // live resolution per declared key (_store)
+    target: Target,                             // what it should run against (_runner.epoch)
+    committed: Option<Arc<CommittedView>>,      // ω, fixed for an episode
+    provisions: SmallVec<[ImplId; 2]>,          // σ_n
+    disposables: IdTable<EffectEntry>,          // accumulator, insertion-ordered
+    inertia: Option<Shared<BoxFuture<'static, ()>>>,
+    error: Option<Arc<PluginError>>,            // failure outcome
+    removed: bool,                              // uid === null in TS
+    unload_gate: Arc<Notify>,                   // fiber-level guard wake-up (_release)
+    status_tx: watch::Sender<FiberState>,       // for Fiber::settled().await
+}
+pub struct CommittedView { entries: SmallVec<[(Key, ImplId); 4]> }
+```
+
+<Mermaid chart={"stateDiagram-v2\n  [*] --> Pending\n  Pending --> Loading: 目标变为一个纪元\n  Loading --> Active: apply 完成，目标未变\n  Loading --> Unloading: 目标改变或 apply 失败\n  Active --> Unloading: 目标改变\n  Unloading --> Loading: 目标再次成为纪元\n  Unloading --> Pending: 目标为非活跃\n  Unloading --> Failed: 加载失败\n  Unloading --> Disposed: 纤程被移除\n  Failed --> Loading: update / restart / replace\n  Disposed --> [*]"} />
+
+`FiberState` 即论文中的 θ。处于 `Failed` 的纤程只能通过 `update`、`restart` 或 `replace` 恢复。
+
+<Callout type="info">
+在代码中（`state.rs` 和 `fiber.rs`），`FiberState` 和 `Target` 与草图一致，只是 `Target::Epoch::providers` 是 `Vec<ImplId>`（工作区不使用 `smallvec`）。`FiberData` 有所不同：
+
+- 没有 `id`（它是 `State::fibers` 的键），`runtime: Option<RuntimeKey>`（根纤程没有运行时），`inject: Inject`。
+- `config: Value` 是原样给出的源配置；它在每次加载尝试时解码一次，而不是以带类型的形式存储。
+- `episode: Option<Target>`：当前生命周期片段（episode）加载时所针对的目标，迭代检查点会与它比较。
+- `committed: Option<HashMap<Key, ImplId>>`；没有 `CommittedView` 类型。
+- `inertia: bool`：有一个转换正在进行。等待（`Fiber::settled()`、卸载守卫）使用 `RootInner::wait_until` 在根级通知器上等待，而不是使用每个纤程各自的 `unload_gate` 或 `watch` 通道。
+- `error: Option<Error>`。
+- `provisions: Vec<ImplId>`，外加 `draining` 和 `withdrawn`（在排空期间撤回的提供项，在排空结束之前对该纤程的后代仍然可见）。
+- `disposables: IdTable<Arc<EffectCell>>`、`update_hooks: IdTable<Arc<UpdateHook>>`，以及 `retire: Option<Arc<EffectCell>>`（父纤程上实例化该纤程的那个效应，O-Insert）。
+</Callout>
+
+## `IdTable<T>`：天然可交换的注册表 [#id-table]
+
+`DisposableList` 的设计（插入返回一个新的 id；按 id 移除；`drain_rev()` 按 LIFO 顺序返回）以 `kardia_core::IdTable<T>` 的形式公开导出。它就是[论文 §3.4.2](/docs/concepts-context-paradigm) 所说的可交换键：服务作者应在它之上构建自己的注册表（路由、监听器、命令）。
+
+## 依赖环检测（D9） [#cycle-detection]
+
+插入时，计算由声明的 `provide`/`inject` 得到的优先关系 ≺（`p_n ∩ d_m ≠ ∅`）是否在同一领域内未释放的纤程之间构成环；若是，则记录一条指出该环的警告，并让纤程保持 `Pending`（其余行为不变）。它只读取声明，因此可以提前计算（[论文 §6.5](/docs/concepts-related-work)）。声明的 `provide` 只是元数据（与 Cordis 中相同）；提供了未声明键的插件只会绕过这项检查。
+
+<Callout type="info">
+已在 `registry.rs` 中实现（`warn_cycle`）：沿着“依赖于一个声明的提供者”的边做深度优先搜索，以警告级别记录 `dependency cycle: a -> b -> …`。
+</Callout>

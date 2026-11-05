@@ -1,0 +1,350 @@
+---
+title: "访客插件"
+description: "编写无需重启应用即可热重载的插件：WASM、动态库与进程三种后端，Rust 访客 SDK，失败行为，以及基于 JSON 的访客 ABI。"
+---
+
+**访客插件**（guest plugin）是 [`hmr` 插件](/docs/guide-hot-reload)可以原地重载的独立模块；编译进二进制的插件则不同，修改其代码需要重启。在 `kardia` 二进制加载的配置文件中，任何不是内置插件的条目名都是访客模块路径，相对于配置文件：
+
+```yaml
+- id: hello
+  name: ./plugins/hello.wasm
+  config: { greeting: hi }
+```
+
+所有后端都使用同一套基于 JSON 的**访客 ABI**（见下文），并通过一个桥接插件运行每个访客插件：桥接插件为每个纤程（fiber）实例化一次访客，并在纤程被释放（dispose）时丢弃该实例。Rust SDK `kardia-guest` 可以用同一份源码为所有后端编写这样的访客。
+
+## 后端 [#backends]
+
+| | WebAssembly（`WasmSource`） | 动态库（`DylibSource`） | 子进程（`ProcessSource`） |
+|---|---|---|---|
+| 文件 | `.wasm`，或 `.wat` 文本 | `.so` / `.dylib` / `.dll` | 可执行文件 |
+| 运行方式 | 在 wasmtime 上，每个纤程一个 store | 在宿主（host）进程内 | 每个纤程一个子进程 |
+| 隔离 | 沙箱 | 无：库中的崩溃会使整个应用崩溃 | 崩溃的访客只会让它自己的调用失败 |
+| 重载 | 每个版本编译一次；新旧实例并存，丢弃实例会释放其全部内存 | 每个版本从一份新副本加载，**永不卸载**；一直保留到进程退出 | 重载模块会重新启动其进程 |
+| 适用于 | 生产环境的访客 | 开发：同一套工具链，无需 WASM 目标 | 任意语言编写的访客，或不能让宿主崩溃的访客 |
+| `kardia` 二进制 | 支持 | 支持 | 暂不支持（仅限库） |
+
+**WebAssembly。** `WasmSource` 在 wasmtime 上运行核心 WebAssembly 模块，而不是 WIT 组件，因此访客不需要组件工具链（测试用 WAT 编写）。模块每个版本编译一次，并为每个纤程在各自的 store 中实例化。
+
+**动态库。** `DylibSource` 使用 C ABI，而不是传递 Rust 类型：`cdylib` 自带一份 `kardia-core` 和 tokio，静态变量各自独立，也没有运行时上下文。每次加载都会把库复制到一个新路径（位于临时目录下的 `kardia-dylib-<pid>` 目录中），因为平台加载器对已知路径会直接交出已加载的那个库。库永不卸载：一旦 Rust 代码注册了线程局部析构函数或交出了 `'static` 引用，卸载它就是不健全的。
+
+**子进程。** `ProcessSource` 把每个插件实例作为独立进程运行，通过 stdin 和 stdout 以 JSON 行的形式使用访客 ABI（见[进程传输](#process)）。崩溃的访客只会让它自己的调用失败，破坏协议的访客会被杀死。替换可执行文件时，请把新文件重命名覆盖到原路径：正在运行的可执行文件不能被写入，而以写方式打开着的文件不能被启动。
+
+**三者的共同点。** 调用是同步的，而不是论文 §6.2 中的异步 RPC：调用会阻塞调用者直到访客应答，所以挂起的访客也会阻塞其调用者。没有单独的代理（broker）服务：每个纤程的 `GuestService` 就是 RPC 端点。这些后端是 `kardia-hmr` 的 cargo 特性（`wasm`、`dylib`、`process`，默认全部开启）。
+
+`kardia` 二进制按文件扩展名选择后端：`.wasm` 和 `.wat` 交给 `WasmSource`，其他一律交给 `DylibSource`。基于库构建的应用可以自行选择：
+
+```rust
+use kardia::hmr::{DylibSource, ModuleCode, ModuleSource, ProcessSource, WasmSource};
+
+/// Guest modules by extension: WASM, executables in `bin/`, else a dynamic library.
+struct GuestFiles {
+    wasm: WasmSource,
+}
+
+impl ModuleSource for GuestFiles {
+    fn load(&self, id: &str) -> Result<ModuleCode> {
+        let path = Path::new(id);
+        match path.extension().and_then(|ext| ext.to_str()) {
+            Some("wasm" | "wat") => self.wasm.load(id),
+            _ if path.parent().is_some_and(|dir| dir.ends_with("bin")) => ProcessSource.load(id),
+            _ => DylibSource.load(id),
+        }
+    }
+}
+
+let graph = ModuleGraph::new(GuestFiles { wasm: WasmSource::new() });
+```
+
+## 从 Rust 调用访客 [#guest-service]
+
+访客通过 `Host::provide` 提供服务。在宿主一侧，每个这样的服务都是一个 `kardia::hmr::GuestService`，其 JSON 视图就是访客提供的值：
+
+```rust
+use kardia::hmr::GuestService;
+
+let counter = ctx.get_as::<GuestService>("counter")?;     // checked access, by key
+println!("{}", counter.value());                          // the provided JSON value
+let count = counter.call("increment", json!(null))?;      // calls the guest's `call`
+let view = ctx.view("counter")?;                          // the JSON view alone
+```
+
+| `GuestService` | |
+|---|---|
+| `value()` | 访客提供该服务时给出的 JSON 值 |
+| `call(method, args)` | 以 `{ key, method, args }` 调用访客的 `cordis_call`，返回其 JSON 结果 |
+
+提供该服务的纤程消失后，调用以 `the guest instance is disposed` 失败；访客返回的不是 JSON 时，以 `invalid result of <key>.<method>: …` 失败。访客回调到一个已在同一线程上运行的实例（直接或经由其他访客）时，会以 `re-entrant call into a guest instance` 失败，而不会死锁。与任何服务一样，访客的纤程被释放时，访客服务随之撤回。
+
+## 用 Rust 编写访客 [#sdk]
+
+创建一个依赖 `kardia-guest` 的 `cdylib` crate：
+
+```toml
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+kardia-guest = "0.1"
+```
+
+实现 `Guest` 并用 `export!` 导出：
+
+```rust
+use kardia_guest::{Guest, Host, Level, Map, Meta, Request, Result, Value, json};
+
+struct Counter {
+    count: u64,
+}
+
+impl Guest for Counter {
+    type Config = Value;
+
+    fn meta() -> Meta {
+        Meta::plugin("counter").provide("counter")
+    }
+
+    fn apply(host: &Host, config: Value, _imports: Map<String, Value>) -> Result<Self> {
+        host.provide("counter", &json!({ "config": config }))?;
+        host.log(Level::Info, "counting");
+        Ok(Counter { count: 0 })
+    }
+
+    fn call(&mut self, _: &Host, request: Request) -> Result<Value> {
+        match request.method.as_str() {
+            "increment" => {
+                self.count += 1;
+                Ok(json!(self.count))
+            }
+            method => Err(format!("unknown method {method}").into()),
+        }
+    }
+}
+
+kardia_guest::export!(Counter);
+```
+
+### `Guest` trait [#guest-trait]
+
+运行该插件的每个纤程都会得到该类型的一个独立实例。
+
+| 项 | 用途 |
+|---|---|
+| `type Config: DeserializeOwned` | 插件的配置；按原样解码失败时，`null` 会被当作 `{}` 解码 |
+| `fn meta() -> Meta` | 模块依赖什么、导出什么 |
+| `fn apply(host, config, imports) -> Result<Self>` | 用配置和模块各依赖的值（按解析后的路径为键）启动一个实例 |
+| `fn call(&mut self, host, request) -> Result<Value>` | 应答对该实例所提供服务的调用；默认以 `<key> has no method <method>` 失败 |
+| `fn dispose(self, host)` | 纤程被释放时、实例被丢弃之前运行；默认什么也不做 |
+
+`Meta` 描述模块：
+
+| `Meta` | |
+|---|---|
+| `Meta::plugin(name)` | 导出名为 `name` 的插件的模块 |
+| `Meta::value(value)` | 导出一个值的模块，依赖它的模块会把该值作为导入收到 |
+| `.dep(path)` | 一个依赖：相对于本模块的模块路径 |
+| `.inject(key)` | 插件读取的服务；插件在该服务可用时启动 |
+| `.provide(key)` | 插件提供的服务 |
+
+`Request` 是 `{ key, method, args }`。`Error` 是报告给宿主的错误消息（`Error::msg(..)`、`error.message()`）；任何可显示的错误都可以用 `?` 转换为它。
+
+### `Host` [#host]
+
+| `Host` 方法 | 作用 |
+|---|---|
+| `log(level, text)` | 以插件的身份记录日志（`Level::Error` … `Level::Debug`） |
+| `provide(key, &value)` | 提供服务 `key`，其 JSON 视图为 `value`；对它的调用会到达 `Guest::call`。纤程被释放时撤回。 |
+| `view(key)` | 用 `Meta::inject` 声明的服务（或由本插件及其祖先提供的服务）的 JSON 视图，按插件所声明 `inject` 的受检访问规则读取 |
+| `invoke(key, method, &args)` | 调用另一个访客提供的服务 |
+
+在 Rust 宿主代码中，通过 `GuestService` 调用访客的服务（见[上文](#guest-service)）。
+
+### 构建 [#build]
+
+同一份源码既可构建为 WebAssembly 访客，也可构建为动态库访客。`export!` 在 `wasm32` 上生成 WASM 导出，在其他平台上生成 C 符号：
+
+```sh
+rustup target add wasm32-unknown-unknown                # once
+cargo build --release --target wasm32-unknown-unknown   # target/wasm32-unknown-unknown/release/<crate>.wasm
+cargo build --release                                   # target/release/lib<crate>.so (or .dylib / .dll)
+```
+
+对于**进程访客**，在 crate 中加入一个二进制，其 `main` 负责服务访客。请使用 `crate-type = ["cdylib", "rlib"]`，以便二进制能使用这个库：
+
+```toml
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "my-guest-process"
+path = "src/main.rs"
+```
+
+```rust
+fn main() {
+    kardia_guest::serve::<my_guest::Counter>();
+}
+```
+
+```sh
+cargo build --release --bin my-guest-process            # target/release/my-guest-process
+```
+
+`serve` 应答宿主通过 stdin 以 JSON 行发来的导出调用，直到宿主释放该实例或 stdin 关闭。stdout 用于承载协议，因此进程访客不得向它打印；应通过 `Host::log` 或 stderr 记录日志。
+
+### 带依赖的模块 [#deps]
+
+模块可以依赖其他模块，也可以导出一个值而不是插件：
+
+```rust
+// shared.rs, built as shared.wasm: exports a value
+impl Guest for Shared {
+    type Config = Value;
+    fn meta() -> Meta {
+        Meta::value(json!({ "greeting": "hello" }))
+    }
+    fn apply(_: &Host, _: Value, _: Map<String, Value>) -> Result<Self> {
+        Ok(Shared)
+    }
+}
+
+// greeter.rs, built as greeter.wasm next to it
+impl Guest for Greeter {
+    type Config = Value;
+    fn meta() -> Meta {
+        Meta::plugin("greeter").dep("./shared.wasm")
+    }
+    fn apply(host: &Host, _: Value, imports: Map<String, Value>) -> Result<Self> {
+        let shared = imports.values().next().cloned().unwrap_or_default();  // keyed by resolved path
+        host.log(Level::Info, shared["greeting"].as_str().unwrap_or("hi"));
+        Ok(Greeter)
+    }
+}
+```
+
+`shared.wasm` 变化时，热重载也会重载 `greeter`，因为它导入了发生变化的模块（见 [reconcile 事务](/docs/guide-hot-reload#reconcile)）。既不导出插件也不导出值的模块什么也不导出。
+
+## 失败行为 [#failures]
+
+访客中的错误或 panic 只会让该插件或该次调用失败：
+
+| 后端 | 访客 panic 时 | 访客消失时 |
+|---|---|---|
+| dylib | SDK 捕获它并作为错误返回：`the guest panicked: <message>` | 崩溃会使宿主崩溃 |
+| process | SDK 捕获它并作为错误返回：`the guest panicked: <message>` | 已退出的进程会让之后的调用以 `the guest process exited` 失败；破坏协议的进程（`invalid message from guest: …`）会被杀死，结果相同 |
+| WebAssembly | 访客中止（abort），宿主把中止报告为一次失败的调用 | – |
+
+- `apply` 返回的错误会使插件的纤程失败（`Failed`）；`call` 返回的错误只让该次调用失败，实例继续运行。
+- `dispose` 中的 panic 会被吞下，因为宿主没有可报告的对象。
+- 已释放或已失败实例的进程绝不会继续运行；`dispose` 之后宿主会杀死它。宿主消失时，进程访客会退出。
+- 读取模块元数据（`meta`）期间没有插件上下文：宿主调用以 `host calls are unavailable while reading module metadata` 失败。
+
+## 访客 ABI [#abi]
+
+其他语言编写的访客需实现这一接口，它也记录在 `kardia-hmr` 的 crate 文档中（`cargo doc -p kardia-hmr --open`）。
+
+数据以字节缓冲区中的 UTF-8 JSON 形式跨越边界。宿主为每个实例保留一条**消息**：先是被调用导出的输入，之后是上一次宿主调用的结果。访客按给定的长度分配内存后，用 `read` 把消息复制到自己的内存中。
+
+**导出**（状态 `0` 表示成功；失败时访客用 `write` 写出错误）：
+
+| WASM | dylib | |
+|---|---|---|
+| `memory` | `cordis_new() -> state` | 内存 / 每个实例的访客状态 |
+| `cordis_meta() -> i32` | `cordis_meta(state, host) -> i32` | `write` 出 `{ deps?, plugin?: { name?, inject?, provide? }, value? }` |
+| `cordis_apply(len) -> i32` | `cordis_apply(state, host, len) -> i32` | 消息：`{ config, imports }` |
+| `cordis_call(len) -> i32` | `cordis_call(state, host, len) -> i32` | 消息：`{ key, method, args }`；`write` 出结果 |
+| `cordis_dispose()`（可选） | `cordis_dispose(state, host)` | 最后一次调用；dylib 在此释放 `state` |
+
+`deps` 是相对于本模块的模块路径；`imports` 把每个导出了 `value` 的依赖映射到该值。既不导出插件也不导出值的模块什么也不导出。
+
+**宿主函数**（WASM 从模块 `cordis` 导入；dylib 则是 `host` 结构体 `{ host, read, write, log, provide, view, invoke }` 中的函数指针，每个都以 `host.host` 作为第一个参数）。指针是访客地址，长度是字节数：
+
+- `read(ptr)` 把消息复制到 `ptr`。
+- `write(ptr, len)` 设置当前导出的结果。
+- `log(level, ptr, len)` 以插件的身份记录日志（`0` error … `3` debug）。
+- `provide(key, key_len, value, value_len) -> i32` 把服务 `key` 作为 `GuestService` 提供，其 JSON 视图为 `value`。
+- `view(key, key_len) -> i32` 按插件所声明 `inject` 的受检访问规则，读取某个服务的 JSON 视图。
+- `invoke(key, key_len, method, method_len, args, args_len) -> i32` 调用一个 `GuestService`。
+
+返回 `i32` 的宿主函数会把消息设为其结果并返回其长度；或把消息设为错误消息并返回 `-1 - len`。
+
+**模块的生命周期。** 加载模块时会实例化它一次以读取元数据（先 `meta`，再 `dispose`）；`deps` 中的依赖先加载。之后运行该插件的每个纤程都会得到一个新实例：以 `{ config, imports }` 调用 `apply`，任意次 `call`，以及纤程被释放时的 `dispose`，之后实例被丢弃。状态非零且没有写出任何内容时，以 `guest failed with status <n>` 失败。
+
+### 进程传输 [#process]
+
+进程访客通过 stdin 和 stdout 每行交换一个 JSON 对象（stdout 专用于此；访客通过 `log` 或 stderr 记录日志）。
+
+| 方向 | 消息 | 含义 |
+|---|---|---|
+| 宿主 → 访客 | `{ export, input }` | 一次导出：`export` 为 `meta`、`apply`、`call`、`dispose` 之一；`input` 是消息（为空时为 `null`） |
+| 访客 → 宿主 | `{ call: "log", level, text }` | 记录日志；无应答 |
+| 访客 → 宿主 | `{ call: "provide", key, value }` | 以 `{ result }` 或 `{ error }` 应答 |
+| 访客 → 宿主 | `{ call: "view", key }` | 以 `{ result }` 或 `{ error }` 应答 |
+| 访客 → 宿主 | `{ call: "invoke", key, method, args }` | 以 `{ result }` 或 `{ error }` 应答 |
+| 访客 → 宿主 | `{ output }` | 设置导出的结果文本 |
+| 访客 → 宿主 | `{ done: status }` | 结束这次导出 |
+
+`dispose` 之后进程会被杀死；stdin 关闭时访客退出。
+
+例如，上面的 `Counter` 访客在没有配置的情况下被应用，然后被调用一次：
+
+```text
+→ {"export":"apply","input":{"config":null,"imports":{}}}
+← {"call":"provide","key":"counter","value":{"config":null}}
+→ {"result":null}
+← {"call":"log","level":2,"text":"counting"}
+← {"done":0}
+→ {"export":"call","input":{"key":"counter","method":"increment","args":null}}
+← {"output":"1"}
+← {"done":0}
+```
+
+## 手写访客：`hello.wat` [#hello]
+
+`examples/plugins/hello.wat` 是用 WebAssembly 文本手写的访客。它从 `cordis` 模块导入 `write` 和 `log`，并导出 `memory` 和三个函数：
+
+```text
+;; A guest plugin in WebAssembly text (see the guest ABI in the kardia-hmr
+;; docs). Edit the greeting while the app runs: hmr reloads this module in
+;; place, disposing the old instance first.
+(module
+  (import "cordis" "write" (func $write (param i32 i32)))
+  (import "cordis" "log" (func $log (param i32 i32 i32)))
+  (memory (export "memory") 1)
+
+  (data (i32.const 0) "{\"plugin\":{\"name\":\"hello\"}}\00")
+  (data (i32.const 128) "goodbye from wasm\00")
+  (data (i32.const 256) "hello from wasm\00")
+
+  ;; the length of the NUL-terminated string at $ptr
+  (func $len (param $ptr i32) (result i32)
+    (local $end i32)
+    (local.set $end (local.get $ptr))
+    (block $done
+      (loop $next
+        (br_if $done (i32.eqz (i32.load8_u (local.get $end))))
+        (local.set $end (i32.add (local.get $end) (i32.const 1)))
+        (br $next)))
+    (i32.sub (local.get $end) (local.get $ptr)))
+
+  (func $info (param $ptr i32)
+    (call $log (i32.const 2) (local.get $ptr) (call $len (local.get $ptr))))
+
+  (func (export "cordis_meta") (result i32)
+    (call $write (i32.const 0) (call $len (i32.const 0)))
+    (i32.const 0))
+
+  (func (export "cordis_apply") (param i32) (result i32)
+    (call $info (i32.const 256))
+    (i32.const 0))
+
+  (func (export "cordis_dispose")
+    (call $info (i32.const 128))))
+```
+
+- `cordis_meta` 写出 `{"plugin":{"name":"hello"}}`：一个名为 `hello` 的插件，没有依赖、注入或提供。它返回 `0`。
+- `cordis_apply` 忽略其输入（从不 `read` 消息），并以级别 `2`（info）记录 `hello from wasm`。
+- `cordis_dispose` 记录 `goodbye from wasm`。
+- 没有 `cordis_call`，因为该插件不提供任何服务。
+
+用 `cargo run -p kardia -- examples/kardia.yml` 运行它并编辑问候语：`hmr` 会原地重载该模块，于是旧实例先记录道别，新实例再记录你的问候语。

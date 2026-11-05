@@ -1,0 +1,35 @@
+---
+title: "并发与执行模型"
+description: "kardia 如何用每个根一把锁、返回动作的临界区以及派生的转换任务，重现 JavaScript 的运行至完成原子性。"
+---
+
+本页是[指导决策](/docs/development#decisions)中的决策 **D1**：一个 `Send + Sync` 的核心，每个根一把状态锁，持锁期间不运行任何用户代码。
+
+## 为什么这个模型很重要 [#why]
+
+Cordis 的正确性建立在 JavaScript 的运行至完成（run-to-completion）语义之上：两个 `await` 之间的代码是原子的。许多算法（`_setEpoch` 中的惯性（inertia）、加载器中的 `_initTask ??=`、“先同步赋值选项，再提交”）都依赖于这一点。Rust 移植必须重现*这种原子性*，而不是 JS 的单线程本身。
+
+## 选定的模型 [#model]
+
+- 一个根的全部可变运行时状态都存放在 `Root { state: parking_lot::Mutex<State>, … }` 中。
+- **移植规则：** TS 代码中的每个同步段都变成 `State` 上的**一个临界区**。持锁期间不做任何等待，并且**持锁期间不调用任何用户代码**（插件的 `apply`、撤销函数（disposer）、事件监听器、可用性检查）。
+- 临界区写成函数 `fn step(&mut State, …) -> Actions`，其中 `Actions` 是一个由延迟工作组成的小列表：`Spawn(Transition)`、`Emit(InternalEvent)`、`Wake(Notify)`、`RunDisposers(Vec<Disposer>)`。一个很小的驱动器在释放锁之后执行这些动作。这使状态机保持**纯粹且可单元测试**，并消除了 JS 所掩盖的重入隐患（在 TS 中，`_updateState` 会在状态机内部同步地向用户监听器发出 `internal/status`）。
+- 转换（`reload`、`unload`）是派生出的 tokio 任务。论文的脚注 2 预见到了这一点：*“在惰性调度下（例如 … Rust future），宿主必须派生任务，它才能推进。”*
+- 句柄（`Context`、`Fiber`、`Svc<S>`）是 `Send + Sync` 的；插件的 future 必须是 `Send`。用户可以在插件内自由地 `tokio::spawn`（并把 `JoinHandle` 绑定到一个效应（effect）上）。
+- 测试运行在带 `tokio::time::pause()` 的 `current_thread` 运行时上，以获得确定的交错执行（相当于 vitest 的假定时器）；生产环境可以使用多线程运行时。[测试](/docs/development-testing#port-the-suite)说明了如今每个测试套件使用哪种运行时。
+
+<Mermaid chart={"sequenceDiagram\n  participant Caller as caller (task)\n  participant Lock as State lock\n  participant Driver as driver\n  participant Tokio as tokio\n  Caller->>Lock: run（临界区）\n  Lock-->>Lock: 修改 State，排队动作\n  Lock->>Driver: 释放锁，移交动作\n  Driver->>Driver: 唤醒等待者\n  Driver->>Tokio: 派生 reload / unload\n  Driver->>Caller: 发出事件、记录日志、丢弃已释放的值\n  Note over Driver,Caller: 用户代码只在这里运行，位于锁之外"} />
+
+<Callout type="info">
+在 `kardia-core`（`root.rs`）中，根是私有的 `RootInner { state: Mutex<State>, changed: Notify, logger: Mutex<LoggerState> }`。临界区是 `RootInner::run(|st: &mut State| …)`：它把 `Action` 推入 `State::actions`，而不是返回它们。动作包括 `Reload(FiberId)` 和 `Unload(FiberId)`（派生转换任务）、`Emit(..)`（把事件投递给监听器）、`Log { .. }`（通过日志器报告错误）以及 `Drop(..)`（在锁内释放的值在解锁后才丢弃，因为它们的析构函数是用户代码）。每个临界区在解锁后都会唤醒根级 `changed` 通知器上的所有等待者，而不是按动作执行 `Wake(Notify)`。撤销函数不作为动作运行：卸载转换会在锁外自行运行它们（见[生命周期算法](/docs/development-design#lifecycle)）。
+</Callout>
+
+**考虑过的替代方案：** 一种 `!Send` 的设计（在 `LocalSet` 上使用 `Rc<RefCell<..>>`）最贴近 JS 的字面形态，有一轮分析曾针对加载器推荐过它。它在核心中被否决，因为它会迫使生态中的每个插件和服务都兼容 `!Send`（不能 `tokio::spawn`，与大多数异步库配合起来很别扭），而上面的“锁加动作”约束能以相当的复杂度保持同样的原子性。如果之后的性能分析显示访问热路径上存在锁竞争，可以通过 `arc-swap` 发布已提交视图（committed view，在每个生命周期片段（episode）内不可变），而不改变语义。
+
+## 加锁顺序 [#lock-ordering]
+
+`core::State` 是最内层的锁。更高的层（`loader` 的树状态、`include` 的 IO 状态）有各自的互斥锁，它们只能在**释放**自己的锁**之后**调用 core，或者在持有自己的锁时调用，但**前提是 core 在持有其锁时从不回调它们**（D1 保证了这一点）。
+
+<Callout type="warn">
+经验法则：*同一时间至多持有一把锁*。
+</Callout>

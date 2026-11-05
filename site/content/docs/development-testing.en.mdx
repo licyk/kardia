@@ -1,0 +1,59 @@
+---
+title: "Testing strategy"
+description: "How kardia is tested: the ported TypeScript spec suite and its runtimes, model-based property tests of the paper's metatheory, unit tests and tooling."
+---
+
+kardia's tests check the implementation against two specifications: the TypeScript test suite of Cordis (behaviour) and the paper's theorems (semantics). The tests exercise the real implementation; mocks are kept to a minimum.
+
+## Port the TypeScript suite (acceptance) [#port-the-suite]
+
+Each phase ports the corresponding `*.spec.ts` files as Rust integration tests, keeping the snake_case of each TS test name for traceability. The runtime follows what a test exercises:
+
+| Runtime | Used for |
+|---|---|
+| **`current_thread`** (`#[tokio::test]`) | The default: core, loader and hmr tests. Interleavings stay close to the single JS thread. |
+| **Paused time** (`start_paused = true`) | Tests that depend on timers: the timer suite, and the core and loader tests whose effects wait on timers. |
+| **`multi_thread`** | Where real parallelism is the point: every include test, plus the fs and hmr watch cases that need it (e.g. a module load held open with `block_in_place`). The include's IO loop and the file watch then run alongside tree updates, as in the `kardia` binary. These tests found the races fixed in the include's write path and the loader's update path. |
+| **Real time** | File-system watch tests, since `notify` reports events from its own thread. An expected event is awaited with bounded polling (`eventually` helpers); a fixed wait is used only to check that something does *not* happen. |
+
+The specs per phase (the phases are on [Status and deviations](/docs/development-status#phases)):
+
+| Phase | Specs to port |
+|---|---|
+| 1 | `dispose.spec` (effect shapes, abort at boundaries, finally/cleanup, errors) |
+| 2 | `fiber.spec` (inertia locks 1–3, failure, update, dispose of pending/failed), `update.spec` (concurrent updates), `service.spec`, `service-dispose.spec` (guards, drain ordering, concurrent sibling cleanup), `plugin.spec`, `replace.spec`, `isolate.spec`, `reflect.spec` |
+| 3 | `events.spec`, `intercept.spec`, `logger.spec`, `shadow.spec` (re-expressed as def-site/use-site tests on `Svc`), timer `index.spec` |
+| 4 | loader `validate.spec`, `commit.spec`, `group.spec`, `index.spec`, `evaluate.spec`, `rebuild.spec`, `isolate*.spec` |
+| 5 | include `sync.spec`, `patch.spec`, `reload.spec`, `write.spec` (fault injection on rename), `parse.spec`; fs `watch.spec` |
+| 7 | hmr `reconcile.spec` (with an in-memory `ModuleSource`) |
+
+Every case of every spec has been ported, found already covered, or judged not applicable; see [Implementation status](/docs/development-status#status).
+
+## Model-based tests of the paper's metatheory [#model-based]
+
+Because the lifecycle is written as pure critical sections ([Concurrency](/docs/development-concurrency#model)), the core can be driven by a **deterministic scheduler** in tests: a harness that holds spawned transitions in a queue and lets `proptest` choose which runnable task advances next. With synthetic components whose effects are writes to a shared table (each with an exact inverse), random orchestration sequences (insert / retire / provide / withdraw / update) and random schedules check the theorems of the [metatheory](/docs/concepts-metatheory):
+
+| Property | Theorem | Checked as |
+|---|---|---|
+| **Preservation** | Thm 64 | Registry well-formedness after every step (parents exist, provisions disjoint per realm, committed views name installed fibers). |
+| **Recovery exactness** | Thm 68 / Cor 69 | After a fiber's episode closes, the table equals the run with that fiber's steps removed; a removed fiber's provisions are empty. |
+| **Ordering** | Thm 70 | A provider's episode strictly contains each consumer's episode that committed to it; no consumer reads a binding outside its provider's episode. |
+| **Resolution coherence** | Thm 71 | Every `apply` observes one committed view. |
+| **Progress** | Thm 73 | Every schedule reaches quiescence within the step bound (acyclic declarations). |
+| **Confluence** | Thm 80 | For fixed orchestration inputs, all schedules reach the same set of `Active` fibers (= the support set A) and the same table up to fiber renaming. |
+
+These tests check the implementation against the theory with no business logic copied into the tests.
+
+<Callout type="info">
+As implemented (`crates/kardia-core/tests/model.rs`), the property tests drive real tokio schedules with random delays rather than a deterministic scheduler. They check ordering during every run, and preservation, recovery exactness and confluence (the active fibers are exactly the support set) at quiescence. The property tests also found the [retired-provider deviation](/docs/development-status#deviations).
+</Callout>
+
+## Unit tests [#unit-tests]
+
+Pure modules (`IdTable`, `Scope` lookups, target computation, `journal`, `patch`, glob predicate, HMR union-find) get focused unit tests. Mocks are limited to `Catalog`/`ModuleSource` test registries and fault-injecting filesystem shims.
+
+## Tooling [#tooling]
+
+- `cargo fmt`, `cargo clippy -D warnings`, `cargo test --workspace` (the exact CI commands are on [Contributing](/docs/development-contributing#ci)).
+- `unsafe` is confined to the FFI of the dylib backend (`kardia-hmr/src/dylib.rs`) and the guest SDK (`kardia-guest/src/ffi.rs`); every other crate forbids it.
+- Optional `loom` is *not* planned: the single-lock design has no lock-free state to model.

@@ -1,5 +1,5 @@
 //! Port of `packages/core/tests/associate.spec.ts`. An associated service
-//! (`foo.bar`) is an ordinary key (plan §6.5); mixins and accessors are not ported.
+//! (`foo.bar`) is an ordinary key (<https://licyk.github.io/kardia/docs/development-design#mixins>); mixins and accessors are not ported.
 
 mod common;
 

@@ -1,0 +1,150 @@
+---
+title: "配置文件"
+description: "条目及其字段、表达式、双向同步，以及内置插件和它们的配置。"
+---
+
+`kardia` 可执行文件运行由 YAML 或 JSON 配置文件（默认为 `kardia.yml`）描述的应用。文件是一个**条目**（entry）列表，每个条目运行一个插件（plugin）：
+
+```yaml
+- id: timer               # optional; generated (and written back) when missing
+  name: timer             # a built-in plugin, or a path to a guest module
+- id: plugins
+  name: group             # a group runs the entries in its `config`
+  group: true
+  config:
+    - id: console
+      name: logger-console
+      disabled: true      # true / false, or an expression
+      config:
+        levels: { default: 3 }   # 0 error … 3 debug
+```
+
+## 条目字段 [#entry-fields]
+
+| 字段 | 含义 |
+|---|---|
+| `id` | 在多次编辑之间标识该条目。缺失的 id 会自动生成，并随下一次写回写入文件。 |
+| `name` | 插件。可以是内置插件名，也可以是访客模块路径（见下文）。 |
+| `config` | 插件的配置。对分组（group）而言，是它的条目列表。 |
+| `group` | 标记该条目为分组。 |
+| `disabled` | 停止插件而不删除其条目。 |
+| `inject` | 条目额外依赖的服务：一个名字列表，或一个从名字到拦截（interception）元数据的映射。 |
+| `intercept` | 插件所用服务的元数据，按服务分键。例如 `logger: { name: db, level: 3 }`。 |
+| `isolate` | 给服务一个独立的作用域：`{ db: true }` 让 `db` 成为该条目私有，`{ db: shared }` 让所有使用标签 `shared` 的条目共享它。 |
+
+条目在读取时校验，规则很少：
+
+- **`id`** 是字符串，且不能包含 `:`（加载器（loader）用 `:` 连接跨 include（配置文件引入）文件的 id）。缺失的 id 在读取文件时生成：八位十六进制数字。在下一次读取时内容未变的匿名条目会保留其 id，因此编辑相邻条目不会让它重启。生成的 id 随下一次写回进入文件。
+- **`name`** 必填。不是内置插件名的名字是访客模块路径，相对于配置文件：`.wasm` 或 `.wat` 表示 WebAssembly，其他扩展名表示动态库。见[访客插件](/docs/guide-guests)。
+- **`config`** 可以是任意值，由插件自行解码。分组（`group: true`）的 `config` 必须是条目列表。
+- **`group`** 是布尔值。
+- **`disabled`** 是布尔值或[表达式](#expressions)。用在分组上时，它不会停止分组本身，而是禁用分组内的条目。
+- **`inject`** 是服务名列表，或从服务名到拦截元数据的映射（`null` 表示没有元数据）。
+- **`intercept`** 是从服务名到元数据的映射。修改它会原地作用于运行中的插件，无需重启。
+- **`isolate`** 是从服务名到 `true`（该条目私有的作用域）或标签（所有带该标签的条目共享的作用域）的映射。
+
+其他任何键都会被容忍并保留：文件始终是事实来源，因此未知键在写回后依然存在。[加载器](/docs/guide-loader)深入讲解分组、隔离（isolation）与拦截。
+
+## 表达式 [#expressions]
+
+带有 `!!js` 标签的值是一个表达式，例如 `disabled: !!js "!settings.enabled"`。在 JSON 中写作 `{ "__jsExpr": "!settings.enabled" }`。
+
+- **语法**：JavaScript 的一个无副作用子集：
+  - 字面量（数字、字符串、`true`、`false`、`null`、`undefined`），数组和对象字面量；
+  - 成员访问：`a.b`、`a[0]`、`a?.b`，字符串和数组的 `.length`；
+  - 一元 `!`、`-`、`+`；算术 `+ - * / %`；
+  - 比较 `< <= > >=`，相等 `== != === !==`；
+  - `&&`、`||`、`??` 和 `?:`。
+
+  不支持函数调用。
+- **标识符**：一个名字读取同名服务的 JSON 值。条目必须在 `inject` 中声明该服务。只有具备 JSON 视图的服务才能这样读取（见[编写插件](/docs/guide-plugins#services-for-expressions)）。
+
+表达式可以出现在以下位置：
+
+| 位置 | 求值时机 | 失败时 |
+|---|---|---|
+| `disabled` | 条目启动或变更时，在条目的上下文（context）中求值（该上下文能看到条目的 `inject`）；由结果的真值决定 | 条目被禁用 |
+| `config` 内的任意位置 | 插件每次（重新）加载时，在插件的上下文中求值。文件中保留表达式本身。分组的条目列表不求值 | 插件加载失败 |
+| `intercept` 的值 | 条目启动或变更时 | 条目被禁用 |
+| `inject`（映射形式）的元数据值 | 在父分组的上下文中求值 | 条目被禁用 |
+
+`name`、`group`、`isolate`，以及作为整体的 `inject` 或 `intercept`，都不能是表达式。文件中的错误（包括求值失败的表达式）会附带位置（`file:line:col`）报告。
+
+## 双向同步 [#edits-go-both-ways]
+
+对文件的编辑会应用到运行中的应用；应用对自身条目所做的修改会写回文件。
+
+- **文件 → 应用**：文件变化时，新条目按 `id` 与运行中的条目协调：变化的条目原地更新，新增的条目启动，删除的条目停止。
+- **应用 → 文件**：运行时的修改（通过加载器 API，或插件更新、释放（dispose）自身）会写回给它的所有者：文件本身，或加载该文件的 `include` 的配置中的某个补丁（见 [`include`](#include)）。生成的 id 也随之写入。
+- **冲突**：文件和应用同时修改时，以文件为准。
+- **关闭应用**（Ctrl-C）不会写入文件。
+
+## 内置插件 [#built-in-plugins]
+
+| 名字 | 作用 | 配置 |
+|---|---|---|
+| `timer` | `timeout`、`interval`、`sleep`、`throttle` 和 `debounce`，各自在其插件停止时取消 | – |
+| `logger-console` | 把日志打印到终端 | `levels`（名字 → `0`–`3`，外加 `default`）、`showTime`、`colors`、`maxLength`、`label`、`showDiff` |
+| `fs` | 文件监视服务 | – |
+| `include` | 把另一个文件中的条目作为子树加载 | `path`、`watch`、`initial`、`patches` |
+| `group` | 运行其 `config` 中的条目 | 条目列表 |
+| `hmr` | 在访客模块文件变化时重新加载它们 | `base`、`watch: { enabled, files, debounce }` |
+
+每个内置插件也能用它对应的 TypeScript 包名来引用：
+
+| 名字 | TypeScript 包 |
+|---|---|
+| `timer` | `@cordisjs/plugin-timer` |
+| `logger-console` | `@cordisjs/plugin-logger-console` |
+| `fs` | `@cordisjs/plugin-fs-node` |
+| `include` | `@cordisjs/plugin-include` |
+| `group` | `@cordisjs/plugin-group` |
+| `hmr` | `@cordisjs/plugin-hmr`（由 `kardia` 可执行文件注册） |
+
+可执行文件会自行启动 `fs`，并以 `watch: true` include 配置文件，因此配置文件本身就是一个 `include`，其中的条目构成整个应用。
+
+### `logger-console` [#logger-console]
+
+| 键 | 类型 | 默认值 | 含义 |
+|---|---|---|---|
+| `levels` | 映射：日志名 → `0`–`3` | `{}` | 每个日志名打印的最详细级别：`0` error、`1` warn、`2` info、`3` debug。`default` 适用于未列出的日志名；没有 `default` 时为 info。 |
+| `showTime` | 字符串 | `"yyyy-MM-dd hh:mm:ss "` | 打印在每行前面的时间模板；空字符串隐藏时间。 |
+| `colors` | `false` 或 `0`–`3` | 根据终端检测 | 颜色支持级别；`false` 关闭颜色。 |
+| `maxLength` | 数字 | `10240` | 超过此长度的行会被截断。 |
+| `label` | `{ width, margin, align }` | `{ width: 0, margin: 1, align: left }` | 日志名的排版：补齐到 `width`，两侧留 `margin` 个空格，`align` 为 `left` 或 `right`。 |
+| `showDiff` | 布尔值 | `false` | 在末尾附加距上一条消息的时间。 |
+
+### `include` [#include]
+
+| 键 | 类型 | 默认值 | 含义 |
+|---|---|---|---|
+| `path` | 字符串 | 必填 | 要加载的 YAML 或 JSON 文件，相对于包含该 `include` 条目的配置文件所在目录（否则相对于工作目录）。 |
+| `watch` | 布尔值 | `false` | 文件每次变化时重新读取。需要 `fs` 服务。 |
+| `initial` | 条目列表 | – | 文件尚不存在时写入 `path`。 |
+| `patches` | 列表 | `[]` | 叠加在文件条目之上的修改（见下）。 |
+
+补丁是以下两种之一：
+
+- `{ insert: [...] }` 把条目追加到文件的顶层，`{ id, insert: [...] }` 追加到具有该 `id` 的分组。
+- `{ id, name?, ...keys }` 覆盖具有该 `id` 的条目的若干键。
+
+补丁提供的键归补丁所有：对这些键的运行时修改会写回补丁，而不是文件。
+
+### `group` [#group]
+
+分组的 `config` 是它的条目列表。更新它时，列表会被原地协调，而不是重启分组：只有变化的条目会受到影响。
+
+### `hmr` [#hmr]
+
+| 键 | 类型 | 默认值 | 含义 |
+|---|---|---|---|
+| `base` | 路径 | `.` | 基准目录，相对于包含该 `hmr` 条目的配置文件（否则相对于工作目录）。`watch.files` 和日志中的路径都相对于它。 |
+| `watch.enabled` | 布尔值 | `false` | 在模块文件变化时重新加载。需要 `fs` 服务。 |
+| `watch.files` | 模式列表 | `[".", "!**/.*", "!**/target"]` | 要监视的文件，相对于 `base`；`!` 表示排除。 |
+| `watch.debounce` | 毫秒 | `100` | 同一时间窗口内的变化会一起重新加载。 |
+
+重新加载的工作方式见[热重载](/docs/guide-hot-reload)。
+
+### `timer` 与 `fs` [#timer-and-fs]
+
+二者都不接受配置。它们提供 `timer` 和 `fs` 服务；插件如何使用它们见[服务](/docs/guide-services)。

@@ -1,0 +1,457 @@
+---
+title: "Services, events and logging"
+description: "Provide and consume services, attribute calls to their caller, isolate and intercept services, dispatch events and log."
+---
+
+A **service** is a value that one plugin provides and other plugins depend on. The runtime tracks who provides what and who depends on what: a plugin that declares a service starts once the service is available, restarts when it is replaced, and stops when it goes away. This page shows how to define, provide and consume services, how calls are attributed to their caller, how isolation and interception change what a context sees, and how to use events and the logger.
+
+For the theory behind services see [Reactive coeffects](/docs/concepts-reactive-coeffects); for why the Rust API looks the way it does (string keys, `Svc<T>`, no `Proxy`) see [API design](/docs/development-design); every place where kardia behaves differently from the TypeScript Cordis is listed on [Status and deviations](/docs/development-status).
+
+## Defining a service [#defining]
+
+A service is any `Send + Sync + 'static` type bound to a **key** through the `Service` trait:
+
+```rust
+pub trait Service: Any + Send + Sync {
+    /// Coeffect key. A string (not a type id) because configuration names services.
+    const NAME: &'static str;
+
+    /// Merges interception metadata (paper Def. 26), outermost first.
+    /// Defaults to a right-biased shallow merge of JSON objects.
+    fn merge_intercept(values: Vec<Value>) -> Value {
+        merge_shallow(values)
+    }
+}
+```
+
+Keys are strings because configuration files name services (`inject: [database]`). The runtime stores each value together with its type, so a key reached with the wrong Rust type fails with `AccessError::TypeMismatch` instead of being misread.
+
+Usually you derive the trait:
+
+```rust
+use kardia::prelude::*;
+
+#[derive(Service)]
+#[service(crate = ::kardia)]            // needed when you depend on the `kardia` facade
+struct Database {
+    url: String,
+}
+
+#[derive(Service)]
+#[service(name = "cache.redis", crate = ::kardia)]
+struct Redis;
+```
+
+Without `name`, the key is the type name hyphenated: `Database` → `database`, `FooBar` → `foo-bar`. `#[service(crate = …)]` points the generated code at `::kardia`; without it, it refers to `::kardia_core`.
+
+**Associated services.** Cordis's `foo.bar` associated services and `ctx.mixin` are JavaScript-object conveniences. In kardia a service named `foo.bar` is just another key. To "extend" another plugin's type, use an extension trait (compile time, see [`Svc<T>` and the caller](#svc)) or a registry service built on `kardia_core::IdTable` (run time). No accessor or mixin layer is ported.
+
+## Providing a service [#providing]
+
+Providing is an **effect** of the current fiber: it is reverted when the fiber unloads (see [Revertible effects](/docs/guide-effects)). Every method returns `Result<EffectHandle>`.
+
+| Method | Provides |
+|---|---|
+| `ctx.provide(value)` | a `Service` under `S::NAME` |
+| `ctx.provide_arc(arc)` | an `Arc<S>` you already hold |
+| `ctx.provide_as(key, value)` | any `Send + Sync` value under an explicit key |
+| `ctx.provide_arc_as(key, arc)` | the same, from an `Arc` |
+| `ctx.provide_checked(key, arc, check)` | a value whose availability also depends on a predicate `check`, evaluated per consumer with the consumer's interception metadata. The predicate runs under the runtime lock and must not call into the runtime. |
+| `ctx.provide_serialized_as(key, value)` | a `Serialize` value that also has a **JSON view**, readable with `ctx.view(key)`, by loader expressions and by guest plugins. A `serde_json::Value` provided under a key (`provide_as`, `provide_arc_as`, `provide_checked`) is its own JSON view. |
+
+```rust
+#[derive(Deserialize)]
+struct DbConfig {
+    url: String,
+}
+
+/// Provides `database`, and logs when it is stopped.
+fn db() -> PluginDef {
+    PluginDef::typed(|ctx: Context, config: std::sync::Arc<DbConfig>| async move {
+        let logger = ctx.logger();
+        ctx.on_dispose(move || logger.info("closing"))?;
+        ctx.provide(Database { url: config.url.clone() })?;
+        Ok(())
+    })
+    .name("db")
+    .provides([Database::NAME])
+}
+```
+
+What providing does:
+- **One binding per key and realm.** A second provider in the same realm fails with `KardiaError::AlreadyProvided`, whose message is `service "database" has been registered at <db>` (the name of the providing plugin).
+- **Notification follows the provider's state.** Consumers are notified at once only if the providing fiber is `Active`; otherwise they are notified when it becomes `Active`. When the provider leaves `Active`, its consumers are notified before any of its inverses run.
+- **Withdrawal waits for consumers.** Reverting the provision removes the binding and notifies the realm, then waits until every consumer that committed to this binding has finished its own cleanup, and only then removes the provision.
+- **A retired provider frees its realm at once.** Disposing a provider unbinds its live provisions immediately, so a successor can provide in the same realm while the old consumers still drain (they keep reading the old binding through their committed views).
+- **A stale load cannot provide.** A retired fiber whose load is still in flight may still register inverses (so nothing it acquired leaks), but its `provide` calls fail with `KardiaError::InactiveEffect`.
+- **Removal is postponed during a drain.** While a provider is unloading, its withdrawn provisions stay reachable to its descendants until the drain ends, so they can use inherited services during their own cleanup.
+
+`.provides([..])` on a `PluginDef` (or `provide = [..]` in `#[plugin]`, or `Plugin::provide()`) only **declares** what a plugin provides. The declaration is metadata for tooling and for the dependency-cycle check; a plugin can provide undeclared keys, which simply escape the check.
+
+There is no in-place overwrite of a bound value. To change what consumers see, provide a new value (withdraw and re-provide, restart or update the provider), so that the change is observed.
+
+## Declaring dependencies [#declaring]
+
+A plugin lists the services it needs in its **inject** declaration, an `Inject`: ordered keys, each with optional interception metadata.
+
+```rust
+use kardia::prelude::*;
+
+let inject = Inject::new()
+    .with("database")
+    .with_meta("logger", json!({ "name": "db", "level": 3 }));
+let inject: Inject = ["database", "cache"].into();   // From<[K; N]> and From<Vec<K>>
+let inject = Inject::of::<(Database, Timer)>();       // from a tuple of service types
+```
+
+Where the declaration goes:
+
+| Plugin form | Declaration |
+|---|---|
+| `impl Plugin for P` | `fn inject() -> Inject` |
+| `#[plugin]` function | the type of its context parameter, `Injected<(A, B)>` |
+| `PluginDef::new` / `PluginDef::typed` | `.inject(..)` |
+| a closure plugin | `ctx.inject(deps, \|ctx\| async move { … })` |
+| a loader entry | its `inject` field (see [Configuration](/docs/guide-configuration)) |
+
+The runtime keeps the fiber in step with its declaration:
+- It stays `Pending` until every declared service is available, then loads.
+- If a declared service is replaced by another binding, it unloads and loads again against the new one.
+- If a declared service goes away, it unloads and waits in `Pending`.
+
+**Dependency cycles.** When a fiber is inserted, the runtime checks whether the declared `provide` and `inject` sets of the live fibers in its realm form a cycle through it. If they do, it logs a warning naming the cycle (`dependency cycle: a -> b -> a`) and the fiber stays `Pending`, instead of waiting silently.
+
+## Accessing services [#accessing]
+
+| Method | Returns | Access |
+|---|---|---|
+| `ctx.get::<S>()` | `Result<Svc<S>, AccessError>` | checked, through committed views |
+| `ctx.get_as::<T>(key)` | `Result<Svc<T>, AccessError>` | checked, by key, for any type |
+| `ctx.view(key)` | `Result<Value, AccessError>` | checked, the service's JSON view |
+| `ctx.deps::<(A, B)>()` | `Result<(Svc<A>, Svc<B>), AccessError>` | checked, a tuple of up to eight services |
+| `ctx.live::<S>()` | `Option<Svc<S>>` | reflective: the live binding of the realm, if its provider is active; never fails for undeclared keys |
+| `ctx.live_as::<T>(key)` | `Option<Svc<T>>` | the same, by key |
+
+**Checked access** (the paper's Algorithm 6) resolves a key like this:
+1. A binding that a fiber on the way provides itself, in the same realm, is returned directly.
+2. Otherwise the walk goes up through the fibers that derived the context.
+3. It stops at a context that isolates the key again (an isolation boundary): the key is undeclared.
+4. The first fiber that declares the key decides. It returns the binding that fiber **committed** to when it loaded; a fiber that declares the key but has no committed binding yields `Inactive`.
+5. The root context, which cannot declare `inject`, has **unchecked** access to the live store, as in Cordis.
+
+Because checked access reads the committed view rather than the live store, a dependency stays readable while the consumer runs its own teardown, even if the provider is already gone from the store (Theorem 70 of the paper).
+
+The errors:
+
+| `AccessError` | Message |
+|---|---|
+| `Undeclared { key }` | `cannot get property "key" without inject` |
+| `Inactive { key }` | `cannot get required service "key" in inactive context` |
+| `TypeMismatch { key, expected }` | `service "key" is not of type …` |
+
+### Compile-time checked access [#injected]
+
+`Injected<D>` wraps a plugin context whose typed accesses are checked against its declared dependencies `D` at compile time. The `#[plugin]` macro reads `D` from the signature and generates both the declaration and the wrapper:
+
+```rust
+/// Starts once `database` and `timer` are available, and stops with them.
+#[plugin(crate = ::kardia)]
+async fn greeter(ctx: Injected<(Database, Timer)>) -> Result<()> {
+    let (db, timer) = ctx.deps()?;                  // all declared services at once
+    let db_again = ctx.get::<Database, _>()?;       // one of them
+    // ctx.get::<Cache, _>() would not compile: `Cache` is not in `D`
+    ctx.logger().info(format_args!("using {}", db.url));
+    timer.interval(Duration::from_secs(1), || println!("tick"))?;
+    Ok(())
+}
+```
+
+- `Injected::get::<S, _>()`: the `_` is the inferred position of `S` in `D` (`kardia_core::index::I0` … `I7`); you never write it.
+- `Injected::deps()` returns all of `D` as a tuple of `Svc`s.
+- `Injected::context()` returns the underlying, unchecked `Context`, and `Injected<D>` dereferences to it, so every other `Context` method is available.
+- `#[plugin(name = "…", provide = ["key"], crate = path)]` takes an `async fn` whose first parameter is `Context` or `Injected<(..)>` and whose optional second parameter is `Arc<Config>`. It generates a plugin type named after the function in camel case (`greeter` → `Greeter`), with the hyphenated function name as plugin name unless `name` is given. Writing plugins is covered in [Plugins](/docs/guide-plugins).
+
+## `Svc<T>` and the caller [#svc]
+
+Every access returns a `Svc<T>`: the service value together with the **caller**, the context that accessed it. Cordis attributes calls with a JavaScript `Proxy`; kardia makes the caller an explicit part of the handle.
+
+| Method | Returns |
+|---|---|
+| `*svc` (`Deref`) | the service value |
+| `svc.caller()` | the accessing `Context` |
+| `svc.key()` | the key it was reached under |
+| `svc.impl_id()` | the identity of the binding (never reused, so a replacement by an equal value is observable) |
+| `svc.arc()` | the `Arc<T>` |
+| `svc.provider()` | the providing fiber (the service's definition site) |
+| `svc.logger()` | a logger for work done on the caller's behalf: named by the caller's `logger` interception `name`, else after the providing plugin |
+| `svc.intercepts()` | the interception metadata of this access, outermost first |
+| `svc.meta()` | that metadata merged with `S::merge_intercept` |
+
+**Effects on the caller's behalf.** A service method that creates an effect for its caller registers it on `svc.caller()`. The effect then belongs to the caller's fiber and is reverted when the *caller* unloads, which is what Cordis's tracker achieves with `this.ctx`. Service crates expose such methods as **extension traits on `Svc<S>`**, which coherence allows because the trait is local. The timer service does this (simplified: the real `timeout` also reverts its effect once it has fired):
+
+```rust
+pub trait TimerExt {
+    fn timeout(&self, delay: Duration, callback: impl FnOnce() + Send + 'static) -> Result<EffectHandle>;
+    fn sleep(&self, delay: Duration) -> BoxFuture<'static, Result<()>>;
+    fn interval(&self, delay: Duration, callback: impl Fn() + Send + Sync + 'static) -> Result<EffectHandle>;
+    // also `ticks`, `throttle` and `debounce`
+}
+
+impl TimerExt for Svc<Timer> {
+    fn timeout(&self, delay: Duration, callback: impl FnOnce() + Send + 'static) -> Result<EffectHandle> {
+        self.caller().effect_sync("ctx.timeout()", |scope| {
+            let task = tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                callback();
+            });
+            scope.defer_fn(move || task.abort());
+            Ok(())
+        })
+    }
+    // …
+}
+```
+
+So `timer.interval(..)` in `greeter` above stops when `greeter` unloads, not when the timer plugin does.
+
+**A service's own dependencies.** A service resolves its own dependencies through the `Context` it stored when it was constructed (its definition site), so no shadow contexts are needed. Two consequences differ from Cordis, where both follow the use site:
+- Interception metadata of the outer caller does not reach the services a service calls in turn; it stays on `Svc::caller()`.
+- Effects a service creates through its stored context belong to the service's fiber.
+
+## Interception metadata [#interception]
+
+Interception attaches metadata to a key along a context chain, so that a service can behave differently per caller (paper Def. 26–27). The usual example is the logger: `logger: { name: db, level: 3 }` renames and re-levels the logger of everything below.
+
+```rust
+let quiet = ctx.intercept("logger", json!({ "name": "db", "level": 1 }));
+quiet.plugin::<DbPlugin>(config)?;        // DbPlugin logs as `db`, up to warnings
+```
+
+Where metadata comes from, outermost first:
+1. the metadata declared with the `inject` that admits the access (`Inject::with_meta`, or an entry's `inject: { key: meta }`);
+2. every `ctx.intercept(key, meta)` on the caller's derivation chain, outer to inner (a loader entry's `intercept` field adds one).
+
+`Svc::intercepts()` returns this list and `Svc::meta()` merges it with `S::merge_intercept`, by default `merge_shallow`: objects merged key by key, later values winning, like `Object.assign`. Override `merge_intercept` in your `Service` impl for another merge. On a context, `ctx.intercepts(key)` returns the chain's metadata and `ctx.intercept_meta::<T>(key)` merges and deserializes it (malformed metadata yields `T::default()`).
+
+Metadata also reaches availability predicates: `provide_checked` hands the predicate the consumer's metadata. The loader uses this for `inject: { loader: { await: true } }`, which makes `loader` available to an entry only once every entry has settled.
+
+## Isolation [#isolation]
+
+Each key lives in a **realm**. By default all contexts share the key's root realm; isolating a key gives a context, and everything derived from it, a realm of its own:
+
+| Method | Derives a context in which |
+|---|---|
+| `ctx.isolate(key)` | `key` lives in a fresh, private realm |
+| `ctx.isolate_in(key, realm)` | `key` lives in a given realm (`RealmId::new()`), shared by every context isolated into it |
+| `ctx.extend()` | the context has its own mutable isolation and interception tables (an `Overlay`) |
+| `ctx.extend_with(&overlay)` | the context is backed by an existing `Overlay`, shared with other contexts |
+
+```rust
+let private = ctx.isolate("database");
+private.plugin_def(&db(), json!({ "url": "postgres://test" }))?;   // its own `database`
+ctx.plugin_def(&db(), json!({ "url": "postgres://main" }))?;       // no conflict
+```
+
+A provider binds in the realm its context resolves the key to, and a consumer sees only the binding of its own realm. Checked access stops at a context that isolates the key again, so an isolated subtree cannot reach the outer binding through an outer declaration. Related queries: `ctx.realm(key)`, `ctx.has_isolation(key)`, `ctx.isolated_keys()`; and for tooling, `ctx.bindings(key)` and `ctx.binding_provider(key, realm)`.
+
+In configuration files, isolation is the entry field `isolate` (`{ db: true }` for a private realm, `{ db: shared }` for a realm shared under a label); see [The loader](/docs/guide-loader#isolation).
+
+## Events [#events]
+
+An event is a Rust type that implements `Event`. Listeners are registered per event type.
+
+```rust
+pub trait Event: Any + Send + Sync {
+    type Output: Bailable;
+
+    /// Whether a listener registered in `listener` receives this event.
+    fn filter(&self, _listener: &Context) -> bool {
+        true
+    }
+}
+```
+
+`Output` is what each listener returns. `Bailable` decides whether a result stops a `bail` or `serial` dispatch, and whether it is a failure in `parallel`:
+
+| `Output` | Bails when | Failure in `parallel` |
+|---|---|---|
+| `()` | never | never |
+| `bool` | `true` | never |
+| `Option<T>` | `Some(..)` | never |
+| `Result<T, Error>` | `Err(..)`, or `Ok(v)` when `v` bails | `Err(..)` |
+
+### Listening [#listening]
+
+Each registration is an effect of the current fiber, so a listener is removed when its plugin unloads. All return `Result<EffectHandle>`.
+
+| Method | Registers |
+|---|---|
+| `ctx.on(f)` | a synchronous listener, after those registered so far |
+| `ctx.on_prepend(f)` | a synchronous listener, before those registered so far |
+| `ctx.on_async(f)` | an asynchronous listener (returns a future) |
+| `ctx.once(f)` | a listener that runs at most once, then removes itself |
+
+`ctx.listener_count::<E>()` counts the current listeners.
+
+### Dispatching [#dispatching]
+
+| Method | Behaviour |
+|---|---|
+| `ctx.emit(&event)` | calls every listener; asynchronous ones are started, not awaited. A panicking listener is logged and the dispatch continues. |
+| `ctx.bail(&event)` | calls synchronous listeners until one returns a bailing result, which it returns as `Some(..)`; asynchronous ones are started, not awaited |
+| `ctx.serial(&event).await` | calls listeners one after another, awaiting each, until one bails |
+| `ctx.parallel(&event).await` | calls all listeners concurrently and collects failures and panics into an `AggregateError` (`one or more listeners of event E failed`) |
+
+```rust
+struct Query(&'static str);
+
+impl Event for Query {
+    type Output = Option<Value>;
+}
+
+ctx.on(|query: &Query| (query.0 == "version").then(|| json!("1.2.0")))?;
+let answer = ctx.bail(&Query("version"));      // Some(Some("1.2.0"))
+```
+
+Dispatch takes a snapshot of the listeners and skips those removed meanwhile. An event can restrict its audience with `filter`, which gets the context each listener was registered in.
+
+Unlike Cordis, `emit` does not let a failing listener abort the dispatch, and there is no generic `waterfall`: extension points that Cordis builds on waterfall events are typed hooks (below).
+
+### Built-in events [#builtin-events]
+
+The runtime emits these from the root, after each state change:
+
+| Event | Fields | Emitted when |
+|---|---|---|
+| `PluginInserted` | `fiber` | a fiber is created (`internal/plugin` on insertion) |
+| `PluginRemoved` | `fiber` | a fiber is retired (`internal/plugin` on removal) |
+| `StatusChanged` | `fiber`, `old`, `new` | a fiber changes state |
+| `ServiceChanged` | `key`, `realm` | a binding of `key` in `realm` appears or disappears; delivered only to listeners whose context resolves `key` to that realm |
+| `ConfigCommitted` | `fiber`, `config` | a fiber's configuration is replaced through `update` (the loader's write-back point) |
+| `Replaced` | `fiber` | a fiber is moved to another plugin implementation by `registry.replace` |
+
+### Hooks [#hooks]
+
+Where Cordis uses waterfall events (`internal/config`, `internal/get`, `internal/update`), kardia has typed hooks. Each registration is an effect:
+
+| Hook | Purpose |
+|---|---|
+| `ctx.on_update::<C>(\|config: &C\| bool)` | offers configuration updates of the current fiber to the hook before restarting it; returning `true` takes the update over (no restart). The hook sees the decoded configuration and is skipped if `C` is not the plugin's configuration type. |
+| `ctx.on_update_with::<C>(..)` | the same; a hook that takes the update over returns the future that `update` resolves with |
+| `ctx.on_config(hook)` | a configuration resolution hook (`ConfigHook`) for every fiber of the root: it gets the source configuration and the next stage, ultimately the plugin's own decoding. The loader uses it to evaluate expressions. |
+
+See [Revertible effects](/docs/guide-effects#update) for how `update` uses these hooks, and [The loader](/docs/guide-loader#patch-context) for the loader's own hook.
+
+## Logging [#logging]
+
+The logger is part of the core. `ctx.logger()` returns a `Logger` bound to the current fiber:
+
+- **Name:** the `name` of the context's `logger` interception metadata if there is one; otherwise the plugin name of the fiber (or of its nearest named ancestor, else `root`), hyphenated (`fooBar` → `foo-bar`, `snake_case` → `snake-case`).
+- **Level:** the `level` of the `logger` interception metadata, if any. `logger.with_level(level)` sets it on a copy.
+
+`ctx.logger_named(name)` creates a logger with an explicit name (still taking the level from interception). `svc.logger()` logs on a caller's behalf (see above).
+
+```rust
+let logger = ctx.logger();
+logger.info(format_args!("connecting to {}", config.url));
+logger.warn("slow query");
+logger.log(Level::Debug, "details");
+logger.log_error(&error);            // an AggregateError is logged member by member
+```
+
+| Level | Value |
+|---|---|
+| `Level::Error` | `0` |
+| `Level::Warn` | `1` |
+| `Level::Info` | `2` |
+| `Level::Debug` | `3` |
+
+Messages take any `impl Display`; format with `format_args!`. Exporters therefore receive finished text: there are no `%`-directives or custom formatters as in Cordis.
+
+### Exporters [#exporters]
+
+An `Exporter` receives every message:
+
+```rust
+pub trait Exporter: Send + Sync + 'static {
+    fn export(&self, message: &Message);
+
+    /// The most verbose level exported for logger `name`; `None` defers to
+    /// the logger's own level (default: info).
+    fn level(&self, _name: &str) -> Option<Level> {
+        None
+    }
+}
+```
+
+`ctx.add_exporter(Arc::new(exporter))` registers it as an effect of the current fiber. A message reaches an exporter if its level is at most `exporter.level(name)`, else the logger's level, else `Info`. A `Message` carries `sn` (a sequence number shared by all exporters receiving the same call), `ts` (milliseconds since the Unix epoch), `name`, `level`, `text` and the `fiber` that logged it.
+
+The root keeps a ring buffer of the most recent messages at or below the logger's level (1000 by default): `ctx.log_buffer()` returns them oldest first, and `ctx.set_log_buffer_size(n)` resizes it.
+
+The terminal exporter lives in `kardia-logger-console`: register `ConsoleExporter::new(ConsoleConfig { .. })` directly, or load the `logger-console` plugin from a config file (its options are listed in [Configuration](/docs/guide-configuration)).
+
+```rust
+use kardia::logger_console::{ConsoleConfig, ConsoleExporter};
+
+let root = Context::new();
+root.add_exporter(Arc::new(ConsoleExporter::new(ConsoleConfig::default())))?;
+```
+
+There is no `tracing` bridge; the plan leaves a `tracing_subscriber::Layer` feeding exporters as an optional addition to `kardia-logger-console`.
+
+## A complete example [#example]
+
+```rust
+use std::sync::Arc;
+use std::time::Duration;
+
+use kardia::prelude::*;
+
+#[derive(Service)]
+#[service(crate = ::kardia)]
+struct Database {
+    url: String,
+}
+
+#[derive(Deserialize)]
+struct DbConfig {
+    url: String,
+}
+
+fn db() -> PluginDef {
+    PluginDef::typed(|ctx: Context, config: Arc<DbConfig>| async move {
+        let logger = ctx.logger();
+        ctx.on_dispose(move || logger.info("closing"))?;
+        ctx.provide(Database { url: config.url.clone() })?;
+        Ok(())
+    })
+    .name("db")
+    .provides([Database::NAME])
+}
+
+#[plugin(crate = ::kardia)]
+async fn greeter(ctx: Injected<(Database, Timer)>) -> Result<()> {
+    let (db, timer) = ctx.deps()?;
+    ctx.logger().info(format_args!("using {}", db.url));
+    timer.interval(Duration::from_secs(1), || println!("tick"))?;
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let root = Context::new();
+    root.plugin::<TimerPlugin>(())?;
+    root.plugin::<Greeter>(())?; // waits for `database`
+    let db = root.plugin_def(&db(), json!({ "url": "postgres://primary" }))?;
+    db.settled().await?;
+    db.update(json!({ "url": "postgres://replica" }))?.await?; // greeter restarts with it
+    db.dispose().await?; // greeter stops again
+    Ok(())
+}
+```
+
+A longer, runnable version also hot-replaces the database implementation:
+
+```sh
+cargo run -p kardia --example provider_consumer
+```

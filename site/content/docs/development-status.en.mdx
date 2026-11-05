@@ -1,0 +1,105 @@
+---
+title: "Status and deviations"
+description: "The implementation phases of kardia, their exit criteria, the implementation status, and every place where the implementation departs from the plan or from the TypeScript code."
+---
+
+The plan was carried out in phases, each closed by porting and passing the matching part of the TypeScript test suite. All phases are done; this page records them and every place where the result departs from the design or from Cordis.
+
+## Implementation phases [#phases]
+
+| Phase | Scope | Exit criteria |
+|---|---|---|
+| **0. Scaffold** | Workspace, crates, CI (fmt, clippy, test) | empty crates build |
+| **1. Effects & store** | ids, `Root`/`Context`/`Scope`, `IdTable`, effect engine (`effect_sync`, `effect`, `EffectScope`, `EffectHandle`), `provide`/`try_get_live`, isolate/intercept overlays; root fiber only | `dispose.spec` ported and green |
+| **2. Fibers & lifecycle** | `Plugin` trait, registry/runtimes, `FiberData`, target/committed views, refresh/reload/unload with inertia, two-level guard, failure, `update`/`restart`, instantiation cascade, `replace`, checked `get` (Algorithm 6), cycle warning | Phase-2 specs green; model-based property tests ([Testing](/docs/development-testing#model-based)) green |
+| **3. Services & built-ins** | `Service`/`Svc<S>` caller attribution, interception merge, typed events + internal events, logger + exporters, `kardia-timer`, `kardia-logger-console` | Phase-3 specs green; example app with a provider/consumer pair and hot provider replacement |
+| **4. Loader** | `EntryOptions`, validation, `EntryTree`/`EntryGroup`/`Group`, entry state machine, outer/inner fibers, catalog, managed realms + migration, write-back hooks, `loader` barrier; `kardia` binary bootstrapping a root with the loader | loader specs (minus expressions) green |
+| **5. Include & fs** | `kardia-fs` watcher; `kardia-include` parse/journal/patch/sync/atomic write/locations; `kardia.yml` bootstrap identical to `core/bin.js` | include + fs specs green; editing `kardia.yml` live reconfigures a running app |
+| **6. Ergonomics** | `kardia-macros`: `#[plugin]`/`#[service]` derive (NAME, inject tuples, extension traits), compile-time undeclared-access errors for typed deps; optional expression language | macro tests (trybuild) |
+| **7. Dynamic modules (optional)** | `ModuleSource`, `ModuleGraph`, ported HMR reconcile; WASM backend prototype; dylib dev backend | `reconcile.spec` ported against an in-memory source |
+
+Phases 1–3 deliver the paper's core library; 4–5 the paper's loader; 7 the paper's HMR.
+
+<Callout type="info">
+Names as they ended up: `try_get_live` is `live`, the root is created with `Context::new()` (there is no public `Root`), and the service derive is `#[derive(Service)]`. The example app of Phase 3 is `crates/kardia/examples/provider_consumer.rs` (`cargo run -p kardia --example provider_consumer`).
+</Callout>
+
+## Implementation status [#status]
+
+All phases above are implemented in `crates/` (`cargo test --workspace`; `cargo run -p kardia -- examples/kardia.yml` boots an app from a watched config file).
+
+Every case of every TypeScript spec has been ported, found already covered, or judged not applicable. The not-applicable cases test JavaScript or Node mechanics with no Rust counterpart:
+
+- decorators, prototypes and Proxy-based callable services, `this` binding;
+- waterfall and the deprecated `dispatch` API;
+- Node module resolution and loader internals (`resolve`, `import`, `create`, `package-manager`, `loader-utils`);
+- file URLs and Windows drive letters;
+- JavaScript stack frames;
+- concurrent reads of one async iterator.
+
+Version 0.1.0 is published on crates.io as [`kardia`](https://crates.io/crates/kardia) and the nine `kardia-*` crates.
+
+CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, clippy with warnings as errors and the test suite on every push and pull request, on a pinned toolchain (Rust 1.96.0), because the compile-error snapshots of `kardia-macros` change with the compiler. Pushing a `v*` tag runs `publish.yml`: the same checks, then `cargo publish --workspace` for every crate version crates.io does not have yet, waiting out its limit on new crates. The workflow can also be started by hand to resume a release that stopped part-way. [Contributing](/docs/development-contributing#releases) describes both workflows step by step.
+
+## Deviations [#deviations]
+
+Where the implementation departs from this plan or from the TypeScript code. Three entries are long and have their own subsections below the table.
+
+| Topic | Implementation |
+|---|---|
+| Retired providers | Found by the [property tests](/docs/development-testing#model-based): retiring a fiber unbinds its live provisions at once, so a successor can provide in the same realm while old consumers still drain (they read through their committed views). The TS code keeps the slot until the drain and fails the successor. |
+| Stale loads | A retired fiber's load still in flight may register inverses (so nothing it acquired leaks), but not provisions. |
+| Provision removal during a drain | Postponed to the end of the provider's drain, so descendants can reach inherited services during their own cleanup without relying on microtask order. |
+| Re-pointable contexts | Scope nodes carry their fiber; the fiber chain of an access is read off the derivation chain, so moving an entry also moves the fibers below it (the TS prototype behaviour). Entry tables are mutable `Overlay` nodes. |
+| Checked typed access | `Injected<D>::get::<S, _>()` (the `_` is the inferred position of `S` in `D`); an undeclared `S` does not compile. |
+| Expressions | A side-effect-free JavaScript subset (`kardia_loader::expr`) over JSON views of services; no function calls. |
+| Errors | Config-file errors and loader-logged entry errors carry `file:line:col` locations as text. See [Errors](/docs/development-status#errors). |
+| Loader API | Resolving a parent group waits for a group entry whose plugin is still loading (its group exists only once its `apply` runs). |
+| Service-to-service calls | A service resolves its own dependencies through the context it stored (its definition site), so interception metadata of the outer caller does not reach the services it calls in turn (it stays on `Svc::caller()`), and effects a service creates through its stored context belong to the service's fiber. In TS, both follow the use site. |
+| Events | `emit` logs a panicking listener and continues; TS lets a throwing listener abort the dispatch. There is no generic `waterfall`; typed hooks (`on_config`, `on_update`) replace it. |
+| Logger | Messages are formatted by the caller (`impl Display`), so exporters receive finished text: no `%`-directives or custom formatters. |
+| Loader hooks | `loader/patch-context` is `Loader::on_patch_context(ctx, hook)`; `EntryHandle::init`; an hmr case without a Rust counterpart. See [Loader hooks](/docs/development-status#loader-hooks). |
+| Model tests | The [property tests](/docs/development-testing#model-based) drive real tokio schedules with random delays rather than a deterministic scheduler. They check ordering during every run, and preservation, recovery exactness and confluence (the active fibers are exactly the support set) at quiescence. |
+| Dynamic modules | `ModuleSource` / `ModuleGraph` / `Hmr`, three file backends (WASM, dylib, process) sharing one JSON guest ABI, the `kardia-guest` SDK and watch mode. See [Dynamic modules](/docs/development-status#dynamic-modules). |
+
+### Errors [#errors]
+
+Parse and validation errors of config files carry `file:line:col`.
+
+Errors the loader logs for an entry (option and config validation, `ModuleNotFound`, expression failures) are located through `TreeBackend::locate` / `locate_expr`:
+
+- each issue gets `(at path, file:line:col)`;
+- an expression failure gets an `at <path> (file:line:col)` frame;
+- the entry and each ancestor that has a position get an `at <id> (file:line:col)` frame,
+
+as text instead of rewritten JS stacks.
+
+The include locates values where their owner writes them (its file, or a patch in its parent's file), aliases at their anchors, expression chars through YAML escapes. Values changed at runtime are not located. `Entry::evaluate` is not exposed.
+
+### Loader hooks [#loader-hooks]
+
+The `loader/patch-context` waterfall is `Loader::on_patch_context(ctx, hook)`: a hook gets the entry and the rest of the chain as a future, which builds the rest only when awaited; hooks run in registration order inside the loader's own isolation step and are removed with `ctx`'s fiber. Unlike TS, the new isolation table is installed together with the re-parenting at the end of the chain, not before the hooks run.
+
+`EntryHandle::init` starts an entry or joins its pending start.
+
+The hmr `index` case "waits for a second re-enable init" has no hmr decision to wait on in Rust (the transaction has decided once the held unload completes); its port guards that the re-enables leave one live instance and hmr adds no apply.
+
+### Dynamic modules [#dynamic-modules]
+
+`ModuleSource` / `ModuleGraph` / `Hmr`, plus three file backends that share one JSON guest ABI (documented in the `kardia-hmr` crate docs) and a bridge plugin instantiating the guest per fiber.
+
+| Backend | How it works |
+|---|---|
+| `WasmSource` | Runs core WASM modules on wasmtime, one store per fiber, instead of WIT components, so guests need no component toolchain (the tests are written in WAT). |
+| `DylibSource` | Speaks a C ABI instead of passing Rust types: a cdylib carries its own copies of `kardia-core` and tokio, with separate statics and no runtime context. Each version is loaded from a unique copy and never unloaded. |
+| `ProcessSource` | Runs executables, one child process per fiber, speaking the same ABI as JSON lines over stdin and stdout (respawn = reload; a crashing guest fails only its own calls, and a guest that breaks the protocol is killed). There is no separate broker service: each fiber's `GuestService` is the RPC endpoint. |
+
+Like the other backends, the process backend's calls are synchronous rather than the asynchronous RPC contract of [paper §6.2](/docs/concepts-related-work): they block the caller until the guest answers, so a hung guest blocks it too. The `kardia` binary chooses a backend by file extension and does not load process guests.
+
+Guest services are JSON views with JSON calls (`GuestService`). `kardia-guest` is the Rust guest SDK: a `Guest` trait and `export!`, which emits the WASM exports on wasm32 and the C symbols elsewhere, so one source builds for both backends.
+
+Watch mode (`HmrConfig { base, watch: { enabled, files, debounce } }`) follows the TS code: it watches `base` through `fs` and reloads each debounce window as one batch, one batch at a time. The files of failed imports are retried with the next batch, and changes to host modules are only reported. `base` resolves against the directory of the config file of the hmr entry, as the TS code does with `ctx.baseUrl`, or else against the working directory.
+
+The `kardia` binary registers `hmr` and resolves any entry name that is not a built-in plugin as a guest module relative to the config file: `examples/kardia.yml` hot-reloads `plugins/hello.wat`.
+
+For using guests, see [Guest plugins](/docs/guide-guests) and [Hot reload](/docs/guide-hot-reload).

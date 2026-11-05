@@ -1,0 +1,242 @@
+---
+title: "可撤销效应与纤程"
+description: "登记逆操作，编写带初始化的效应，使用效应作用域与迭代边界，控制插件的纤程。"
+---
+
+插件建立的一切（监听器、计时器、服务、子插件）都是**效应**（effect）：一次初始化，配上它的**逆操作**，即撤销它的撤销函数（disposer）。效应登记在插件的**纤程**（fiber）上；纤程卸载时，所有逆操作都会运行。正因如此，你可以在应用运行时重新配置、替换或停止任何插件，而不会泄漏它获取的资源。
+
+本页介绍如何登记效应、效应如何被释放，以及纤程句柄能做什么。理论见[可撤销效应](/docs/concepts-revertible-effects)；设计决策（非拥有的句柄、用惯性加载代替丢弃 future）见 [API 设计](/docs/development-design)；底层的状态机见[核心数据结构](/docs/development-lifecycle)。
+
+## 登记逆操作 [#inverses]
+
+最简单的效应，是为刚做的事登记一个普通逆操作：
+
+```rust
+async fn apply(ctx: Context, config: Arc<DbConfig>) -> Result<()> {
+    let pool = connect(&config.url).await?;                  // acquisition…
+    ctx.on_dispose({ let pool = pool.clone(); move || pool.close() })?;   // …paired with its inverse
+    ctx.provide(Database { pool })?;
+    Ok(())
+}
+```
+
+| 方法 | 在当前纤程上登记 |
+|---|---|
+| `ctx.on_dispose(f)` | 一个同步逆操作 `f: FnOnce()` |
+| `ctx.defer(label, disposer)` | 任意 `Disposer`，带一个在内省中显示的标签 |
+
+两者都返回 `Result<EffectHandle>`。在已退役的纤程上，它们以 `KardiaError::InactiveEffect`（`cannot create effect on inactive context`）失败；唯一的例外是：已退役但自身加载仍在进行的纤程仍可收集逆操作，随后的卸载会撤销它们，从而保证这次加载获取的东西不会泄漏。
+
+`Disposer` 是效应的逆操作。它在运行时被消耗，因此至多运行一次：
+
+| 构造函数 | 逆操作 |
+|---|---|
+| `Disposer::new(f)` | 同步的 `FnOnce()` |
+| `Disposer::fallible(f)` | 同步的 `FnOnce() -> Result<()>` |
+| `Disposer::future(f)` | 释放开始时同步运行 `f`，`f` 返回一个完成剩余工作的 future |
+| `Disposer::try_future(f)` | 同上，future 可失败 |
+
+撤销函数中的 panic，无论同步还是异步，都会被捕获并作为错误报告。
+
+## 带初始化的效应 [#effects]
+
+当初始化本身可能失败，或要登记多个逆操作时，把它写成效应体。效应体拿到一个 `EffectScope`，用来收集逆操作。
+
+**同步：** `ctx.effect_sync(label, |scope| { … })` 立即运行效应体。若效应体失败（或 panic），它已收集的一切都会被释放，并返回该错误。
+
+```rust
+let handle = ctx.effect_sync("watch config", |scope| {
+    let watcher = start_watcher()?;
+    scope.defer_fn(move || watcher.stop());
+    let socket = open_socket()?;            // on failure, the watcher is stopped again
+    scope.defer_fn(move || socket.close());
+    Ok(())
+})?;
+```
+
+**异步：** `ctx.effect(label, |scope| async move { … })` 以任务形式运行效应体。它绝不会中途被丢弃：释放会等待它运行到结尾或到达迭代边界。失败时会释放效应体已收集的内容、记录日志，并通过 `EffectHandle::ready()` 报告。返回 `Interrupted`（见下文）不算失败。
+
+```rust
+let handle = ctx.effect("poll", |scope| async move {
+    loop {
+        let job = fetch_job().await?;
+        let guard = job.lock();
+        scope.yield_(Disposer::new(move || drop(guard)))?;   // collect + boundary
+    }
+})?;
+handle.ready().await?;      // `await ctx.effect(...)` in Cordis
+```
+
+### `EffectScope` [#scope]
+
+| 方法 | 作用 |
+|---|---|
+| `scope.defer(disposer)` | 收集一个逆操作，不设迭代边界 |
+| `scope.defer_fn(f)` | 推迟一个同步逆操作的简写 |
+| `scope.adopt(handle)` | 把一个嵌套效应移到当前效应之下：它不再由纤程直接释放，而是随当前效应一起释放（所有权转移） |
+| `scope.checkpoint()` | 迭代边界：效应被释放后返回 `Err(Interrupted)` |
+| `scope.yield_(disposer)` | 收集一个逆操作并标记一个迭代边界 |
+
+`checkpoint` 和 `yield_` 是同步的，返回 `Result<(), Interrupted>`，用 `?` 传播即可。
+
+在效应体内用 `ctx.effect(..)` 或 `ctx.effect_sync(..)` 创建的嵌套效应，与其他效应一样登记在纤程上。`scope.adopt(handle)` 接管它，使它在（且仅在）外层效应撤销时撤销。任何 `Fiber` 都可转换为创建它的那个 `EffectHandle`，因此作用域也可以接管子插件：`scope.adopt(&ctx.plugin::<Child>(())?)`。
+
+## 迭代边界与中断 [#interruption]
+
+已被取代的加载（插件被重新配置、依赖发生变化或被释放）不会通过丢弃其 future 来取消：在"获取资源"和"登记其逆操作"之间被丢弃的 future，恰恰会泄漏效应承诺回收的东西。因此宿主（host）是**惯性**（inertia）的：过期的加载会运行到结尾，然后被卸载。若想更早停止，加载需要在显式的**迭代边界**处检查：
+
+| 边界 | 以 `Interrupted` 失败的时机 |
+|---|---|
+| `ctx.checkpoint()` | 在插件的 `apply` 中，当其加载已被取代或纤程已退役（论文的 L-Divert） |
+| `scope.checkpoint()` / `scope.yield_(d)` | 在效应体中，当该效应已被释放 |
+
+```rust
+PluginDef::typed(move |ctx: Context, config: Arc<DbConfig>| async move {
+    let logger = ctx.logger();
+    logger.info(format_args!("connecting to {}", config.url));
+    let url = config.url.clone();
+    ctx.on_dispose(move || logger.info(format_args!("closing {url}")))?;
+    ctx.checkpoint()?;          // stop here if this load is already stale
+    ctx.provide(Database { url: config.url.clone() })?;
+    Ok(())
+})
+```
+
+用 `?` 传播 `Interrupted` 不算失败：纤程（或效应）不会变成 `Failed`，已登记的内容照常释放。`Error::is_interrupted()` 可以把它和真正的错误区分开。加载器对带 `inject` 的条目使用这种模式：外层纤程解析插件，执行 `ctx.checkpoint()?`，然后启动内层纤程。其中的理由见 [API 设计](/docs/development-design)。
+
+## `EffectHandle` [#handle]
+
+每次登记效应都返回一个 `EffectHandle`：
+
+| 方法 | 返回 |
+|---|---|
+| `handle.label()` | 效应的标签 |
+| `handle.is_active()` | 是否尚未被释放 |
+| `handle.dispose()` | 撤销该效应（至多一次），返回一个 `Disposal` |
+| `handle.ready()` | 一个 future，在初始化完成时完成（同步效应立即完成）；初始化失败时带回该失败 |
+| `handle.meta()` | 用于内省的 `EffectMeta { label, children }` |
+
+`EffectHandle` 是**非拥有**的：丢弃它不会释放效应。效应的生命期由它登记所在的纤程决定，这正是论文区分 Cordis 与 RAII 之处。词法作用域是互补的，适用于某个效应内部的局部资源：在撤销函数内部，普通的 `Drop` 类型完全可用。
+
+`Disposal` 表示一次释放的完成。它无需被轮询就会推进：`dispose()` 返回时同步部分已经运行完毕，异步的剩余部分作为单独的任务运行，所以丢弃 `Disposal` 不会取消它。等待它即可观察结果；`disposal.is_ready()` 表示是否一切都已同步完成。释放一个初始化仍在运行的异步效应时，会先等待初始化结束。
+
+## 释放顺序与错误 [#order]
+
+**在一个效应内部**（一个 `effect_sync` 效应体、一个 `effect` 效应体，或一个作用域接管的逆操作），逆操作**按从新到旧的顺序依次**运行：
+- 同步逆操作立即运行；从第一个异步逆操作起，其余部分作为单独的任务运行；
+- 即使前面的逆操作失败，每个逆操作仍会运行，结果是第一个错误；
+- 推迟到一个正在被释放的效应上的逆操作会立即运行。
+
+**纤程卸载时**，运行时：
+1. 等待，直到不再有消费者依赖该纤程提供的服务（每个消费者先完成自己的拆除）；
+2. 按从新到旧取出纤程的效应；
+3. **并发地**释放它们，记录每个失败和 panic；
+4. 然后释放该纤程所提交的服务。
+
+因此同一纤程的兄弟效应并发清理，这是 Cordis 的测试所要求的（`service-dispose.spec.ts`）。若拆除步骤必须有序，请把它们放进**同一个**效应：
+
+```rust
+ctx.effect_sync("server", |scope| {
+    let db = open_db()?;
+    let server = start_server(db.clone())?;
+    scope.defer_fn(move || db.close());          // runs second
+    scope.defer_fn(move || server.shutdown());   // runs first (newest first)
+    Ok(())
+})?;
+```
+
+卸载父插件会级联到子插件：每个子插件都是其父插件的一个效应，所以父插件卸载时会释放它们。
+
+## 纤程 [#fibers]
+
+**纤程**是插件的一次实例化。实例化插件时，会在当前纤程上登记一个效应，其逆操作让新纤程退役：
+
+| 方法 | 实例化 |
+|---|---|
+| `ctx.plugin::<P>(config)` | 带类型化配置的类型化插件（`P::Config: Serialize`） |
+| `ctx.plugin_value::<P>(value)` | 以原始 JSON 配置实例化类型化插件 |
+| `ctx.plugin_def(&def, value)` | 一个 `PluginDef` |
+| `ctx.inject(deps, \|ctx\| async move { … })` | 带给定依赖的匿名闭包插件 |
+
+它们都返回 `Result<Fiber>`。让纤程退役后再次启用插件，会创建一个**新**纤程，而不是旧的那个。`ctx.fiber()` 返回上下文所属的纤程；`Context::new()` 创建一个根，其纤程始终处于活动状态。
+
+### 状态 [#states]
+
+| `FiberState` | 含义 |
+|---|---|
+| `Pending` | 等待依赖 |
+| `Loading` | 其 `apply` 正在运行 |
+| `Active` | 已加载，服务和效应均已就位 |
+| `Unloading` | 其效应正在被释放 |
+| `Failed` | 上次加载失败；只有 `update` 或 `registry.replace` 能恢复它（两者都会清除错误） |
+| `Disposed` | 已退役 |
+
+<Mermaid chart={"stateDiagram-v2\n  [*] --> Pending: instantiated\n  Pending --> Loading: dependencies available\n  Loading --> Active: apply succeeded\n  Loading --> Unloading: apply failed, or superseded while loading\n  Active --> Unloading: dependency changed, update, restart or dispose\n  Unloading --> Loading: still wanted\n  Unloading --> Pending: dependency missing\n  Unloading --> Failed: its load failed\n  Unloading --> Disposed: retired\n  Failed --> Loading: update or replace\n  Pending --> Disposed: retired\n  Failed --> Disposed: retired\n  Disposed --> [*]"} />
+
+进行中的转换不会被打断（惯性）：如果纤程的目标在加载期间改变，加载会先完成，然后纤程卸载。失败的加载同样会先卸载它已登记的内容，纤程再稳定为 `Failed`；已被取代的加载失败时只做清理，不会把纤程标为 `Failed`。每次变化都由 `StatusChanged` 事件报告（见[事件](/docs/guide-services#builtin-events)）。状态机为何这样构建，见[核心数据结构](/docs/development-lifecycle)和 [API 设计](/docs/development-design)。
+
+### `Fiber` 句柄 [#fiber-handle]
+
+| 方法 | 返回 |
+|---|---|
+| `fiber.id()` | 其 `FiberId`（永不复用；`0` 是根） |
+| `fiber.state()` | 其 `FiberState` |
+| `fiber.context()` | 纤程自己的 `Context` |
+| `fiber.settled()` | `Settle`：没有进行中的转换时完成；纤程失败时带回其错误（即 Cordis 的 `await fiber`） |
+| `fiber.update(config)` | `Result<Settle>`：替换配置（见下文） |
+| `fiber.update_with(config, no_save)` | 同上；`no_save` 抑制 `ConfigCommitted` |
+| `fiber.restart()` | `Settle`：卸载后重新加载 |
+| `fiber.dispose()` | `Disposal`：让纤程退役 |
+| `fiber.config()` | 最近一次给出的源配置 |
+| `fiber.inject()`、`fiber.def()`、`fiber.runtime()`、`fiber.name()` | 其依赖声明、插件定义、注册表键，以及插件名（或其最近的有名祖先的插件名） |
+| `fiber.error()` | 上次加载的失败（如有） |
+| `fiber.parent()`、`fiber.is_root()`、`fiber.is_removed()` | 它在树中的位置，以及是否已退役 |
+| `fiber.effect_handle()` | 父纤程上实例化它的那个效应 |
+| `fiber.effects()`、`fiber.effect_count()` | 其累积器中的效应，按插入顺序，以 `EffectMeta`（标签和被接管的子效应）表示 |
+
+### 更新、重启与释放 [#update]
+
+**`update(config)`**：
+1. 若纤程已加载，先校验新配置；被拒绝的配置会返回错误，运行中的实例不受影响。
+2. 除非设置了 `no_save`，发出 `ConfigCommitted { fiber, config }`（加载器据此把它回写到配置文件）。
+3. 保存配置，并清除纤程的错误。
+4. 把解码后的配置交给纤程的更新钩子（`ctx.on_update`、`ctx.on_update_with`）。接管更新的钩子决定更新如何完成，纤程不会重启。
+5. 否则纤程重启。
+
+```rust
+// inside apply: take reconfiguration over instead of restarting
+let state = shared.clone();
+ctx.on_update::<DbConfig>(move |next| {
+    state.set_url(&next.url);
+    true
+})?;
+```
+
+**`restart()`** 递增纤程的修订号，使它以相同配置卸载并重新加载。对已退役的纤程会失败；它也不能恢复 `Failed` 的纤程：在 `update` 或 `registry.replace` 清除错误之前，失败一直保留（`settled()` 也一直返回它）。
+
+**`dispose()`** 让纤程退役：它被标为已移除，现存的提供立即解除绑定，然后卸载并稳定为 `Disposed`。对根纤程而言，`dispose()` 会重启根，撤销登记在其上的一切；应用就是这样关闭的：
+
+```rust
+root.fiber().dispose().await?;
+```
+
+### 替换实现 [#replace]
+
+`ctx.registry()` 用于访问根的插件注册表：
+
+| 方法 | 作用 |
+|---|---|
+| `registry.replace(&old, &new)` | 原地替换 `old` 的每个纤程背后的实现，并把以后对 `old` 的实例化转发给 `new`。返回被移动的纤程；每个纤程都以新实现重新加载，并发出 `Replaced`。 |
+| `registry.size()`、`keys()`、`get(&def)`、`has(&def)`、`fibers(&def)` | 查询 |
+
+被移动的纤程保留其标识、父纤程、配置和加载器条目。这是[热重载](/docs/guide-hot-reload)背后的原语，单独使用也很有用：
+
+```rust
+let v1 = db_plugin(1);
+let db = root.plugin_def(&v1, json!({ "url": "postgres://primary" }))?;
+db.settled().await?;
+// hot replacement: the same fiber now runs the v2 implementation
+for fiber in root.registry().replace(&v1, &db_plugin(2)) {
+    fiber.settled().await?;
+}
+```

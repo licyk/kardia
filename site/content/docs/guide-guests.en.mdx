@@ -1,0 +1,350 @@
+---
+title: "Guest plugins"
+description: "Write plugins that hot-reload without restarting the app: the WASM, dylib and process backends, the Rust guest SDK, failure behaviour, and the JSON-based guest ABI."
+---
+
+**Guest plugins** are separate modules that the [`hmr` plugin](/docs/guide-hot-reload) can reload in place, unlike plugins compiled into the binary, whose code changes need a restart. In a config file loaded by the `kardia` binary, any entry name that is not a built-in plugin is a guest module path, relative to the config file:
+
+```yaml
+- id: hello
+  name: ./plugins/hello.wasm
+  config: { greeting: hi }
+```
+
+All backends speak one JSON-based **guest ABI** (below) and run each guest plugin through a bridge plugin that instantiates the guest once per fiber and drops the instance when the fiber is disposed. The Rust SDK `kardia-guest` writes such guests for every backend from one source.
+
+## Backends [#backends]
+
+| | WebAssembly (`WasmSource`) | Dynamic library (`DylibSource`) | Child process (`ProcessSource`) |
+|---|---|---|---|
+| Files | `.wasm`, or `.wat` text | `.so` / `.dylib` / `.dll` | executables |
+| Runs | on wasmtime, one store per fiber | in the host process | one child process per fiber |
+| Isolation | sandboxed | none: a crash in the library brings down the app | a crashing guest fails only its own calls |
+| Reload | compiles once per version; old and new instances run side by side, and dropping an instance releases all of its memory | each version is loaded from a fresh copy and **never unloaded**; it stays loaded until the process exits | reloading a module respawns its processes |
+| Use for | production guests | development: same toolchain, no WASM target needed | guests in any language, or that must not crash the host |
+| `kardia` binary | yes | yes | not yet (library only) |
+
+**WebAssembly.** `WasmSource` runs core WebAssembly modules on wasmtime rather than WIT components, so guests need no component toolchain (the tests are written in WAT). A module compiles once per version and instantiates in its own store per fiber.
+
+**Dynamic libraries.** `DylibSource` speaks a C ABI instead of passing Rust types: a `cdylib` carries its own copies of `kardia-core` and tokio, with separate statics and no runtime context. Each load copies the library to a fresh path (in a `kardia-dylib-<pid>` directory under the temp directory), because the platform loader hands out the library it already loaded for a known path. Libraries are never unloaded: unloading Rust code is unsound once it registered thread-local destructors or handed out `'static` references.
+
+**Child processes.** `ProcessSource` runs each plugin instance as its own process, speaking the guest ABI as JSON lines over stdin and stdout (see [Process transport](#process)). A crashing guest fails only its own calls, and a guest that breaks the protocol is killed. Replace an executable by renaming a new file over it: a running executable cannot be written to, and one held open for writing cannot be started.
+
+**Common to all three.** Calls are synchronous rather than the asynchronous RPC of paper §6.2: they block the caller until the guest answers, so a hung guest blocks its caller too. There is no separate broker service: each fiber's `GuestService` is the RPC endpoint. The backends are cargo features of `kardia-hmr` (`wasm`, `dylib`, `process`, all on by default).
+
+The `kardia` binary picks a backend by file extension: `.wasm` and `.wat` go to `WasmSource`, anything else to `DylibSource`. An app built on the library chooses its own:
+
+```rust
+use kardia::hmr::{DylibSource, ModuleCode, ModuleSource, ProcessSource, WasmSource};
+
+/// Guest modules by extension: WASM, executables in `bin/`, else a dynamic library.
+struct GuestFiles {
+    wasm: WasmSource,
+}
+
+impl ModuleSource for GuestFiles {
+    fn load(&self, id: &str) -> Result<ModuleCode> {
+        let path = Path::new(id);
+        match path.extension().and_then(|ext| ext.to_str()) {
+            Some("wasm" | "wat") => self.wasm.load(id),
+            _ if path.parent().is_some_and(|dir| dir.ends_with("bin")) => ProcessSource.load(id),
+            _ => DylibSource.load(id),
+        }
+    }
+}
+
+let graph = ModuleGraph::new(GuestFiles { wasm: WasmSource::new() });
+```
+
+## Calling guests from Rust [#guest-service]
+
+A guest provides services with `Host::provide`. On the host side, each is a `kardia::hmr::GuestService`, whose JSON view is the value the guest provided:
+
+```rust
+use kardia::hmr::GuestService;
+
+let counter = ctx.get_as::<GuestService>("counter")?;     // checked access, by key
+println!("{}", counter.value());                          // the provided JSON value
+let count = counter.call("increment", json!(null))?;      // calls the guest's `call`
+let view = ctx.view("counter")?;                          // the JSON view alone
+```
+
+| `GuestService` | |
+|---|---|
+| `value()` | the JSON value the guest provided the service with |
+| `call(method, args)` | calls the guest's `cordis_call` with `{ key, method, args }` and returns its JSON result |
+
+A call fails with `the guest instance is disposed` once the providing fiber is gone, and with `invalid result of <key>.<method>: …` if the guest returns something that is not JSON. A guest calling back into an instance that is already running on the same thread (directly or through other guests) fails with `re-entrant call into a guest instance` instead of deadlocking. Like any service, a guest service is withdrawn when the guest's fiber is disposed.
+
+## Writing a guest in Rust [#sdk]
+
+Create a `cdylib` crate that depends on `kardia-guest`:
+
+```toml
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+kardia-guest = "0.1"
+```
+
+Implement `Guest` and `export!` it:
+
+```rust
+use kardia_guest::{Guest, Host, Level, Map, Meta, Request, Result, Value, json};
+
+struct Counter {
+    count: u64,
+}
+
+impl Guest for Counter {
+    type Config = Value;
+
+    fn meta() -> Meta {
+        Meta::plugin("counter").provide("counter")
+    }
+
+    fn apply(host: &Host, config: Value, _imports: Map<String, Value>) -> Result<Self> {
+        host.provide("counter", &json!({ "config": config }))?;
+        host.log(Level::Info, "counting");
+        Ok(Counter { count: 0 })
+    }
+
+    fn call(&mut self, _: &Host, request: Request) -> Result<Value> {
+        match request.method.as_str() {
+            "increment" => {
+                self.count += 1;
+                Ok(json!(self.count))
+            }
+            method => Err(format!("unknown method {method}").into()),
+        }
+    }
+}
+
+kardia_guest::export!(Counter);
+```
+
+### The `Guest` trait [#guest-trait]
+
+Each fiber running the plugin gets its own instance of the type.
+
+| Item | Purpose |
+|---|---|
+| `type Config: DeserializeOwned` | the plugin's configuration; `null` decodes as `{}` when it fails to decode as it is |
+| `fn meta() -> Meta` | what the module depends on and exports |
+| `fn apply(host, config, imports) -> Result<Self>` | starts an instance with its configuration and the values of the module's dependencies (keyed by resolved path) |
+| `fn call(&mut self, host, request) -> Result<Value>` | answers a call to a service the instance provided; the default fails with `<key> has no method <method>` |
+| `fn dispose(self, host)` | runs when the fiber is disposed, before the instance is dropped; the default does nothing |
+
+`Meta` describes the module:
+
+| `Meta` | |
+|---|---|
+| `Meta::plugin(name)` | a module exporting a plugin named `name` |
+| `Meta::value(value)` | a module exporting a value, which dependent modules receive as an import |
+| `.dep(path)` | a dependency: a module path relative to this module |
+| `.inject(key)` | a service the plugin reads; it starts once the service is available |
+| `.provide(key)` | a service the plugin provides |
+
+`Request` is `{ key, method, args }`. `Error` is an error message reported to the host (`Error::msg(..)`, `error.message()`); any displayable error converts into it with `?`.
+
+### The `Host` [#host]
+
+| `Host` method | Does |
+|---|---|
+| `log(level, text)` | logs as the plugin (`Level::Error` … `Level::Debug`) |
+| `provide(key, &value)` | provides the service `key`, whose JSON view is `value`; calls to it arrive at `Guest::call`. It is withdrawn when the fiber is disposed. |
+| `view(key)` | the JSON view of a service declared with `Meta::inject` (or provided by this plugin or its ancestors), with the checked access of the plugin's declared `inject` |
+| `invoke(key, method, &args)` | calls a service provided by another guest |
+
+From Rust host code, a guest's services are called through `GuestService` (see [above](#guest-service)).
+
+### Building [#build]
+
+The same source builds a WebAssembly or a dynamic-library guest. `export!` emits the WASM exports on `wasm32` and the C symbols elsewhere:
+
+```sh
+rustup target add wasm32-unknown-unknown                # once
+cargo build --release --target wasm32-unknown-unknown   # target/wasm32-unknown-unknown/release/<crate>.wasm
+cargo build --release                                   # target/release/lib<crate>.so (or .dylib / .dll)
+```
+
+For a **process guest**, add a binary to the crate whose `main` serves the guest. Use `crate-type = ["cdylib", "rlib"]`, so that the binary can use the library:
+
+```toml
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "my-guest-process"
+path = "src/main.rs"
+```
+
+```rust
+fn main() {
+    kardia_guest::serve::<my_guest::Counter>();
+}
+```
+
+```sh
+cargo build --release --bin my-guest-process            # target/release/my-guest-process
+```
+
+`serve` answers the exports the host sends as JSON lines on stdin, until the host disposes the instance or stdin closes. stdout carries the protocol, so a process guest must not print to it; it logs through `Host::log` or to stderr.
+
+### Modules with dependencies [#deps]
+
+A module can depend on other modules, and a module can export a value instead of a plugin:
+
+```rust
+// shared.rs, built as shared.wasm: exports a value
+impl Guest for Shared {
+    type Config = Value;
+    fn meta() -> Meta {
+        Meta::value(json!({ "greeting": "hello" }))
+    }
+    fn apply(_: &Host, _: Value, _: Map<String, Value>) -> Result<Self> {
+        Ok(Shared)
+    }
+}
+
+// greeter.rs, built as greeter.wasm next to it
+impl Guest for Greeter {
+    type Config = Value;
+    fn meta() -> Meta {
+        Meta::plugin("greeter").dep("./shared.wasm")
+    }
+    fn apply(host: &Host, _: Value, imports: Map<String, Value>) -> Result<Self> {
+        let shared = imports.values().next().cloned().unwrap_or_default();  // keyed by resolved path
+        host.log(Level::Info, shared["greeting"].as_str().unwrap_or("hi"));
+        Ok(Greeter)
+    }
+}
+```
+
+When `shared.wasm` changes, hot reload reloads `greeter` too, since it imports the changed module (see [Reconcile transactions](/docs/guide-hot-reload#reconcile)). A module exporting neither a plugin nor a value exports nothing.
+
+## Failure behaviour [#failures]
+
+An error or a panic in a guest fails only that plugin or call:
+
+| Backend | A panic in a guest | The guest goes away |
+|---|---|---|
+| dylib | the SDK catches it and returns it as an error: `the guest panicked: <message>` | a crash brings down the host |
+| process | the SDK catches it and returns it as an error: `the guest panicked: <message>` | a process that exits fails its later calls with `the guest process exited`; one that breaks the protocol (`invalid message from guest: …`) is killed, with the same result |
+| WebAssembly | the guest aborts, and the host reports the abort as a failed call | – |
+
+- An error returned from `apply` fails the plugin's fiber (`Failed`); an error returned from `call` fails that call, and the instance keeps running.
+- A panic in `dispose` is contained, as the host has nothing to report it to.
+- The process of a disposed or failed instance is never left running; after `dispose`, the host kills it. If the host goes away, a process guest exits.
+- While the module's metadata is read (`meta`), there is no plugin context: host calls fail with `host calls are unavailable while reading module metadata`.
+
+## The guest ABI [#abi]
+
+Guests in other languages implement this interface, which is also documented in the `kardia-hmr` crate docs (`cargo doc -p kardia-hmr --open`).
+
+Data crosses the boundary as UTF-8 JSON in byte buffers. The host keeps one **message** per instance: the input of the export being called, then the result of the last host call. The guest copies it into its own memory with `read`, after allocating the length it was given.
+
+**Exports** (status `0` is success; on failure the guest `write`s the error):
+
+| WASM | dylib | |
+|---|---|---|
+| `memory` | `cordis_new() -> state` | memory / per-instance guest state |
+| `cordis_meta() -> i32` | `cordis_meta(state, host) -> i32` | `write`s `{ deps?, plugin?: { name?, inject?, provide? }, value? }` |
+| `cordis_apply(len) -> i32` | `cordis_apply(state, host, len) -> i32` | message: `{ config, imports }` |
+| `cordis_call(len) -> i32` | `cordis_call(state, host, len) -> i32` | message: `{ key, method, args }`; `write`s the result |
+| `cordis_dispose()` (optional) | `cordis_dispose(state, host)` | last call; a dylib frees `state` |
+
+`deps` are module paths relative to the module; `imports` maps each dependency that exports a `value` to that value. A module exporting neither a plugin nor a value exports nothing.
+
+**Host functions** (WASM imports from module `cordis`; for a dylib, function pointers in the `host` struct `{ host, read, write, log, provide, view, invoke }`, each taking `host.host` first). Pointers are guest addresses, lengths are byte counts:
+
+- `read(ptr)` copies the message to `ptr`.
+- `write(ptr, len)` sets the result of the current export.
+- `log(level, ptr, len)` logs as the plugin (`0` error … `3` debug).
+- `provide(key, key_len, value, value_len) -> i32` provides the service `key` as a `GuestService` whose JSON view is `value`.
+- `view(key, key_len) -> i32` reads the JSON view of a service, with the checked access of the plugin's declared `inject`.
+- `invoke(key, key_len, method, method_len, args, args_len) -> i32` calls a `GuestService`.
+
+Host functions returning `i32` set the message to their result and return its length, or set it to an error message and return `-1 - len`.
+
+**Lifecycle of a module.** Loading a module instantiates it once to read its metadata (`meta`, then `dispose`); dependencies in `deps` are loaded first. Each fiber running the plugin then gets a fresh instance: `apply` with `{ config, imports }`, any number of `call`s, and `dispose` when the fiber is disposed, after which the instance is dropped. A non-zero status with no written output fails with `guest failed with status <n>`.
+
+### Process transport [#process]
+
+A process guest exchanges one JSON object per line over its stdin and stdout (stdout is reserved for this; a guest logs through `log` or stderr).
+
+| Direction | Message | Meaning |
+|---|---|---|
+| host → guest | `{ export, input }` | an export: `export` is one of `meta`, `apply`, `call`, `dispose`; `input` is the message (`null` if empty) |
+| guest → host | `{ call: "log", level, text }` | logs; no reply |
+| guest → host | `{ call: "provide", key, value }` | answered with `{ result }` or `{ error }` |
+| guest → host | `{ call: "view", key }` | answered with `{ result }` or `{ error }` |
+| guest → host | `{ call: "invoke", key, method, args }` | answered with `{ result }` or `{ error }` |
+| guest → host | `{ output }` | sets the result text of the export |
+| guest → host | `{ done: status }` | ends the export |
+
+After `dispose` the process is killed; a guest exits when its stdin closes.
+
+For example, the `Counter` guest above, applied without configuration and then called once:
+
+```text
+→ {"export":"apply","input":{"config":null,"imports":{}}}
+← {"call":"provide","key":"counter","value":{"config":null}}
+→ {"result":null}
+← {"call":"log","level":2,"text":"counting"}
+← {"done":0}
+→ {"export":"call","input":{"key":"counter","method":"increment","args":null}}
+← {"output":"1"}
+← {"done":0}
+```
+
+## A guest by hand: `hello.wat` [#hello]
+
+`examples/plugins/hello.wat` is a guest written by hand in WebAssembly text. It imports `write` and `log` from the `cordis` module and exports `memory` and three functions:
+
+```text
+;; A guest plugin in WebAssembly text (see the guest ABI in the kardia-hmr
+;; docs). Edit the greeting while the app runs: hmr reloads this module in
+;; place, disposing the old instance first.
+(module
+  (import "cordis" "write" (func $write (param i32 i32)))
+  (import "cordis" "log" (func $log (param i32 i32 i32)))
+  (memory (export "memory") 1)
+
+  (data (i32.const 0) "{\"plugin\":{\"name\":\"hello\"}}\00")
+  (data (i32.const 128) "goodbye from wasm\00")
+  (data (i32.const 256) "hello from wasm\00")
+
+  ;; the length of the NUL-terminated string at $ptr
+  (func $len (param $ptr i32) (result i32)
+    (local $end i32)
+    (local.set $end (local.get $ptr))
+    (block $done
+      (loop $next
+        (br_if $done (i32.eqz (i32.load8_u (local.get $end))))
+        (local.set $end (i32.add (local.get $end) (i32.const 1)))
+        (br $next)))
+    (i32.sub (local.get $end) (local.get $ptr)))
+
+  (func $info (param $ptr i32)
+    (call $log (i32.const 2) (local.get $ptr) (call $len (local.get $ptr))))
+
+  (func (export "cordis_meta") (result i32)
+    (call $write (i32.const 0) (call $len (i32.const 0)))
+    (i32.const 0))
+
+  (func (export "cordis_apply") (param i32) (result i32)
+    (call $info (i32.const 256))
+    (i32.const 0))
+
+  (func (export "cordis_dispose")
+    (call $info (i32.const 128))))
+```
+
+- `cordis_meta` writes `{"plugin":{"name":"hello"}}`: a plugin named `hello`, with no dependencies, injections or provisions. It returns `0`.
+- `cordis_apply` ignores its input (it never `read`s the message) and logs `hello from wasm` at level `2` (info).
+- `cordis_dispose` logs `goodbye from wasm`.
+- There is no `cordis_call`, as the plugin provides no service.
+
+Run it with `cargo run -p kardia -- examples/kardia.yml` and edit the greeting: `hmr` reloads the module in place, so the old instance logs its goodbye, then the new one logs your greeting.

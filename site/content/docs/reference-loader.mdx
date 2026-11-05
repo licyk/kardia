@@ -1,0 +1,209 @@
+---
+title: "加载器"
+description: "@cordisjs/plugin-loader 如何把声明式的条目树变为纤程并使两者保持同步：条目、表达式、协调、托管领域与校验。"
+---
+
+本页介绍 `cordis/packages/loader/src/**`。对应的论文内容是 §5.2.1 *Declarative configuration*（见[实现](/docs/concepts-implementation)）与 §4.4 *Configuration*（见[元理论](/docs/concepts-metatheory)）。本页的文件与行号引用均相对于 `packages/loader/src/`。
+
+## 职责 [#role]
+
+加载器（loader）把由*条目*（entry）组成的声明式**配置树**（tree）变为活的纤程（fiber），并使两者**双向**保持同步：配置变化会协调纤程；插件若更新自己的配置（`ctx.fiber.update`）或释放自身（`ctx.fiber.dispose()`），也会被写回其条目。它提供 `loader` 服务并拥有内存中的根树；`group` 与 `include` 复用同一套机制（见 [Include 与分组](/docs/reference-include)）。
+
+```text
+root Context
+ └─ Loader (service "loader", EntryTree, in-memory, commit() = no-op)
+     └─ root EntryGroup (data: EntryOptions[])
+         ├─ Entry "a"   plain plugin
+         ├─ Entry "g"   @cordisjs/plugin-group, group: true  → Group (EntryGroup sharing the parent tree) → children
+         └─ Entry "inc" @cordisjs/plugin-include              → Include (EntryTree #2, file-backed) → entries "inc:x"
+```
+
+**启动**（`core/bin.js`）：创建根 `Context`，把 `baseUrl` 设为当前工作目录，`await ctx.plugin(Loader)`，然后执行 `ctx.loader.create({ name: '@cordisjs/plugin-include', config: { path: './cordis.yml' } })`。
+
+## 数据模型 [#data-model]
+
+### `EntryOptions` [#entry-options]
+
+`config/entry.ts:8-16`，加上来自 `config/isolate.ts:6-9` 的 `isolate`：
+
+```ts
+interface EntryOptions {
+  id: string                          // local id in its tree; must not contain ':' (EntryTree.sep)
+  name: string                        // plugin module specifier ("url" in the paper)
+  config?: any                        // may contain expressions (except for groups)
+  group?: boolean | null              // structural group: config must be EntryOptions[]
+  disabled?: boolean | null | JsExpr  // the only field validated as expression-capable
+  inject?: Inject | null              // array or { name: meta }; values may be expressions
+  intercept?: Dict | null             // { service: meta }; values may be expressions
+  isolate?: Dict<true | string> | null// service → private realm | shared realm label
+}
+```
+
+合并时 `null` 表示“删除此键”；未知键被容忍（只校验已知键）。`sortKeys` 为文件写入给出稳定的顺序（`id`、`name`，其余按字母序，`config` 最后）。
+
+与定义 81 的对应：`id` ✔，`url` → `name`，`isolate` ✔，`intercept` ✔，`config` ✔，`disabled` ✔，另加论文未列出的 `inject` 与 `group`。
+
+### `Entry` [#entry]
+
+`config/entry.ts:55-68`：
+
+| 字段 | 含义 |
+|---|---|
+| `ctx` | `loader.ctx.extend({[Entry.key]: this})`；每次打补丁时其原型都被**重新指向** `parent.ctx`（条目移动时实时重新挂接父级） |
+| `outerFiber?` | 仅当 `inject` 非空时存在：持有条目的 `inject` 并作为内层纤程的父级 |
+| `innerFiber?` | 真正的插件纤程 |
+| `parent: EntryGroup`、`options` | `options` 与 `parent.data` 中的元素是**同一个对象** |
+| `subgroup?`、`subtree?` | 当插件构造了 `EntryGroup`（Group）或本身是 `EntryTree`（Include）时设置 |
+| `inject` | 已解析并求值的 inject |
+| `_initTask?` | （重新）初始化的去重 promise |
+| `_disposing` | 标记由加载器驱动的释放（以区别于自我释放） |
+| `_verdict?: boolean` | `disabled` 的缓存求值结果（`undefined` = 未决 ⇒ 禁用） |
+| `_intercept` | 实时拦截表，原地修改（`swap`），使运行中的插件无需重启即可看到新元数据 |
+| `realm?` | 本地领域（隔离） |
+
+`id` 在 include 树之间是复合的（`inc:mid:a`）。`disabled` 为 `_verdict !== false || _parentDisabled()`；分组（group）本身从不被禁用，但会把其判定传给子级。
+
+### 设置 `inject` 时每个条目有两个纤程 [#two-fibers]
+
+`config/entry.ts:36-46, 341-354`：
+
+```ts
+const outer = { name: 'loader:outer', async* apply(ctx) {
+  const entry = ctx[Entry.key]
+  const exports = await entry._import()   // re-import (HMR-reloaded module is picked up)
+  yield () => {}                          // iteration boundary = checkpoint
+  if (exports) entry._start(ctx, exports.plugin)
+}}
+```
+
+**外层纤程**承载条目级依赖；**内层纤程**才是真正的插件。若某个依赖在导入期间消失，异步迭代器的守卫会在 `yield` 处停止，插件永远不会启动（在迭代边界上的一次 L-Divert）。之后再失去依赖，会卸载外层纤程，而外层纤程会把内层纤程作为子效应释放；依赖恢复时，外层纤程重新加载并重新导入。
+
+<Mermaid chart={"flowchart TD\n  parent[\"父分组 ctx\"] --> outer[\"外层纤程 loader:outer，持有条目 inject\"]\n  outer -->|\"_import()、yield 检查点、_start()\"| inner[\"内层纤程：插件本身\"]"} />
+
+## 加载器安装的核心钩子 [#hooks]
+
+`index.ts:73-170`：
+
+| 钩子 | 用途 |
+|---|---|
+| `internal/config`（prepend） | 当配置*来自文件*时（身份检查），把 `ValidationError` 重定位到配置文件中的位置 |
+| `internal/config`（append） | 在内层纤程的上下文中，于校验前**插值表达式**到 `config`（分组跳过） |
+| `internal/commit` | 插件自我更新：把 `config` 写回 `entry.options` 并 `tree.commit(...)` |
+| `internal/update`（全局） | 记录 `reload plugin` |
+| `internal/status` | 外层纤程 → `UNLOADING` 时重置 `_verdict`（卸载期间条目读作禁用） |
+| `internal/plugin` | 给新纤程打上其条目的标记；释放时检测**真正的自我释放**（不是加载器驱动、不是父级拆除、不是树的释放）并持久化 `disabled: true` |
+
+`Loader[Service.check]` 实现了 `inject: { loader: { await: true } }`：在所有条目初始化任务与纤程转换都稳定之前（`getTasks()`），`loader` 服务读作不可用，从而提供一道“配置已完全加载”的屏障。
+
+## 表达式 [#expressions]
+
+`config/utils.ts`：
+
+- 表示形式为 `{ __jsExpr: string }`，由 YAML 标签 `!!js` 产生，或直接写在 JSON 中。一个值要么整体是表达式，要么不是（没有字符串模板）。
+- `evaluate(ctx, expr)` 运行 `new Function('ctx','expr','with (ctx) { return eval(expr) }')`。自由标识符经**上下文代理**解析，因此常规的 inject 规则适用。
+- 求值上下文：
+
+| 字段 | 求值所在 | 时机 | 失败时 |
+|---|---|---|---|
+| `inject` 的值 | 父分组的 ctx | 每次更新 | 记录日志，inject 置空，禁用 |
+| `disabled` | 外层纤程 ctx（能看到条目 inject） | 启动 / 协调 | 记录日志，禁用 |
+| `intercept` | 外层纤程 ctx | 启动 / 协调，若已启用 | 记录日志，禁用 |
+| `config` | 内层纤程 ctx | 每次（重新）加载时经 `internal/config` | 纤程 FAILED |
+
+- `disabled` 判定会被缓存；在启动、显式更新或外层重新激活时重新求值。
+- 错误从 V8 栈帧重新追踪到配置文件中该表达式的 `file:line:col`。
+
+## 算法 [#algorithms]
+
+### `Entry.update(options, create, force)` [#entry-update]
+
+`config/entry.ts:218-257`：
+
+```text
+legacy = shallow copy
+create ? adopt `options` by reference : merge(options, given)       // synchronous, before any await
+changed = _resolveInject();    if failure → dispose; return
+if _blocked() → dispose; return                                      // literal disabled / disabled ancestor
+if changed || name changed || no live fibers → await init(dispose()) // REBUILD
+diff = deep-unequal keys; if none && !force → return
+emit 'loader/partial-dispose'(entry, legacy, true)
+await _patchContext(diff)                                            // re-parent, isolate, intercept, config
+```
+
+`_patchContext` 运行 `loader/patch-context` waterfall（isolate 插件包裹了它），重新挂接 `entry.ctx` 与拦截链，然后调用 `_reconcile`：重新求值 `disabled` 与 `intercept`（若现已禁用则释放内层纤程），若 `config` 变化（或条目是分组）则调用 `innerFiber.update(config, noSave = true)`。是否重启由组件决定（论文：“config handed to the component”）。
+
+论文中的字段分派与代码对照：
+
+| 字段 | 论文 | 代码 |
+|---|---|---|
+| `id`、`url` | 重建 | `name` 变化 ⇒ 重建（id 是键；不同的 id 就是不同的条目） |
+| `isolate` | 重新分配领域 | `loader/patch-context` 的隔离算法（[托管领域](#managed-realms)） |
+| `intercept` | 原地 | `_intercept` 原地替换，不重新加载 |
+| `config` | 交给组件 | `innerFiber.update(config, true)` → `internal/update` 否决或重启 |
+| `disabled` | 卸载 / 重新加载 | `_verdict` → 释放内层纤程 / `outerFiber.restart()` 或 `init()` |
+| `inject` | （不适用） | 重建（外层纤程的规格发生变化） |
+
+### `init` / `_init`：并发安全的（重新）初始化 [#init]
+
+`config/entry.ts:311-358`。`_initTask ??= _init(disposeTask)` 让并发调用者汇入同一个任务。`_init`：
+
+1. 等待挂起的释放，然后在**每次** await 之后重新检查（名称未变？仍已注册？未被阻止？期间没有创建纤程？）；
+2. 导入模块并为上下文打补丁；
+3. 在创建纤程*之前*释放 `_initTask`（它们的 `apply` 可能触发另一次初始化）；
+4. 创建外层纤程（若有 `inject`）或直接启动插件。
+
+`rebuild.spec.ts` / `evaluate.spec.ts` 覆盖了导入期间重命名、释放期间移除、插件重命名自己的条目等情形。
+
+### `EntryTree` 与 `EntryGroup` [#entry-tree]
+
+`config/tree.ts:71-261` 与 `config/group.ts`：
+
+- `EntryTree`：`ctx`、`root: EntryGroup`、按本地 id 的 `store: Dict<Entry>`；`create/remove/update(id, options, parent?, position?)`（运行时 API，在提交任何东西之前做深度校验；支持树内与跨树移动）、`resolve(compositeId)`、`getTasks()/await()`、抽象的 `commit(change)`。`EntryChange { id, group, from?, options?, legacy? }` 编码 create / remove / update / move。
+- `EntryGroup.update(config)` 是**按键协调**：取新旧 id 的并集；对每个 id 并行（`Promise.all`）执行 `create()`（采用/更新，强制）或 `remove()`。匿名条目获得唯一键，因此每个都以新的随机 id 创建。一个坏条目不会阻止其他条目。
+- `Group`（即 `@cordisjs/plugin-group` 插件）继承 `EntryGroup`，**共享父树的存储**，并通过 `ctx.on('internal/update', config => this.update(config))` 否决重启。这就是论文中的“分组协调与条目更新沿树一同递归”。
+- `remove`/`_reject` 中“先注销、后释放”的顺序，使自我释放检测能够区分加载器驱动的释放。
+
+### 模块导入（Node 特有） [#module-import]
+
+`config/tree.ts:198-246` 与 `resolve.ts`。模块经由 Node 的内部 ESM 加载器（通过 `loader-utils`）导入，以树的 `baseUrl` 作为父 URL，因此说明符相对于配置文件解析。裸说明符经由生成的辅助模块 `<scope>/.cordis/resolve.mjs` 解析，因此会在*项目的*依赖图中解析。所请求模块的 `ERR_MODULE_NOT_FOUND` 会变成定位到条目 `name` 的 `ModuleNotFoundError`；缺失的*传递*依赖则仍是插件自身的错误。
+
+## 托管领域 [#managed-realms]
+
+`config/isolate.ts`：
+
+- `isolate: { svc: true }` → 由条目拥有的 **LocalRealm**（符号 `svc#<localId>`），随条目一起移动。
+- `isolate: { svc: 'label' }` → 由所有使用该标签的条目共享的 **GlobalRealm**（符号 `svc@label`）；当不再有条目引用它时，在 `loader/partial-dispose` 上被回收。
+- 每个条目在 `loader/entry-init` 时获得自己的隔离表（`Object.create(parent table)`）。
+
+`loader/patch-context` 监听器实现了算法 7：
+
+1. 计算新表（自有键来自 `options.isolate`，继承父分组的表）；
+2. 对每个领域符号发生变化的名称，打上新的**分隔标签** `entry.ctx[delim(name)]`（它标记“此条目内部的上下文”，被后代继承），并为存储中找到的提供者记录 `[oldSym, newSym, entryTag, providerTag]`；
+3. **原地**重新挂接并替换表（为后代保持身份）；
+4. 运行补丁的其余部分（`next()`）；
+5. 若提供者位于条目内部（标签相等）且新符号空闲，则把该绑定**迁移**到新符号。提供者保留同一个 `Impl`（同一个 uid），并且**不重启**。若目标已被占用，迁移被*阻止*，`Impl.isolate` 继续追踪绑定的真实位置；
+6. 以过滤器 `ctx.isolate[name] ∈ {old, new} && (entryTag === ctx[delim]) !== (entryTag === providerTag)` 调用 `reflect.notify(names, filter)`：只有内外关系与提供者不同的纤程才会被重新检查；
+7. 去掉条目自身不需要的分隔标签。
+
+<Callout type="warn">
+**可能的缺陷（已在源码中核实）：** 在领域回收监听器中（`config/isolate.ts:150-153`），当某个条目仍引用该领域时，内层循环使用了 `return`。这会退出整个监听器，跳过同一 `legacy.isolate` 中其余名称的回收；本意几乎可以肯定是（外层循环的）`continue`。后果：一个过时的全局领域可能一直存活到之后的某次 partial-dispose。
+</Callout>
+
+## 校验 [#validation]
+
+`config/utils.ts:159-209`。`validateOptions(options, sep, deep)` 返回 `Issue { message, path }[]`，检查：
+
+- 对象形状；
+- `id`：不含 `:` 的字符串；
+- `name`：必需的字符串；
+- `group`：布尔值；
+- `disabled`：布尔值或表达式；
+- 分组的 `config`：数组；
+- `inject`：字符串数组或对象；
+- `intercept`/`isolate`：对象（isolate 的值为 `true` 或字符串）。
+
+对运行时 API 做深度校验，对文件输入则按条目做浅层校验（子级在其分组创建它们时再校验）。这就是“只在条目边界处校验一次”的原则。
+
+## 并发模型 [#concurrency]
+
+单线程协作式 JS。所有协调都依靠 promise 去重（`_initTask ??=`）、最新者胜出的槽位、标志位，以及“两次 `await` 之间的同步代码是原子的”这一保证。`EntryGroup.update` 并发地协调子级。加载器从不在可能死锁的地方等待纤程激活（`init` 在一个分离的 promise 中让纤程稳定）。论文的论证（定理 70：条目可以一起实例化；定理 80：顺序无关紧要；见[元理论](/docs/concepts-metatheory)）正是并发模块加载安全的依据。

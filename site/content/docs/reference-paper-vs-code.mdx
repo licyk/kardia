@@ -1,0 +1,138 @@
+---
+title: "论文与实现对照"
+description: "TypeScript Cordis 代码在哪些地方遵循论文的模型与伪代码、在哪些地方偏离或细化了它、发现的缺陷，以及 Rust 移植遵循哪一方。"
+---
+
+本页把理论（论文的模型及其伪代码，§3–5；见[概念](/docs/concepts)）与实现（位于 `cordis/` 的 TypeScript 代码）进行对比。它是 Rust 设计所依据的桥梁：两者不一致时，[开发](/docs/development)部分的页面会说明 kardia 遵循哪一方及其理由。
+
+## 忠实的对应 [#correspondences]
+
+| 概念 | 论文 | 代码 | 说明 |
+|---|---|---|---|
+| 单一变更原语 | `ctx.effect`（§5.1.1） | `Fiber.effect`（`fiber.ts:292`） | provide、plugin、on、accessor、mixin、exporter、watcher……全都归结于它 |
+| 效应函数 / 迭代器 | 𝔈Γ / ℑΓ | 返回/产出撤销函数的函数 /（异步）生成器 | `_execute`（`fiber.ts:240`） |
+| 效应内部的 LIFO | 定义 18 | 顺序执行的 `disposables.splice(0).reverse()` | `fiber.ts:298` |
+| 至多一次释放 | `armed` | `runner.epoch = false` | `fiber.ts:339` |
+| 迭代边界守卫 | `execute(cb, guard)` | 异步迭代器的 `while (runner.epoch === oldEpoch)` | 同步迭代器无守卫 |
+| 每个键单一来源 | O-Insert 前提 | 若 `store[realm]` 已被占用，`provide` 抛出 | 按领域（§4.4 Isolation） |
+| 提供者仅在 Active 时可用 | 式 46 | `_getImpl(name, strict)` 检查 `state === ACTIVE` | |
+| 看提供者身份而非值 | 定义 53 | 纪元字符串中的 `Impl.uid`（新鲜计数器） | |
+| 已提交视图 ω | `fiber.committed` | 重新加载开始时 `committed = { ..._store }`，在卸载中最后清除 | |
+| 任何逆操作之前先 L-Leave | 算法 5 第 10 行 | 离开 ACTIVE 时，`_updateState` 在 `_unload` 释放之前通知消费者 | |
+| L-Unload 上的守卫 | 算法 5 第 25 行 | 只要任何提供项有依赖方，`_unload` 就等待；`provide` 的逆操作按绑定等待 | 见[守卫的实现](#guard) |
+| 惯性 | §4.4 | `inertia` promise；转换进行中时 `_setEpoch` 提前返回；`_reload`/`_unload` 串接 | |
+| 失败结果 | §4.4 Failure | `_error`，状态 `FAILED`，在 `update`/`replace` 之前不再进入 | |
+| 实例化即父级效应 | 定义 52，算法 4 | `Fiber` 构造函数中的 `parent.fiber.effect(...)` | |
+| 派生实现 | 定义 23 | 用于 isolate/intercept/fiber 上下文的 `ctx.extend` 原型子对象 | |
+| 两层隔离 | 定义 24 | `ctx[isolate][name]` 符号 → `reflect.store[symbol]` | |
+| 拦截合并 | 定义 27 | `resolveIntercept`：声明的 `inject[name]` ⊕ 由外到内的上下文拦截，右侧优先 | |
+| 已提交视图访问 | 算法 6 | Proxy `get` → `locate` | 另加自有提供与隔离边界 |
+| 条目字段 | 定义 81 | `EntryOptions` | 增加了 `inject`、`group` |
+| 托管领域 + 分隔符 | 算法 7 | `loader/src/config/isolate.ts` | 另加提供者自身 impl 的免重启迁移 |
+
+## 偏离与细化 [#deviations]
+
+### 目标的表示 [#target]
+
+- **论文：** `fiber.target` 是 `target(γ, n)`（键 → 提供者 uid 元组）的哈希，未满足时为 ⊥。
+- **代码：** `_runner.epoch` = `"<revision>:<uid>:<uid>…"` 或 `'__INACTIVE__'`。**修订**计数器把配置修订折叠进目标：`restart()`、`update()` 与 `registry.replace()` 会递增它，从而在不使纤程（fiber）退役的情况下强制一条卸载→重新加载链。这比“退役 → 移除 → 以同一名称重新插入”更廉价地实现了 §4.4 *Configuration* 的修订。
+
+见[目标计算](/docs/reference-fibers#target)。
+
+### 退役与移除 [#retirement]
+
+- **论文：** O-Retire（设置 τ）与 O-Remove（删除条目）是两条独立的规则；退役的条目可能残留（vestigial）。
+- **代码：** 实例化效应的逆操作设置 `uid = null`（立即从 runtime 中移除），把目标强制为 ⊥，然后等待转换链；最终状态为 `DISPOSED`。不存在持久的退役条目注册表。重新启用一个条目会创建一个**全新的纤程**（如论文所规定）。
+
+见[实例化](/docs/reference-fibers#instantiation)。
+
+### 守卫的实现 [#guard]
+
+- **论文（算法 5）：** `unload` 等待被 `notify(...)` 的依赖方的 `await()`。
+- **代码：** 显式的反向引用 `Impl.dependents: Set<Fiber>`，在提交时填充，在依赖方卸载结束时移除，外加唤醒用的 resolver（`impl.release`、`fiber._release`）。存在两层守卫：**纤程级**守卫（在提供者的*所有*提供项都空闲之前，它的任何撤销函数都不运行）与 `provide` 逆操作内部的**绑定级**守卫。这给出了论文按绑定的语义（`relied_n`），同时允许提供者撤回一个绑定而无需等待另一个。
+
+见[两层守卫](/docs/reference-fibers#guards)。
+
+### 累加器的执行顺序 [#accumulator]
+
+- **论文：** 累加器是一个 LIFO 组合；算法 5 运行一次 `fiber.dispose()`。
+- **代码：** 纤程级撤销函数按逆序*发起*，但**并发**运行（`Promise.all`），每个都在一个微任务之后开始；错误被记录，且不会阻止其他撤销函数。顺序 LIFO 只在*单个* `ctx.effect` 内部成立。论文承认了这种并发（§5.1.3），定理 43（独立的逆操作可交换）为其提供了依据，但这意味着对顺序敏感的拆除必须组合进同一个效应。
+
+见[纤程级累加器](/docs/reference-effects#accumulator)。
+
+### 迭代边界 [#iteration-boundaries]
+
+- **论文：** 每次迭代之前检查守卫；L-Divert 可以中止，也可以落地。
+- **代码：** 只有**异步**迭代器可中断；同步迭代器与普通函数运行至结束（在单线程宿主中它们本来也无法被中断）。异步迭代器采取*落地*分支（惯性宿主），并以 `iter.return()` 关闭，使 `finally` 块得以运行。`_reload` 在执行前还会让出一个微任务，因此被取代的加载永远不会开始。
+
+### 通知 [#notification]
+
+- **论文：** `notify` 遍历所有纤程并调用 `refresh`。
+- **代码：** 遍历所有 runtime 的纤程，按声明的键与**领域符号**（或在领域迁移期间按自定义过滤器）筛选，只重新计算受影响的键（`_checkImpl`），然后调用 `_refresh`。它还会发出 `internal/service`。纤程提供项的通知只在进入或离开 `ACTIVE` 的转换上由 `_updateState` 发出。
+
+见 [`notify`](/docs/reference-context#notify)。
+
+### 可用性谓词 [#availability]
+
+代码增加了 `Impl.check`（来自 `Service[symbols.check]`）：提供者即使处于 `ACTIVE`，也可以报告自己不可用（`loader` 用它实现 `{ await: true }`）。这为满足谓词 `σ ⊧ d` 扩展了一个按提供者的条件。
+
+### 访问解析 [#access]
+
+`locate` 另外 (a) 允许纤程不经声明就读取其**自有**提供项，(b) 在**隔离边界**处终止继承。根纤程（没有 runtime）获得*不加检查*的访问（`reflect.get(prop, false)`），因为根代码无法声明 `inject`。见 [`locate`](/docs/reference-context#locate)。
+
+### 调用方归属（论文中没有） [#caller-attribution]
+
+tracker/影子代理机制（[服务与可追溯性](/docs/reference-services)）把服务方法内部创建的效应归属到**调用方**纤程，并从服务的**定义点**解析其自身依赖。论文的封闭性（confinement，定义 55）隐含地假设了这一点；没有它，经由服务产生的效应就会属于提供者，从而破坏消费者的时间可组合性。
+
+### 论文中没有的加载器细节 [#loader-specifics]
+
+见[加载器](/docs/reference-loader)。
+
+- 带 `inject` 的条目有两个纤程（外层依赖持有者 + 内层插件）。
+- 表达式（`!!js`）在特定上下文中求值；`disabled` 判定被缓存。
+- 自我释放检测 → 持久化 `disabled: true`；自我更新 → 持久化配置（`internal/commit`）。
+- `loader { await: true }` 屏障。
+- 领域迁移无需重启提供者；被阻止的迁移通过 `Impl.isolate` 追踪。
+
+### HMR [#hmr]
+
+见 [HMR：论文与代码对照](/docs/reference-hmr#paper-vs-code)：注册表层面的原地替换（`registry.replace` + `_replace` + 修订号递增）取代 dispose + `ctx.use`；并查集提交单元取代全有或全无；越过不可回头点之后不再回滚。
+
+### 论文假设而代码不检查的事项 [#unchecked]
+
+| 假设 | 代码中的状况 |
+|---|---|
+| 效应见证（逆操作确实能还原） | 不检查，是作者的义务（论文已说明） |
+| 余效应（coeffect）的可交换性 | 不检查，是提供者的义务（论文已说明） |
+| ≺ 的无环性 | **不检测**：依赖环会让纤程静默地停留在 PENDING；论文（§6.5）说运行时*可以*在加载时报告它，但 Cordis 没有这样做 |
+| 提供的完全性（定义 76） | 不强制；插件上的 `provide` 元数据只是声明性的 |
+| 封闭性（定义 55） | 只对经由代理的余效应*访问*强制执行；任意 JS 代码仍可触及全局对象 |
+
+## 阅读中发现的缺陷 [#defects]
+
+| 位置 | 观察 |
+|---|---|
+| `loader/src/config/isolate.ts:150-153` | 领域回收扫描中的 `return` 会退出整个监听器；该条目 `legacy.isolate` 中其余名称的回收被跳过。本意可能是外层循环的 `continue`。 |
+| `create/src/index.ts` | `--mirror` 标志会被解析但未被使用。 |
+
+## 对 Rust 移植的启示 [#rust]
+
+<Steps>
+<Step>
+遵循**代码的**状态机（带修订号的纪元、惯性、两层守卫、`FAILED`、`DISPOSED`），因为它经过测试并能处理配置修订；文档中保留论文的名称。
+</Step>
+<Step>
+在代码受 JS 限制之处遵循**论文**：对所有多步效应显式设置迭代边界；在插入时检测依赖环（代价很低，因为声明是静态的）。
+</Step>
+<Step>
+用显式的类型化句柄取代基于 Proxy 的调用方归属。
+</Step>
+<Step>
+在 HMR 上遵循**代码的**设计（按单元提交、原地替换），而非算法 10。
+</Step>
+<Step>
+在移植中修复领域回收中过早的 `return`。
+</Step>
+</Steps>
+
+kardia 如何落实这些，见[生命周期](/docs/development-lifecycle)、[API 设计](/docs/development-design)、[加载器、include 与 HMR](/docs/development-loader)，以及列出全部偏离的[状态](/docs/development-status)。

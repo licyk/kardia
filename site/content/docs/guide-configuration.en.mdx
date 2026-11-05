@@ -1,0 +1,150 @@
+---
+title: "The configuration file"
+description: "Entries and their fields, expressions, two-way sync, and the built-in plugins with their configuration."
+---
+
+The `kardia` binary runs the app described by a YAML or JSON config file (`kardia.yml` by default). The file is a list of **entries**. Each entry runs one plugin:
+
+```yaml
+- id: timer               # optional; generated (and written back) when missing
+  name: timer             # a built-in plugin, or a path to a guest module
+- id: plugins
+  name: group             # a group runs the entries in its `config`
+  group: true
+  config:
+    - id: console
+      name: logger-console
+      disabled: true      # true / false, or an expression
+      config:
+        levels: { default: 3 }   # 0 error … 3 debug
+```
+
+## Entry fields [#entry-fields]
+
+| Field | Meaning |
+|---|---|
+| `id` | Identifies the entry across edits. Missing ids are generated, and written to the file with the next write-back. |
+| `name` | The plugin. Either a built-in name or a guest module path (see below). |
+| `config` | The plugin's configuration. For a group, its list of entries. |
+| `group` | Marks a group entry. |
+| `disabled` | Stops the plugin without removing its entry. |
+| `inject` | Extra services the entry depends on: a list of names, or a map of name → interception metadata. |
+| `intercept` | Metadata for the services the plugin uses, keyed by service. For example, `logger: { name: db, level: 3 }`. |
+| `isolate` | Gives services their own scope: `{ db: true }` makes `db` private to the entry, and `{ db: shared }` shares it between every entry using the label `shared`. |
+
+Entries are validated when they are read; the rules are few:
+
+- **`id`** is a string and must not contain `:` (the loader joins ids across included files with `:`). A missing id is generated when the file is read: eight hexadecimal digits. An anonymous entry that is unchanged on the next read keeps its id, so editing a neighbour does not restart it. Generated ids reach the file with the next write-back.
+- **`name`** is required. A name that is not a built-in plugin is a guest module path, relative to the config file: `.wasm` or `.wat` for WebAssembly, anything else a dynamic library. See [Guest plugins](/docs/guide-guests).
+- **`config`** can be any value; the plugin decodes it. A group's `config` (`group: true`) must be a list of entries.
+- **`group`** is a boolean.
+- **`disabled`** is a boolean or an [expression](#expressions). On a group, it does not stop the group itself: it disables the entries inside it.
+- **`inject`** is a list of service names, or a map from service name to interception metadata (`null` for none).
+- **`intercept`** is a map from service name to metadata. Changing it applies to the running plugin in place, without a restart.
+- **`isolate`** is a map from service name to `true` (a scope private to the entry) or a label (a scope shared by every entry with that label).
+
+Any other key is tolerated and kept: the file stays the source of truth, so unknown keys survive the write-back. [Loader](/docs/guide-loader) explains groups, isolation and interception in depth.
+
+## Expressions [#expressions]
+
+A value tagged `!!js` is an expression, such as `disabled: !!js "!settings.enabled"`. In JSON, write it as `{ "__jsExpr": "!settings.enabled" }`.
+
+- **Syntax:** a side-effect-free subset of JavaScript:
+  - literals (numbers, strings, `true`, `false`, `null`, `undefined`), array and object literals;
+  - member access: `a.b`, `a[0]`, `a?.b`, `.length` of strings and arrays;
+  - unary `!`, `-`, `+`; arithmetic `+ - * / %`;
+  - comparisons `< <= > >=`, equality `== != === !==`;
+  - `&&`, `||`, `??` and `?:`.
+
+  Function calls are not supported.
+- **Identifiers:** a name reads the JSON value of the service with that name. The entry must declare that service in `inject`. Only services that have a JSON view can be read this way (see [Writing plugins](/docs/guide-plugins#services-for-expressions)).
+
+Expressions are accepted in these places:
+
+| Where | Evaluated | If it fails |
+|---|---|---|
+| `disabled` | When the entry starts or changes, in the entry's context (which sees its `inject`); the result's truthiness decides | The entry is disabled |
+| Anywhere inside `config` | On every (re)load of the plugin, in the plugin's context. The file keeps the expression. A group's entry list is not evaluated | The plugin's load fails |
+| The values of `intercept` | When the entry starts or changes | The entry is disabled |
+| The metadata values of `inject` (map form) | In the parent group's context | The entry is disabled |
+
+`name`, `group`, `isolate`, and `inject` or `intercept` as a whole cannot be expressions. Errors in the file, including failing expressions, are reported with their location (`file:line:col`).
+
+## Edits go both ways [#edits-go-both-ways]
+
+Edits to the file are applied to the running app. Changes the app makes to its own entries are written back to the file.
+
+- **File → app.** When the file changes, the new entries are reconciled with the running ones by `id`: a changed entry is updated in place, a new one starts, a removed one stops.
+- **App → file.** Changes made at runtime, through the loader API or by a plugin updating or disposing itself, are written back to whoever owns them: the file, or a patch in the configuration of the `include` that loaded it (see [`include`](#include)). Generated ids are written along with them.
+- **Conflicts:** when the file and the app both changed, the file wins.
+- **Shutting down** (Ctrl-C) does not write to the file.
+
+## Built-in plugins [#built-in-plugins]
+
+| Name | What it does | Config |
+|---|---|---|
+| `timer` | `timeout`, `interval`, `sleep`, `throttle` and `debounce`, each cancelled when its plugin stops | – |
+| `logger-console` | Prints logs to the terminal | `levels` (name → `0`–`3`, plus `default`), `showTime`, `colors`, `maxLength`, `label`, `showDiff` |
+| `fs` | The file-watching service | – |
+| `include` | Loads entries from another file as a subtree | `path`, `watch`, `initial`, `patches` |
+| `group` | Runs the entries in its `config` | the entry list |
+| `hmr` | Reloads guest modules when their files change | `base`, `watch: { enabled, files, debounce }` |
+
+Each built-in also answers to its TypeScript package name:
+
+| Name | TypeScript package |
+|---|---|
+| `timer` | `@cordisjs/plugin-timer` |
+| `logger-console` | `@cordisjs/plugin-logger-console` |
+| `fs` | `@cordisjs/plugin-fs-node` |
+| `include` | `@cordisjs/plugin-include` |
+| `group` | `@cordisjs/plugin-group` |
+| `hmr` | `@cordisjs/plugin-hmr` (registered by the `kardia` binary) |
+
+The binary starts `fs` itself and includes the config file with `watch: true`, so the file is an `include` whose entries form the app.
+
+### `logger-console` [#logger-console]
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `levels` | map: logger name → `0`–`3` | `{}` | The most verbose level printed per logger: `0` error, `1` warn, `2` info, `3` debug. `default` applies to loggers not listed; without it, info. |
+| `showTime` | string | `"yyyy-MM-dd hh:mm:ss "` | A time template printed before each line; an empty string hides the time. |
+| `colors` | `false` or `0`–`3` | detected from the terminal | Colour support level; `false` turns colours off. |
+| `maxLength` | number | `10240` | Lines longer than this are truncated. |
+| `label` | `{ width, margin, align }` | `{ width: 0, margin: 1, align: left }` | Layout of the logger name: padded to `width`, `margin` spaces around it, `align` is `left` or `right`. |
+| `showDiff` | boolean | `false` | Appends the time since the previous message. |
+
+### `include` [#include]
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `path` | string | required | The YAML or JSON file to load, relative to the directory of the config file that contains the `include` entry (else the working directory). |
+| `watch` | boolean | `false` | Re-read the file whenever it changes. Needs the `fs` service. |
+| `initial` | list of entries | – | Written to `path` if the file does not exist yet. |
+| `patches` | list | `[]` | Changes applied on top of the file's entries (below). |
+
+A patch is one of:
+
+- `{ insert: [...] }` appends entries to the file's top level, and `{ id, insert: [...] }` to the group with that `id`.
+- `{ id, name?, ...keys }` overrides keys of the entry with that `id`.
+
+Keys a patch supplies belong to the patch: runtime changes to them are written back into the patch, not the file.
+
+### `group` [#group]
+
+A group's `config` is its list of entries. Updating it reconciles the list in place instead of restarting the group: only the entries that changed are touched.
+
+### `hmr` [#hmr]
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `base` | path | `.` | Base directory, relative to the config file that contains the `hmr` entry (else the working directory). `watch.files` and logged paths are relative to it. |
+| `watch.enabled` | boolean | `false` | Reload modules as their files change. Needs the `fs` service. |
+| `watch.files` | list of patterns | `[".", "!**/.*", "!**/target"]` | Files to watch, relative to `base`; `!` excludes. |
+| `watch.debounce` | milliseconds | `100` | Changes within one window are reloaded together. |
+
+[Hot reload](/docs/guide-hot-reload) explains how reloading works.
+
+### `timer` and `fs` [#timer-and-fs]
+
+Neither takes configuration. They provide the `timer` and `fs` services; [Services](/docs/guide-services) shows how plugins use them.

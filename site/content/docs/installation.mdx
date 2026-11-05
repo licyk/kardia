@@ -1,0 +1,68 @@
+---
+title: "安装"
+description: "环境要求、从 crates.io 安装 kardia，以及每个 crate 的用途。"
+---
+
+## 环境要求 [#requirements]
+
+- **Rust 1.85 或更新版本。**
+- **`wasm32-unknown-unknown` 目标**，仅在构建 WebAssembly 访客插件（guest plugin）或运行完整测试套件时需要：
+
+  ```sh
+  rustup target add wasm32-unknown-unknown
+  ```
+
+## 作为库使用 kardia [#use-kardia-as-a-library]
+
+把门面（facade）crate 加入你的项目：
+
+```sh
+cargo add kardia
+cargo add serde --features derive
+cargo add tokio --features rt-multi-thread,macros
+```
+
+或者在 `Cargo.toml` 中：
+
+```toml
+[dependencies]
+kardia = "0.1"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+```
+
+带类型的插件配置需要把 `serde` 作为直接依赖：`kardia::prelude` 重新导出了 `Deserialize`，但这个派生宏按名字引用 `serde` crate。
+
+门面 crate 重新导出了其他 crate（`kardia::loader`、`kardia::timer` 等），`kardia::prelude` 包含大多数插件需要的名字。接下来请看[编写插件](/docs/guide-plugins)。
+
+## 安装可执行文件 [#install-the-binary]
+
+`kardia` 可执行文件从配置文件加载应用：
+
+```sh
+cargo install kardia
+kardia path/to/kardia.yml   # without an argument: kardia.yml in the working directory
+```
+
+见[快速开始](/docs/quick-start)。
+
+## Crate 列表 [#crates]
+
+kardia 分为十个 crate，全部发布在 crates.io 上。大多数项目只需依赖 `kardia`；访客插件只需依赖 `kardia-guest`。
+
+| Crate | 内容 | 用途 |
+|---|---|---|
+| `kardia` | 门面（`kardia::prelude`）与 `kardia` 可执行文件 | 一切：重新导出下列 crate（`kardia-guest` 除外） |
+| `kardia-core` | 上下文、效应、纤程、服务、事件、日志 | 运行时本身（[服务](/docs/guide-services)、[效应](/docs/guide-effects)） |
+| `kardia-macros` | `#[derive(Service)]` 与 `#[plugin]` | 声明服务和插件（[编写插件](/docs/guide-plugins)） |
+| `kardia-timer` | 内置服务：定时器 | 随插件结束而结束的 `timeout`、`interval`、`sleep`、`throttle`、`debounce` |
+| `kardia-logger-console` | 内置服务：控制台日志 | 把日志打印到终端 |
+| `kardia-fs` | 内置服务：文件监视 | 监视文件和目录 |
+| `kardia-loader` | 条目、分组、隔离、表达式、目录（catalog） | 声明式插件树（[加载器](/docs/guide-loader)） |
+| `kardia-include` | YAML/JSON 配置文件，双向同步 | 配置文件（[配置文件](/docs/guide-configuration)） |
+| `kardia-hmr` | 模块图、热重载、监视模式、WASM、dylib 与进程后端 | 访客模块的[热重载](/docs/guide-hot-reload) |
+| `kardia-guest` | 用 Rust 编写访客插件的 SDK | 编写[访客插件](/docs/guide-guests) |
+
+<Mermaid chart={"flowchart TD\n  kardia --> core[kardia-core]\n  kardia --> macros[kardia-macros]\n  kardia --> timer[kardia-timer]\n  kardia --> logger[kardia-logger-console]\n  kardia --> fs[kardia-fs]\n  kardia --> loader[kardia-loader]\n  kardia --> include[kardia-include]\n  kardia --> hmr[kardia-hmr]\n  timer --> core\n  logger --> core\n  fs --> core\n  loader --> core\n  include --> loader\n  include --> fs\n  hmr --> loader\n  hmr --> fs\n  guest[kardia-guest]"} />
+
+`kardia-guest` 是独立的：访客插件是一个单独的模块，它通过访客接口与宿主（host）通信，而不是通过宿主的 crate。

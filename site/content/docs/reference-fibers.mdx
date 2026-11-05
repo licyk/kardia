@@ -1,0 +1,240 @@
+---
+title: "纤程生命周期与注册表"
+description: "Cordis 核心如何把插件实例化为纤程、计算其目标，并借助惯性与守卫驱动它们经历加载/卸载状态机。"
+---
+
+本页介绍 `cordis/packages/core/src/fiber.ts` 与 `registry.ts`。对应的论文内容是 §4.1–4.2（演算，见[演算](/docs/concepts-calculus)）与 §5.1.3（算法 4–5，见[实现](/docs/concepts-implementation)）。
+
+## 插件（组件）与 runtime [#plugins]
+
+在 `registry.ts` 中，一个**插件**（plugin，即论文中的*组件*（component））是以下之一：
+
+```ts
+type Plugin<T> =
+  | ((ctx, config: T) => any)                    // function plugin
+  | (new (ctx, config: T) => any)                // class plugin (typically a Service subclass)
+  | { apply(ctx, config: T): any }               // object plugin
+// with optional static metadata:
+interface Base<T> { name?; Config?: StandardSchemaV1<any, T>; inject?: Inject; provide?: string | string[]; intercept?: Dict<boolean> }
+```
+
+- `inject` 要么是 `['a', 'b']`，要么是 `{ a: meta, b: meta }`（值是组件声明的拦截元数据，定义 26）。`Inject.resolve` 把它规范化为 `Dict<meta | null>`；`@Inject` 装饰器（用于类或方法）构建可继承的 inject 表（`registry.ts:17-61`）。
+- `provide` 仅是声明性的（供加载器和工具使用）；真正的提供发生在插件调用 `ctx.provide` 或构造 `Service` 时。
+- `apply` 的*返回值*被当作一个效应（见[效应](/docs/reference-effects)）：一个函数、一个 promise，或产出撤销函数的（异步）生成器。
+
+`RegistryService` 维护一个 `Map<callback, Plugin.Runtime>`：
+
+```ts
+interface Runtime { name?: string; fibers: DisposableList<Fiber>; callback: Function; Config?: StandardSchemaV1 }
+```
+
+一个 runtime 汇集同一插件的所有纤程（fiber）；当其最后一个纤程被移除时，runtime 被注销（`fiber.ts:191-193`）。`registry.counter` 提供**纤程 uid**（`++counter`，从不复用）。
+
+### `ctx.plugin(plugin, config)` [#ctx-plugin]
+
+`registry.ts:231-245`。它解析别名（见 [`replace`](#replace)），在调用方纤程上调用 `assertActive()`，获取或创建 runtime，构造 `new Fiber(ctx, config, Inject.resolve(plugin.inject), runtime, outerStack)`，并返回一个以该纤程为原型、且**可 then** 的对象（`await ctx.plugin(...)` ≡ `fiber.await()`）。`ctx.inject(deps, cb)` 是 `ctx.plugin({ inject: deps, apply: cb })` 的语法糖。
+
+### `registry.replace(old, new)` [#replace]
+
+`registry.ts:185-209`。**原地**替换现有纤程背后的实现：
+
+- 记录别名 `old → new`，此后 `ctx.plugin(old)` 会实例化 `new`（别名可链式跟随，也可以切换回来）；
+- 通过 `fiber._replace(runtime, inject)` 把旧 runtime 的每个纤程移到新 runtime。
+
+`_replace`（`fiber.ts:401-416`）按新的 `inject` 重新检查依赖，清除 `_error`，递增 `_revision` 并调用 `_refresh()`。纤程保留其身份、父级与配置，但用新代码重新加载。这就是 HMR 使用的原语（见 [HMR](/docs/reference-hmr)）。
+
+## `Fiber` 数据结构 [#fiber]
+
+`fiber.ts:115-220`：
+
+| 字段 | 论文 | 说明 |
+|---|---|---|
+| `uid: number \| null` | 名称 n | 移除后为 `null`（O-Remove） |
+| `parent: Context` | π | 创建它的上下文；父纤程 = `parent.fiber` |
+| `ctx: Context` | 派生上下文 | `parent.extend({ fiber: this })` |
+| `config` | 绑定进 e | 原始配置；每次加载时经 `internal/config` 校验 |
+| `inject: Dict` | d | 声明的键（+ 元数据） |
+| `runtime` | 组件 | 根纤程为 `null` |
+| `state: FiberState` | θ（投影） | `PENDING, LOADING, ACTIVE, FAILED, DISPOSED, UNLOADING` |
+| `provisions: Set<Impl>` | σ_n | 此纤程安装的绑定 |
+| `committed?: Dict<Impl>` | ω | 重新加载开始时已解析 impl 的快照 |
+| `_store: Dict<Impl>` | 实时解析 | 每个声明的键：当前可用的 impl（或缺失） |
+| `_runner.epoch: string` | 目标摘要 | `"<revision>:<uid₁>:<uid₂>…"` 或 `'__INACTIVE__'`（⊥） |
+| `_revision` | – | 由 `restart()`/`_replace()` 递增，以强制重新加载（配置修订） |
+| `inertia?: Promise` | Future | 进行中的转换 |
+| `_disposables` | 累加器 g | 效应包装器的 `DisposableList` |
+| `_error` | 失败结果 | 加载失败时设置；阻止再次进入 |
+| `_release?` | 守卫等待者 | 等待依赖方时使用的 resolver |
+| `_remove?` | runtime 成员关系 | 把纤程从 `runtime.fibers` 中移除 |
+| `_hooks` | – | 每个纤程的监听器列表（`internal/update`） |
+| `dispose()` | O-Retire | 父级效应的撤销函数 |
+
+### `FiberState` 与论文 θ 的对照 [#fiber-state]
+
+| Cordis | 论文 |
+|---|---|
+| `PENDING` | 目标为 ⊥ 的 `Inactive`（等待依赖） |
+| `LOADING` | `Reloading` |
+| `ACTIVE` | `Active` |
+| `UNLOADING` | `Unloading` |
+| `FAILED` | `Inactive` + 错误结果（§4.4 Failure） |
+| `DISPOSED` | 已从注册表中移除（uid 为 `null`） |
+
+`_getState()` 推导稳定状态：`uid === null → DISPOSED`，`_error → FAILED`，`epoch !== INACTIVE → ACTIVE`，否则 `PENDING`。
+
+<Mermaid chart={"stateDiagram-v2\n  [*] --> PENDING\n  PENDING --> LOADING: 目标变为非 ⊥ (L-Begin)\n  LOADING --> ACTIVE: 加载落地，纪元未变 (L-Finish)\n  LOADING --> UNLOADING: 纪元改变 (L-Divert) 或 apply 失败\n  ACTIVE --> UNLOADING: 目标改变或为 ⊥ (L-Leave)\n  UNLOADING --> LOADING: 结束时纪元非 ⊥\n  UNLOADING --> PENDING: 纪元为 ⊥\n  UNLOADING --> FAILED: 已设置 _error\n  UNLOADING --> DISPOSED: uid 为 null\n  FAILED --> LOADING: update() / replace()\n  PENDING --> DISPOSED: dispose()\n  FAILED --> DISPOSED: dispose()"} />
+
+## 实例化：O-Insert 与 O-Retire [#instantiation]
+
+`fiber.ts:148-206`：
+
+```ts
+this.uid = parent.registry.counter
+this.ctx = parent.extend({ fiber: this })
+emit 'internal/plugin'(this)
+for name of inject: this._checkImpl(name)            // initial resolution
+this.dispose = parent.fiber.effect(() => {           // ← tracked effect of the PARENT fiber
+  this._remove = runtime.fibers.push(this)           //   O-Insert: enter the registry
+  try { this._refresh() } catch (e) { log; this._error = e }
+  return async () => {                               //   inverse = O-Retire (+ removal)
+    this.uid = null; emit 'internal/plugin'(this)
+    this._remove(); if (!runtime.fibers.length) registry._unregister(runtime)
+    this._setEpoch(INACTIVE)                         //   target ← ⊥
+    while (this.inertia) await this.inertia          //   wait for the transition chain
+    this._updateState(() => {})                      //   settle → DISPOSED
+  }
+}, 'ctx.plugin()')
+```
+
+因此，子纤程恰好就是定义 52：父级的一个普通效应，其逆操作使子纤程退役。卸载父级会经由父级的累加器级联到子级。与演算不同，退役与移除被融合在一起：逆操作先退役，等待转换链结束，然后纤程即消失（其 uid 已为 `null`）。
+
+## 目标计算：`_checkImpl` 与 `_refresh` [#target]
+
+`fiber.ts:387-429`：
+
+```text
+_checkImpl(name):                       // resolve one declared key
+  impl = ctx.reflect._getImpl(name, strict = true)   // only ACTIVE providers
+  if !impl or (impl.check && !impl.check()) → delete _store[name]
+  else _store[name] = impl
+
+_refresh():                             // recompute the target digest
+  epoch = `${_revision}`
+  for name of inject: if !_store[name] { epoch = INACTIVE; break } ; epoch += ':' + impl.uid
+  _setEpoch(epoch)
+```
+
+纪元（epoch）字符串就是论文中 `target(γ, n)` 的哈希，外加修订计数器（配置修订是一个新的效应函数，§4.4 Configuration；见[元理论](/docs/concepts-metatheory)）。
+
+## 转换状态机 [#state-machine]
+
+`fiber.ts:431-514`。
+
+### `_setEpoch(epoch)`：refresh [#set-epoch]
+
+算法 5 的 `refresh`：
+
+```text
+if epoch === old → return                       // neutral change
+if this._error → return                         // FAILED fibers only recover via update()/replace()
+_runner.epoch = epoch                           // record the new target
+if this.inertia → return                        // transition in flight: inertial
+_updateState(() =>
+  epoch !== INACTIVE && old === INACTIVE
+    ? (inertia = _reload(), LOADING)            // L-Begin
+    : (inertia = _unload(), UNLOADING))         // L-Leave (also for "target changed" while ACTIVE)
+```
+
+在 `ACTIVE` 状态下，从一个非 ⊥ 目标变为另一个非 ⊥ 目标，会先经过 `UNLOADING`，再串接进入 `LOADING`（卸载在结束时检查纪元）。
+
+### `_reload()`：L-Begin … L-Finish / L-Divert [#reload]
+
+```text
+committed = { ..._store }                               // commit the view ω
+for impl of committed (not own): impl.dependents.add(this)   // register as dependent (for the guard)
+oldEpoch = _runner.epoch
+await Promise.resolve()                                 // let superseding updates coalesce
+if epoch === oldEpoch: await _execute(_runner)          // run apply; async iterators check epoch per yield
+catch (e): log; if epoch === oldEpoch { _error = e; epoch = INACTIVE }   // failure only if still current
+_updateState(() => epoch === oldEpoch
+   ? (inertia = undefined)                              // → ACTIVE (or FAILED via _getState)
+   : (inertia = _unload(), UNLOADING))                  // stale ⇒ inertial chain into unload
+```
+
+<Callout type="info">
+**惯性（inertia）：** 过时的目标不会中止进行中的 `apply`。加载照常落地，纤程随后再卸载（异步宿主采取 L-Divert 中*落地*的那个分支）。执行前让出的那个微任务，使一连串 `update()` 调用能完全跳过被取代的加载（`update.spec.ts: 'skips superseded loads before executing the plugin'`）。
+</Callout>
+
+### `_unload()`：守卫与 L-Unload [#unload]
+
+```text
+while ([...provisions].some(impl => impl.dependents.size))   // the guard (per binding)
+  await new Promise(r => this._release = r)                   // woken by the last dependent
+await Promise.all(_disposables.clear().map(async d => { await Promise.resolve(); await d() /* errors logged */ }))
+for impl of committed:                                         // release our providers
+  if impl.dependents.delete(this) && !impl.dependents.size:
+    impl.release?.(); impl.ctx.fiber._release?.()
+committed = undefined                                          // discard ω last
+_updateState(() => epoch === INACTIVE
+   ? (inertia = undefined)                                     // → PENDING / FAILED / DISPOSED
+   : (inertia = _reload(), LOADING))                           // chain back into reload
+```
+
+### `_updateState(cb)`：状态变化与提供者通知 [#update-state]
+
+`fiber.ts:372-385`。它设置新状态，发出 `internal/status(fiber, oldState)`，并且**只在进入或离开 `ACTIVE` 的转换上**，通知仍绑定在存储中的每个提供项的依赖方（`ctx.isolate(name, impl.isolate).reflect.notify([name])`）。因此，从 `ACTIVE` 进入 `UNLOADING` 会让所有消费者在任何逆操作被调度*之前*重新计算出一个未满足的目标（L-Leave），而此时绑定在物理上仍然存在。
+
+### 两层守卫 [#guards]
+
+1. **纤程级**（`_unload` 中的循环）：只要还有任何提供项有依赖方，提供者纤程就不运行*任何*撤销函数。
+2. **绑定级**（`provide` 的逆操作，见 [`provide`](/docs/reference-context#provide)）：撤回一个绑定只等待该绑定的依赖方。这使一个提供者可以撤回绑定 A 而无需等待绑定 B 的消费者（`service-dispose.spec.ts: 'withdraws one binding without waiting for another binding from the same provider'`），也使一个绑定可以在某个消费者初始化期间被替换。
+
+依赖方以 `Impl.dependents: Set<Fiber>` 追踪（在提交时填充，在依赖方卸载结束时清除），这是 `relied_n` 在运行时（runtime）中的形式。
+
+## 等待、更新、重启 [#await-update-restart]
+
+`fiber.ts:516-552`。
+
+- `await()` 在 `inertia` 上循环直到稳定；若纤程为 `FAILED`，则抛出 `_error`。
+- `restart()`（在 `ctx.fiber` 上）：`_revision++`、`_refresh()`、await。对根纤程而言，`dispose()` *就是* `restart()`：一切都被卸载，然后根重新变为活跃。
+- `update(config, noSave = false)` 是配置修订路径：
+  1. 若已加载，解析并校验新配置（`internal/config` waterfall → Standard Schema `validate`，仅同步；`ValidationError` 保留问题路径）；
+  2. 除非 `noSave`，否则 `emit('internal/commit', fiber, config)`（加载器把配置写回其条目）；
+  3. 保存配置并清除 `_error`；
+  4. 若已加载，执行 `waterfall(fiber, 'internal/update', resolved, restart)`：每个纤程的 `internal/update` 监听器（由插件通过 `ctx.on('internal/update', …)` 注册）可以通过不调用 `next()` 来**不重启**地接受新配置；否则执行 `restart()`。
+
+  返回的 promise 被标记为已处理，因此被丢弃的结果不会引发未处理的拒绝。
+
+`tests/update.spec.ts` 验证的并发语义：
+
+- 并发更新最终落定在最新的配置上；
+- 卸载期间的更新会合并；
+- 被取代的失败会被清理，而不会让最新的更新失败；
+- 最新的加载失败时，所有等待中的更新都会被拒绝；
+- 过时的异步生成器停止推进；
+- 释放之后，排队中的配置不会被加载。
+
+## 失败语义 [#failure]
+
+来自 `tests/fiber.spec.ts`：
+
+- `apply` 抛出 → 记录错误，设置 `_error`，纪元变为 ⊥，经 `_unload` 撤销部分效应，状态为 `FAILED`。
+- 失败的纤程在依赖刷新时**不会再次进入**（`_setEpoch` 提前返回）。这与 §4.4 一致：“not retried against an unchanged environment”。
+- `update()`（或 `registry.replace`）清除错误并重试。
+- 释放一个 `PENDING` 或 `FAILED` 的纤程会使其稳定为 `DISPOSED`。
+
+## 与九条规则的对应 [#nine-rules]
+
+这些规则定义在[演算](/docs/concepts-calculus)中。
+
+| 规则 | 代码 |
+|---|---|
+| O-Insert | `parent.fiber.effect(() => { runtime.fibers.push(this); this._refresh() … })` |
+| O-Retire | 该效应的逆操作：`uid = null; _setEpoch(INACTIVE)` |
+| O-Remove | `_remove()`，runtime 被注销，转换链结束后状态为 `DISPOSED` |
+| L-Begin | `_setEpoch` → `_reload()`，状态 `LOADING` |
+| L-Iter | `_execute` 中的异步迭代器循环，条件为 `epoch === oldEpoch` |
+| L-Finish | `_reload` 结束时纪元未变 → `ACTIVE` |
+| L-Divert | 加载期间纪元改变 → 迭代器在下一个边界停止，`_reload` 串接进入 `_unload` |
+| L-Leave | `_setEpoch` → `_unload()`，状态 `UNLOADING`；`_updateState` 通知消费者 |
+| L-Unload | 依赖方守卫之后的 `_unload` |

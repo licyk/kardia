@@ -1,0 +1,86 @@
+---
+title: "Contributing"
+description: "How to work on kardia: building and testing the workspace, CI, the release process to crates.io, and the documentation site."
+---
+
+kardia is developed at [github.com/licyk/kardia](https://github.com/licyk/kardia). This page covers the Rust workspace, its CI and releases, and this documentation site.
+
+<Callout type="info">
+The repository's [`AGENTS.md`](https://github.com/licyk/kardia/blob/main/AGENTS.md) has the code rules. In short: breaking refactors are allowed, with no compatibility layers; validate external data once, at the boundary, and tolerate unknown fields; no complexity for speculative races or edge cases without agreement first; keep main functions on the normal flow, with details in small helpers below; comment only non-obvious constraints; regenerate generated files instead of editing them; test the real implementation with few mocks; follow the repository's existing tools and workflows; extract a function only when it is reused, complex or a nameable concept.
+</Callout>
+
+## Building and testing [#building]
+
+```sh
+cargo test --workspace          # the WASM guest test needs the wasm32-unknown-unknown target
+cargo clippy --workspace --all-targets
+cargo fmt --all
+```
+
+- The WASM guest test builds its fixture as a WebAssembly module, so install the target first: `rustup target add wasm32-unknown-unknown`.
+- Some tests build fixture crates with cargo while they run, so the first run takes a little longer.
+- The minimum supported Rust version of the crates is 1.85 (`rust-version` in the workspace `Cargo.toml`); CI uses a pinned, newer toolchain (below).
+- How the tests are organised, and which runtime each suite uses, is on [Testing](/docs/development-testing).
+
+## CI [#ci]
+
+`.github/workflows/ci.yml` runs on every push to `main` and on every pull request:
+
+1. Check out the repository.
+2. Install Rust **1.96.0** (`dtolnay/rust-toolchain@1.96.0`) with `rustfmt`, `clippy` and the `wasm32-unknown-unknown` target. The toolchain is pinned because the compile-error snapshots of `kardia-macros` (trybuild tests) depend on the compiler version.
+3. Restore the cargo cache (`Swatinem/rust-cache`).
+4. `cargo fmt --all --check`
+5. `cargo clippy --workspace --all-targets -- -D warnings`
+6. `cargo test --workspace`
+
+## Releases [#releases]
+
+All crates share one version, `version` under `[workspace.package]` in the root `Cargo.toml` (the `[workspace.dependencies]` entries of the kardia crates carry it too).
+
+<Steps>
+<Step>
+Bump the version in the workspace `Cargo.toml` and commit.
+</Step>
+<Step>
+Push a `v*` tag (for example `v0.1.1`). The tag runs `.github/workflows/publish.yml`.
+</Step>
+<Step>
+The workflow runs the same checks as CI (fmt, clippy, tests, on Rust 1.96.0), then publishes every crate whose new version is not on crates.io yet, in dependency order (`cargo publish --workspace`).
+</Step>
+</Steps>
+
+The publish step is **resumable**:
+
+- Before each attempt, it asks the crates.io API which `name@version` pairs already exist and excludes those crates, so a crate is never published twice.
+- crates.io lets an account create only a few new crates at once and then one every ten minutes. When `cargo publish` fails with `429 Too Many Requests`, the workflow waits 610 seconds and tries again, up to eight attempts; any other failure fails the step. A first release of new crates waits out this limit.
+- The workflow can also be started by hand (`workflow_dispatch`) to resume a release that stopped part-way.
+- It publishes with the `CARGO_REGISTRY_TOKEN` repository secret.
+
+## Documentation site [#site]
+
+This site lives in `site/`: [Fumadocs](https://fumadocs.dev) on TanStack Start (React), built with Vite and Tailwind CSS, with Bun as the package manager and script runner. It is outside the Cargo workspace, so `cargo` commands are unaffected.
+
+```sh
+cd site
+bun install
+bun run dev       # local server
+bun run check     # TypeScript
+bun run test      # Vitest
+bun run build     # static output in site/.output/public
+```
+
+`bun.lock` is committed; `bun install --frozen-lockfile` installs exactly the locked versions, as the deployment workflow does.
+
+### Content [#content]
+
+- Pages are MDX files in `site/content/docs/`, with flat slugs grouped by prefix (`guide-*`, `concepts-*`, `reference-*`, `development-*`).
+- The site is bilingual. Chinese is the default language: `<slug>.mdx`, served without a prefix. English is `<slug>.en.mdx`, served under `/en/`. Every page exists in both languages, and a test checks it.
+- The sidebar order and its section headings come from `meta.json` (Chinese) and `meta.en.json` (English). Both must list the same slugs in the same order; a test checks that too.
+- Links between pages use `/docs/<slug>` (the site adds `/en` itself). Besides Fumadocs' defaults, pages can use the `Cards`, `Callout`, `Steps`, `Tabs`, `Accordions` and `Mermaid` components without imports.
+- Code, identifiers, configuration examples and the paper's notation stay as they are in both languages.
+
+### Deployment [#deployment]
+
+`.github/workflows/site.yml` deploys the site to GitHub Pages. On pushes to `main` that touch `site/`, it builds the site with `VITE_BASE_PATH=/kardia/` and publishes the output to the `gh-pages` branch, which GitHub Pages serves at **[https://licyk.github.io/kardia/](https://licyk.github.io/kardia/)**.
+
+The base path is only for GitHub Pages, which serves the site under `/kardia/`; without `VITE_BASE_PATH`, the build serves from `/`.

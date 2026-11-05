@@ -1,0 +1,95 @@
+---
+title: "kardia"
+description: "Cordis 的 Rust 实现：一个建立在时空可组合性之上的插件框架。"
+icon: House
+---
+
+kardia 是 [Cordis](https://github.com/cordiverse/cordis) 的 Rust 实现。Cordis 是一个建立在时空可组合性（*spatiotemporal composability*）之上的插件框架（[论文](https://arxiv.org/abs/2608.25512)）。
+
+一个应用是一棵由**插件**（plugin）组成的树。每个插件运行在一个**纤程**（fiber）中：
+
+- **效应**（effect）：插件建立的一切（监听器、定时器、服务、子插件）都会被追踪，并在插件停止时撤销。
+- **服务**（service）：插件提供服务，并声明自己依赖的服务。插件在依赖可用后启动，在某个依赖被替换时重启，在某个依赖消失时停止。
+- **实时变更**：应用运行期间，可以重新配置、替换或热重载任意插件，应用的其余部分会随之调整。
+
+<Cards>
+  <Card title="快速开始" href="/docs/quick-start" description="运行示例应用，并在它运行时修改它。" />
+  <Card title="安装" href="/docs/installation" description="环境要求、crates.io 与 crate 列表。" />
+  <Card title="使用指南" href="/docs/guide" description="配置文件、插件、服务、效应、加载器、热重载与访客插件。" />
+  <Card title="概念" href="/docs/concepts" description="论文：可撤销效应、响应式余效应、演算及其定理。" />
+  <Card title="Cordis 参考" href="/docs/reference" description="Cordis 的 TypeScript 代码实际做了什么。" />
+  <Card title="开发" href="/docs/development" description="kardia 如何设计与构建，以及它在哪些地方偏离 Cordis。" />
+</Cards>
+
+## kardia、Cordis 与论文 [#kardia-cordis-and-the-paper]
+
+**Cordis** 是论文 *A Programming Paradigm for Spatiotemporal Composability*（Shi、Zhang 与 Cui，[arXiv:2608.25512](https://arxiv.org/abs/2608.25512)）所描述的时空可组合性元框架，其参考实现用 TypeScript 编写。
+
+**kardia** 用 Rust 重新构建了它。它以 `kardia` 和九个 `kardia-*` crate 的形式发布在 [crates.io](https://crates.io/crates/kardia) 上，API 文档见 [docs.rs](https://docs.rs/kardia)，源代码在 [GitHub](https://github.com/licyk/kardia) 上。
+
+## 文档的组织方式 [#how-this-documentation-is-organised]
+
+除了用户文档（「开始」与[使用指南](/docs/guide)），文档分为三个层次，每一层是本站的一个栏目：
+
+| 层次 | 描述的内容 | 栏目 |
+|---|---|---|
+| **理论** | 论文定义、证明和规定了什么 | [概念](/docs/concepts) |
+| **实现** | Cordis 的 TypeScript 代码实际做了什么（Cordis v4，`cordis@4.0.0-rc.12`） | [Cordis 参考](/docs/reference) |
+| **方案** | kardia 如何用 Rust 重建它 | [开发](/docs/development) |
+
+<Mermaid chart={"flowchart LR\n  T[\"概念<br/>（论文）\"] --> I[\"Cordis 参考<br/>（TypeScript 代码）\"]\n  T --> P[\"开发<br/>（Rust 设计）\"]\n  I --> P\n  P --> G[\"使用指南<br/>（使用 kardia）\"]"} />
+
+论文与代码不一致之处记录在[论文与代码](/docs/reference-paper-vs-code)中。Rust 设计在每一处这样的地方都说明了它遵循哪一方，[实现状态](/docs/development-status)列出了 kardia 与 TypeScript 实现的不同之处。
+
+### 概念：论文 [#concepts-the-paper]
+
+1. [概述、动机、贡献、术语表](/docs/concepts)
+2. [可撤销效应（§3.1）](/docs/concepts-revertible-effects)
+3. [响应式余效应、隔离、拦截（§3.2）](/docs/concepts-reactive-coeffects)
+4. [上下文范式、观察等价、独立性（§3.3–3.4）](/docs/concepts-context-paradigm)
+5. [演算：组件、纤程、九条规则（§4.1–4.2）](/docs/concepts-calculus)
+6. [元理论与扩展（§4.3–4.4）](/docs/concepts-metatheory)
+7. [论文所述的实现：算法 1–10、加载器、HMR、Koishi（§5）](/docs/concepts-implementation)
+8. [讨论、相关工作、结论（§6–8）](/docs/concepts-related-work)
+
+### Cordis 参考：TypeScript 代码 [#cordis-reference-the-typescript-code]
+
+1. [仓库概览、包、工具链](/docs/reference)
+2. [上下文、反射、余效应解析](/docs/reference-context)
+3. [效应追踪](/docs/reference-effects)
+4. [纤程、注册表、生命周期状态机](/docs/reference-fibers)
+5. [服务、可追踪代理、调用者归属](/docs/reference-services)
+6. [事件与日志](/docs/reference-events)
+7. [加载器](/docs/reference-loader)
+8. [include 与分组](/docs/reference-include)
+9. [热模块替换](/docs/reference-hmr)
+10. [辅助包（timer、logger-console、fs-node、package-manager、loader-utils、create）](/docs/reference-auxiliary)
+11. [论文与实现：对应、偏差、缺陷](/docs/reference-paper-vs-code)
+
+### 开发：Rust 设计 [#development-the-rust-design]
+
+Rust 设计涵盖架构、crate 布局、并发模型、数据结构、API、依赖、阶段、测试策略与风险，以及 [`crates/`](https://github.com/licyk/kardia/tree/main/crates) 中各 crate 的实现状态：
+
+- [概览：目标、概念映射、crate 布局](/docs/development)
+- [并发与执行模型](/docs/development-concurrency)
+- [生命周期：状态、纤程、目标、惯性](/docs/development-lifecycle)
+- [API 设计：插件、服务、效应、事件、日志](/docs/development-design)
+- [加载器、include 与 HMR 的内部实现](/docs/development-loader)
+- [测试策略](/docs/development-testing)
+- [阶段与实现状态](/docs/development-status)
+- [风险与待定决策](/docs/development-risks)
+- [参与贡献](/docs/development-contributing)
+
+## 推荐阅读顺序 [#suggested-reading-order]
+
+- **了解思想**：[概述](/docs/concepts) → [演算](/docs/concepts-calculus) → [论文中的实现](/docs/concepts-implementation)。
+- **了解移植**：[纤程与生命周期](/docs/reference-fibers) → [论文与代码](/docs/reference-paper-vs-code) → [Rust 设计](/docs/development)。
+
+## 接下来去哪里 [#where-to-go-next]
+
+| 你是…… | 从这里开始 |
+|---|---|
+| **用户**，用配置文件运行应用 | [快速开始](/docs/quick-start)，然后是[配置文件](/docs/guide-configuration)和[热重载](/docs/guide-hot-reload) |
+| **插件作者**，用 Rust 或访客模块编写插件 | [安装](/docs/installation)，然后是[编写插件](/docs/guide-plugins)、[服务](/docs/guide-services)、[效应](/docs/guide-effects)和[访客插件](/docs/guide-guests) |
+| **贡献者**，参与 kardia 的开发 | [开发](/docs/development)，然后是[实现状态](/docs/development-status)和[参与贡献](/docs/development-contributing) |
+| **研究者**，关注其理论 | [概念](/docs/concepts)，然后是[元理论](/docs/concepts-metatheory)和[论文与代码](/docs/reference-paper-vs-code) |

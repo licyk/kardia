@@ -1,0 +1,400 @@
+---
+title: "编写插件"
+description: "用 Rust 编写服务和插件：#[derive(Service)]、#[plugin]、Plugin trait、PluginDef，以及为加载器注册插件。"
+---
+
+用 Rust 编写的插件（plugin）会编译进你的应用。本页介绍如何声明服务（service）、编写提供和使用服务的插件、启动它们，以及让配置文件能够使用它们。API 为什么是这个样子，见 [API 设计](/docs/development-design)。
+
+## 添加依赖 [#add-the-dependency]
+
+```toml
+[dependencies]
+kardia = "0.1"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+```
+
+`use kardia::prelude::*;` 引入大多数插件需要的名字：`Context`、`Plugin`、`PluginDef`、`Inject`、`Injected`、`Service`、`Svc`、`Fiber`、`Result`、两个宏、定时器、`Loader`、`Deserialize` 和 `json!`。
+
+## 第一个示例 [#a-first-example]
+
+服务就是普通类型。`#[plugin]` 宏从插件的函数签名中读取它的依赖，因此访问未声明的服务会导致编译错误：
+
+```rust
+use std::time::Duration;
+
+use kardia::prelude::*;
+
+#[derive(Service)]
+#[service(crate = ::kardia)]
+struct Database {
+    url: String,
+}
+
+#[derive(Deserialize)]
+struct DbConfig {
+    url: String,
+}
+
+/// Provides `database`, and logs when it is stopped.
+fn db() -> PluginDef {
+    PluginDef::typed(|ctx: Context, config: std::sync::Arc<DbConfig>| async move {
+        let logger = ctx.logger();
+        ctx.on_dispose(move || logger.info("closing"))?;
+        ctx.provide(Database { url: config.url.clone() })?;
+        Ok(())
+    })
+    .name("db")
+    .provides([Database::NAME])
+}
+
+/// Starts once `database` and `timer` are available, and stops with them.
+#[plugin(crate = ::kardia)]
+async fn greeter(ctx: Injected<(Database, Timer)>) -> Result<()> {
+    let (db, timer) = ctx.deps()?;
+    ctx.logger().info(format_args!("using {}", db.url));
+    timer.interval(Duration::from_secs(1), || println!("tick"))?;
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let root = Context::new();
+    root.plugin::<TimerPlugin>(())?;
+    root.plugin::<Greeter>(())?; // waits for `database`
+    let db = root.plugin_def(&db(), json!({ "url": "postgres://primary" }))?;
+    db.settled().await?;
+    db.update(json!({ "url": "postgres://replica" }))?.await?; // greeter restarts with it
+    db.dispose().await?; // greeter stops again
+    Ok(())
+}
+```
+
+运行过程：
+
+1. `greeter` 声明了 `database` 和 `timer`，在二者都可用之前一直处于等待状态。
+2. `db` 提供 `database`，于是 `greeter` 启动。
+3. 更新 `db` 的配置会让它重启。`greeter` 依赖它，所以 `greeter` 先停止，再用新的数据库重新启动。
+4. 释放（dispose）`db` 会撤回 `database`：`greeter` 停止，它的 interval 被撤销，`closing` 日志作为拆除过程的一部分输出。
+
+一个更长、可运行的版本，还演示了热替换数据库的实现：
+
+```sh
+cargo run -p kardia --example provider_consumer
+```
+
+<Callout type="info">
+使用门面 crate `kardia` 时，两个宏都要写 `crate = ::kardia`。生成的代码默认引用 `::kardia_core`，只有直接依赖 `kardia-core` 时才能用默认值。
+</Callout>
+
+## 服务 [#services]
+
+服务是绑定到一个**键**（key）上的任意 `Send + Sync + 'static` 类型，键是字符串。之所以用字符串而不是类型 id，是因为配置文件要通过名字引用服务。
+
+```rust
+#[derive(Service)]
+#[service(crate = ::kardia)]
+struct ConnectionPool; // key: "connection-pool"
+
+#[derive(Service)]
+#[service(crate = ::kardia, name = "database")]
+struct Db {
+    url: String,
+}
+
+// without the macro
+struct Cache;
+
+impl Service for Cache {
+    const NAME: &'static str = "cache";
+}
+```
+
+`#[derive(Service)]` 默认把类型名转成连字符形式作为键，除非给出 `name`。`Service` trait 还有一个成员 `merge_intercept`，用于合并拦截（interception）元数据；它的默认实现（对 JSON 对象做右偏的浅合并）适用于大多数服务。见[服务](/docs/guide-services)。
+
+### 提供服务 [#providing-a-service]
+
+插件在 `apply` 中提供服务：
+
+| 方法 | 提供 |
+|---|---|
+| `ctx.provide(value)` | 一个 `Service` 值，使用它自己的键 |
+| `ctx.provide_arc(arc)` | 同上，来自已有的 `Arc` |
+| `ctx.provide_as(key, value)` | 任意值，使用显式给出的键 |
+| `ctx.provide_serialized_as(key, value)` | 一个 `serde::Serialize` 值，同时带有 JSON 视图 |
+
+提供服务是提供者插件的一个效应（effect）：
+
+- 插件停止时，绑定被撤回；它的消费者（consumer）先停止。
+- 一个领域（realm，服务的作用域，见[隔离](/docs/guide-loader)）中每个键最多只有一个绑定。提供一个已被绑定的键会以 `KardiaError::AlreadyProvided` 失败，并指出提供者（provider）。
+- 提供者插件处于活动状态后，消费者才能看到这个绑定。
+
+### 用于表达式的服务 [#services-for-expressions]
+
+配置文件中的[表达式](/docs/guide-configuration#expressions)以及工具以 JSON 形式读取服务。只有具备 JSON 视图的服务才能这样读取：用 `provide_serialized_as` 提供的服务，或直接提供的 `serde_json::Value`：
+
+```rust
+ctx.provide_as("settings", json!({ "enabled": true }))?;
+```
+
+这样，一个在 `inject` 中声明了 `settings` 的条目（entry）就可以写 `disabled: !!js "!settings.enabled"`。
+
+### 使用服务 [#using-a-service]
+
+| 访问方式 | 检查依据 | 失败时 |
+|---|---|---|
+| `ctx.get::<S>()` | 插件声明的依赖，在运行时检查 | `S` 未声明时为 `AccessError::Undeclared`；已声明但没有绑定时为 `AccessError::Inactive` |
+| `Injected<D>::get::<S, _>()` | `D`，在编译时检查 | `S` 不在 `D` 中时编译错误 |
+| `Injected<D>::deps()`、`ctx.deps::<D>()` | 一次检查 `D` 的全部成员 | 同 `get` |
+| `ctx.get_as::<T>(key)`、`ctx.view(key)` | 运行时给出的键（`view` 读取 JSON 视图） | 同 `get`，或 `AccessError::TypeMismatch` |
+| `ctx.live::<S>()`、`ctx.live_as::<T>(key)` | 不检查：读取当前绑定（若其提供者处于活动状态） | 从不失败；返回 `Option` |
+
+受检访问读取的是插件的**已提交视图**（committed view）：插件启动时解析到的那些绑定。访问从插件自身提供的服务开始，沿祖先向上查找，在隔离边界处停止，返回插件所提交的第一个绑定。由于消费者读取的是已提交视图而不是实时存储，消费者自身被拆除期间，它的依赖仍然可读（[元理论](/docs/concepts-metatheory)中的定理 70）。根上下文（context）可以不受检查地访问实时存储。
+
+带类型的访问返回 `Svc<S>`，它解引用为 `S`，并记住发起访问的上下文（调用者）。`timer` 之类的服务利用调用者，把它们代你完成的工作记为*你的*插件的效应；调用者归属、拦截和事件见[服务](/docs/guide-services)。
+
+## 插件 [#plugins]
+
+插件就是论文中的组件（component）`(d, p, e)`：它依赖的服务（`d`）、它提供的服务（`p`），以及它运行时执行的效应（`e`）。编写插件有四种方式。
+
+### 在 async 函数上使用 `#[plugin]` [#plugin-macro]
+
+```rust
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct GreetConfig {
+    greeting: String,
+}
+
+#[plugin(crate = ::kardia, name = "hello", provide = ["greeting"])]
+async fn hello_world(ctx: Context, config: Arc<GreetConfig>) -> Result<()> {
+    ctx.provide_as("greeting", config.greeting.clone())?;
+    Ok(())
+}
+
+#[plugin(crate = ::kardia)]
+async fn user(ctx: Injected<(Database,)>) -> Result<()> {
+    let db = ctx.get::<Database, _>()?;
+    ctx.logger().info(format_args!("using {}", db.url));
+    Ok(())
+}
+```
+
+- 函数必须是 `async`，并返回 `Result<()>`。
+- 第一个参数是 `Context`（不声明依赖）或 `Injected<(A, B, …)>`（声明 `A`、`B`……，最多八个）。
+- 可选的第二个参数是配置，类型为 `Arc<Config>`。没有它时，插件不接受配置（`()`）。
+- 宏会生成一个以函数名的驼峰形式命名的插件类型（`hello_world` → `HelloWorld`，`user` → `User`），并保留原函数。
+- 参数：`name` 设置插件名（默认是连字符形式的函数名，即 `hello-world`），`provide` 列出它提供的键，`crate` 是 kardia crate 的路径。
+
+使用 `Injected<D>` 时，只有 `S` 在 `D` 中，`ctx.get::<S, _>()` 才能编译（`_` 是 `S` 在 `D` 中的位置，由编译器推断）。`Injected` 解引用为 `Context`，因此 `Context` 的其他方法都能使用；`ctx.context()` 给出不受检查的上下文。
+
+### 实现 `Plugin` [#plugin-trait]
+
+```rust
+struct DbPlugin;
+
+impl Plugin for DbPlugin {
+    const NAME: &'static str = "db";
+    type Config = DbConfig;
+
+    fn provide() -> Vec<Key> {
+        vec![Database::NAME.into()]
+    }
+
+    async fn apply(ctx: Context, config: Arc<DbConfig>) -> Result<()> {
+        let url = config.url.clone();
+        let logger = ctx.logger();
+        ctx.on_dispose(move || logger.info(format_args!("closing {url}")))?;
+        ctx.checkpoint()?;
+        ctx.provide(Database { url: config.url.clone() })?;
+        Ok(())
+    }
+}
+
+struct Report;
+
+impl Plugin for Report {
+    const NAME: &'static str = "report";
+    type Config = ();
+
+    fn inject() -> Inject {
+        Inject::of::<(Database, Cache)>()
+    }
+
+    async fn apply(ctx: Context, _: Arc<()>) -> Result<()> {
+        let (db, _cache) = ctx.deps::<(Database, Cache)>()?;
+        ctx.logger().info(format_args!("using {}", db.url));
+        Ok(())
+    }
+}
+```
+
+（`Key` 是 `kardia::Key`，`Arc` 是 `std::sync::Arc`。）该 trait 的定义：
+
+```rust
+pub trait Plugin: Send + Sync + 'static {
+    const NAME: &'static str;
+    type Config: DeserializeOwned + Send + Sync + 'static; // `()` for no config
+
+    /// Declared dependencies (d), with optional interception metadata.
+    fn inject() -> Inject { Inject::new() }
+
+    /// Declared provisions (p): metadata for tooling and the dependency-cycle check.
+    fn provide() -> Vec<Key> { Vec::new() }
+
+    fn apply(ctx: Context, config: Arc<Self::Config>) -> impl Future<Output = Result<()>> + Send;
+}
+```
+
+`provide()` 本身不提供任何东西：插件仍需在 `apply` 中调用 `ctx.provide`。这个声明让 kardia 能在插件启动时检测依赖环，并以警告的形式记录下来，列出环中的插件（它们保持等待状态），而不是让它们悄无声息地一直等待。
+
+### `Inject` [#inject]
+
+`Inject` 是一个有序的服务键列表，每个键可以带有拦截元数据：
+
+```rust
+Inject::of::<(Database, Cache)>()                  // from service types (tuples of up to eight)
+Inject::new().with("database").with_meta("logger", json!({ "level": 3 }))
+Inject::from(["database", "cache"])                // from keys; also from a Vec
+```
+
+插件在每个声明的服务都可用后启动，在某个服务被替换时重启，在某个服务消失时停止。
+
+### `PluginDef`：用闭包定义插件 [#plugin-def]
+
+`PluginDef` 是运行时（runtime）所存储的类型擦除形式。可以用闭包构造它：
+
+| 构造函数 | 配置 | 注册表（registry）身份 |
+|---|---|---|
+| `PluginDef::of::<P>()` | `P::Config` | 类型 `P`：每次调用得到相同的身份 |
+| `PluginDef::typed(f)` | 反序列化为闭包参数 `Arc<C>` | 每次调用都是新的 |
+| `PluginDef::new(f)` | 原始 `Value` | 每次调用都是新的 |
+
+再用构建器方法配置它：
+
+| 方法 | 设置 |
+|---|---|
+| `.name(name)` | 插件名，用于日志和日志记录器 |
+| `.inject(inject)` | 声明的依赖（任何能转换为 `Inject` 的值） |
+| `.provides(keys)` | 声明提供的服务 |
+| `.validate_with(f)` | 在解码之前对原始配置做检查或转换 |
+| `.tag(tag)` | 加载器等宿主（host）能识别的标记 |
+
+```rust
+let raw = PluginDef::new(|ctx: Context, config: Value| async move {
+    ctx.logger().info(format_args!("config: {config}"));
+    Ok(())
+})
+.name("raw")
+.inject(["database"]);
+```
+
+替换插件时，身份很重要：`root.registry().replace(&old, &new)` 会替换 `old` 的每个运行实例背后的实现，同时保留它们在树中的位置和它们的配置。热重载做的就是这件事；`provider_consumer` 示例演示了它。
+
+### `ctx.inject`：匿名插件 [#ctx-inject]
+
+```rust
+root.inject(Inject::of::<(Database,)>(), |ctx| async move {
+    let db = ctx.get::<Database>()?;
+    ctx.logger().info(format_args!("closure plugin using {}", db.url));
+    Ok(())
+})?;
+```
+
+## 启动插件 [#starting-plugins]
+
+`Context::new()` 创建一个根上下文。从某个上下文启动的插件成为它的子插件：
+
+| 方法 | 参数 |
+|---|---|
+| `ctx.plugin::<P>(config)` | 带类型的配置（`P::Config` 还必须实现 `Serialize`） |
+| `ctx.plugin_value::<P>(value)` | JSON 配置 |
+| `ctx.plugin_def(&def, value)` | 一个 `PluginDef` 和 JSON 配置 |
+| `ctx.inject(inject, f)` | 依赖和一个闭包 |
+
+它们都返回一个 `Fiber`，即该运行实例的句柄。启动插件本身是调用方插件的一个效应，因此父插件停止时子插件也会停止。停止根（`root.fiber().dispose().await`）会撤销一切。
+
+### `Fiber` 句柄 [#fiber-handle]
+
+纤程（fiber）句柄提供以下方法：
+
+| 方法 | 作用 |
+|---|---|
+| `state()` | `Pending`（等待依赖）、`Loading`、`Active`、`Unloading`、`Failed` 或 `Disposed` |
+| `settled().await` | 等到没有进行中的状态转换；插件出错时返回该错误 |
+| `update(value)?.await` | 替换配置（见下文） |
+| `update_with(value, no_save)` | 同上；`no_save: true` 跳过写回配置文件 |
+| `restart().await` | 卸载并重新加载插件 |
+| `dispose().await` | 停止并移除插件 |
+| `error()` | 上一次加载失败的错误 |
+| `context()`、`config()`、`name()`、`parent()`、`effects()` | 内省 |
+
+处于 `Failed` 状态的插件只能通过 `update`、`restart` 或替换来恢复。
+
+## 配置 [#configuration]
+
+配置以 JSON 形式进入（来自配置文件、`plugin_value` 或 `update`），每次加载时用 serde 解码一次，得到 `Config`：
+
+- 解码错误会指出失败的路径，例如 `invalid config: … (at items.1)`。
+- 未知字段会被容忍，除非配置类型显式启用 `#[serde(deny_unknown_fields)]`。
+- 缺失的配置（`null`）按空对象读取，因此所有字段都有默认值（`#[serde(default)]`）的配置类型可以接受它。`()` 接受任何值。
+
+`fiber.update(value)` 先校验新配置：被拒绝的配置不会影响运行中的实例。新配置随后交给插件的更新钩子；如果没有钩子接管，插件就会重启。
+
+```rust
+// inside apply: take updates of GreetConfig over instead of restarting
+ctx.on_update(|config: &GreetConfig| {
+    println!("new greeting: {}", config.greeting);
+    true
+})?;
+```
+
+`ctx.on_update_with` 作用相同，但它的钩子返回一个 future，`update` 会等待这个 future 完成。钩子是一个效应，因此会随插件一同消失。
+
+## 干净地停止 [#stopping-cleanly]
+
+插件通过其上下文注册的一切都是效应，在插件停止时被撤销：提供的服务、监听器、定时器、子插件，以及 `ctx.on_dispose(…)` 这样的普通撤销函数（disposer）。效应的完整介绍见[效应](/docs/guide-effects)；编写 `apply` 时有两点需要注意：
+
+- **获取资源后立即注册它的逆操作**，这样插件在启动过程中被停止时也不会泄漏任何东西。
+- **`ctx.checkpoint()?`** 是过时的加载在此停止的位置。如果插件的目标在本次加载开始后发生了变化（被更新、被释放或失去了某个依赖），它返回 `Err(Interrupted)`。从 `apply` 返回这个错误并不算失败：插件会卸载它目前为止注册的内容。kardia 自身从不取消正在运行的 `apply`。
+
+## 从配置文件加载你的插件 [#loading-your-plugins-from-a-config-file]
+
+[加载器](/docs/guide-loader)（loader）负责解析每个条目的 `name`。要从配置文件加载你自己的插件，把它们注册到一个 `kardia::loader::Catalog` 中，再传给 `Loader::plugin`：
+
+```rust
+use kardia::fs::FsPlugin;
+use kardia::prelude::*;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let root = Context::new();
+    root.plugin::<FsPlugin>(())?; // needed by `watch: true`
+
+    let catalog = kardia::catalog(); // every built-in plugin
+    catalog.register::<Greeter>(); // under its NAME
+    catalog.register_def("db", db()); // a PluginDef under any name
+    catalog.alias("my-greeter", "greeter"); // a second name
+
+    root.plugin_def(&Loader::plugin(catalog), Value::Null)?.settled().await?;
+    let loader = (*root.get::<Loader>()?).clone();
+    let entry = json!({ "name": "include", "config": { "path": "app.yml", "watch": true } });
+    loader.create(entry, None, None).await?;
+
+    tokio::signal::ctrl_c().await?; // tokio's "signal" feature
+    root.fiber().dispose().await
+}
+```
+
+- `kardia::catalog()` 包含除 `hmr` 以外的所有内置插件（`hmr` 需要一个模块图，见[热重载](/docs/guide-hot-reload)），每个插件同时以自己的名字和对应的 TypeScript 包名注册；`kardia::loader::builtins()` 只包含 `group`。
+- 不在目录中的条目名会以 `ModuleNotFound` 失败，错误位置指向该条目的 `name`。
+- `Loader::plugin` 接受任何 `kardia::loader::Resolver`，`Catalog` 就是其中一种。`kardia` 可执行文件使用自己的解析器，对不是内置插件的名字回退到访客模块：完整的配置方式（包括 `hmr`）见 [`crates/kardia/src/main.rs`](https://github.com/licyk/kardia/blob/main/crates/kardia/src/main.rs)。
+
+## 下一步 [#next]
+
+<Cards>
+  <Card title="服务" href="/docs/guide-services" description="调用者归属、拦截、事件与日志。" />
+  <Card title="效应" href="/docs/guide-effects" description="效应、撤销函数、效应作用域与拆除。" />
+  <Card title="加载器" href="/docs/guide-loader" description="在 Rust 中使用条目、分组、隔离与 include。" />
+  <Card title="API 设计" href="/docs/development-design" description="插件 API 为什么是现在这个样子。" />
+</Cards>

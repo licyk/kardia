@@ -1,0 +1,239 @@
+---
+title: "Implementation in the paper"
+description: "Paper §5: what the paper says Cordis does, from the theory-to-runtime table (Table 2) through Algorithms 1–10 for effects, coeffects, the lifecycle, the loader and HMR, to the Koishi case study."
+---
+
+This page records what the *paper* ([arXiv:2608.25512](https://arxiv.org/abs/2608.25512), §5) says Cordis does: Algorithms 1–10 and Table 2. It sits between theory and design. The actual TypeScript code differs in several details; those differences are catalogued on [Paper vs. code](/docs/reference-paper-vs-code), and the code itself is described in the [Cordis reference](/docs/reference).
+
+Cordis is a **meta-framework**: it prescribes no domain (no routing, ORM or UI); its only responsibility is universal dynamic-composition semantics. It has three tiers:
+
+1. the **core library**: effect and coeffect systems (§5.1);
+2. the **component loader**: configuration reconciliation and HMR (§5.2);
+3. **application frameworks**, for example Koishi (§5.3).
+
+## Table 2 – theory ↔ runtime
+
+| Theory | Runtime |
+|---|---|
+| `Γ∞` | `ctx`, the first-class context |
+| `γ ∈ Γ` | the context tree plus everything the running system touched |
+| `𝔈Γ`, `ℑΓ` | effect callback returning / yielding inverses |
+| `effect(e)` | `ctx.effect(callback)` |
+| `Σ`, `Σ_iso`, `Σ_inter` | `ctx[@@store]`, `ctx[@@isolate]`, `ctx[@@intercept]` (symbol-keyed slots) |
+| get / set | `ctx.get(key)`, `ctx.set(key, value)` |
+| isolate / intercept | `ctx.isolate(key, realm)`, `ctx.intercept(key, metadata)` |
+| fiber `⟨d,p,e,π,σ,τ,θ⟩` | `fiber` |
+| `dom(F)` | enumerated through `ctx.registry` |
+| name `n` | `fiber.uid` |
+| `d` | `fiber.inject` |
+| `p` | the component's `provide` |
+| `e` | `fiber.apply` |
+| `π` | `fiber.parent.fiber.uid` |
+| derived realization | `fiber.ctx`, the child context the fiber runs in |
+| `θ` | `fiber.state` (`LOADING` = Reloading; `FAILED` carries the error) |
+| accumulator `g` / recover | `fiber.dispose` |
+| `ω` | `fiber.committed` |
+| `provider_k` | an `Impl` whose provider fiber is `ACTIVE` |
+| target | `fiber.target`, recomputed by `refresh`; `⊥` is `INACTIVE` |
+| Future / inertia | `fiber.inertia`, handle of the transition in flight |
+| O-Insert, O-Retire | `ctx.use` and the inverse of its callback |
+| O-Remove | fiber dropped from its runtime, uid cleared |
+| L-Begin/Iter/Finish | `execute`'s iteration loop |
+| L-Divert | guard failing at an iteration boundary, or reload chaining into unload |
+| L-Leave | `refresh` marking the fiber `UNLOADING` |
+| L-Unload | `unload` and its inertial chaining |
+| guard | `unload` awaiting notified dependents |
+| failure | error recorded on the fiber, target set to `⊥` |
+
+For the same mapping extended to kardia's Rust types, see the concept mapping on [Development](/docs/development).
+
+## Effect tracking (§5.1.1, Algorithm 1)
+
+Every context mutation (provision, instantiation, listeners, …) reduces to one primitive, `ctx.effect`, so any operation performed through the context is automatically tracked.
+
+```text
+async function execute(callback, guard)
+    iter ← callback(); inverse ← id
+    while guard()
+        (value, done) ← await iter.next()
+        if value then inverse ← value ∘ inverse     // prepend ⇒ LIFO
+        if done then break
+    return inverse
+
+function effect(ctx, callback)
+    armed ← true
+    task ← execute(callback, () ↦ armed)
+    async function dispose()
+        if not armed then return
+        armed ← false            // halts in-flight iteration; at-most-once
+        recover ← await task
+        recover()
+    ctx.dispose ← dispose ∘ ctx.dispose    // parent composition (∂²Γ)
+    return dispose
+```
+
+- `effect` accepts both effect functions and iterators (ad-hoc polymorphism); the guard is checked at each iteration boundary.
+- **Not checked:** the witness (that the inverse really reverts) and the coeffect commutativity witness. These are author and provider obligations.
+- The component level reuses `execute` with a guard testing the stability of `fiber.target`.
+
+## Coeffect operations (§5.1.2, Algorithms 2–3)
+
+Each context carries three symbol-keyed slots: `@@store` (realm symbol → value), `@@isolate` (key → realm symbol) and `@@intercept` (key → metadata).
+
+```text
+get(ctx, key):   realm ← ctx[@@isolate][key];  return ctx[@@store][realm]
+set(ctx, key, v): ctx.effect(() ⇒ {
+                    realm ← ctx[@@isolate][key]; ctx[@@store][realm] ← v; notify(ctx, [key])
+                    return () ⇒ { delete ctx[@@store][realm]; notify(ctx, [key]) } })
+
+notify(ctx, keys):
+    for fiber in all_fibers
+        for key in keys
+            if key ∈ fiber.inject and fiber.ctx[@@isolate][key] = ctx[@@isolate][key]
+                refresh(fiber); affected ∪= {fiber}; break
+    return affected
+```
+
+- A binding counts as available only while the installing fiber is `ACTIVE`; a provider entering `UNLOADING` stops providing, so dependents recompute an unsatisfied target and begin their own teardown *while its bindings are still in place*.
+- `isolate` and `intercept` derive a child context overriding one inherited table; recovery is implicit (discard the child). `isolate` defaults to a freshly generated symbol; `intercept` merges new metadata over the inherited value (the new value wins).
+
+## Component lifecycle (§5.1.3, Algorithms 4–5)
+
+```text
+function use(ctx, component, config)
+    function callback()
+        refresh(fiber)
+        return () ⇒ { fiber.target ← ⊥; unload(fiber) }     // O-Retire
+    fiber ← Fiber(parent: ctx, inject: component.inject)
+    fiber.ctx ← ctx[fiber ↦ fiber]
+    fiber.apply ← () ↦ component.apply(fiber.ctx, config)  // config bound in
+    ctx.effect(callback)                                    // O-Insert as a tracked effect
+    return fiber
+
+function refresh(fiber)
+    target ← target(γ, n)
+    if target = fiber.target then return
+    fiber.target ← target
+    if fiber.inertia then return                          // transition in flight: inertial
+    if target ≠ ⊥ then fiber.state ← LOADING;   fiber.inertia ← task(reload(fiber))
+    else               fiber.state ← UNLOADING; fiber.inertia ← task(unload(fiber))   // L-Leave
+
+async function reload(fiber)
+    target0 ← fiber.target
+    fiber.committed ← resolve(fiber.inject)               // commit the view
+    recover ← await execute(fiber.apply, () ↦ fiber.target = target0)
+    fiber.dispose ← recover ∘ fiber.dispose
+    if fiber.target = target0 then
+        fiber.state ← ACTIVE; notify(fiber.ctx, provided(fiber)); fiber.inertia ← null
+    else
+        fiber.state ← UNLOADING; fiber.inertia ← task(unload(fiber))
+
+async function unload(fiber)
+    await all(notify(fiber.ctx, provided(fiber)).map(f ↦ f.await()))   // the guard: drain dependents
+    await fiber.dispose(); fiber.dispose ← id; fiber.committed ← ⊥
+    if fiber.target = ⊥ then fiber.state ← INACTIVE; fiber.inertia ← null
+    else fiber.state ← LOADING; fiber.inertia ← task(reload(fiber))
+```
+
+How `refresh`, `reload` and `unload` chain into one another:
+
+<Mermaid chart={"flowchart LR\n  R[\"refresh: target changed\"] -->|\"inertia in flight\"| W[\"wait: the running transition re-checks\"]\n  R -->|\"target ≠ ⊥\"| L[\"reload: LOADING\"]\n  R -->|\"target = ⊥\"| U[\"unload: UNLOADING\"]\n  L -->|\"target unchanged\"| A[\"ACTIVE, notify dependents\"]\n  L -->|\"target changed\"| U\n  U -->|\"target = ⊥\"| I[\"INACTIVE\"]\n  U -->|\"target ≠ ⊥\"| L"} />
+
+Footnote 2 addresses Rust explicitly: *"with lazy scheduling (e.g. Python coroutines, Rust futures) the host must spawn the task for it to progress"*. The algorithms write `create_task` out for language independence.
+
+<Callout type="info">
+**In kardia:** transitions and asynchronous effect bodies are spawned as tokio tasks, so they progress without being polled by the caller, and they are never dropped half-way. All lifecycle bookkeeping happens in short critical sections under one state lock per root; no user code runs while the lock is held. See [Concurrency](/docs/development-concurrency).
+</Callout>
+
+- `fiber.target` is a digest tupling the uid of each declared key's provider. A **uid is never reused**, so a replaced provider is never mistaken for the old one even if the values are equal. Consequently a provider overwriting its own binding *in place* is not observed: to propagate a replacement, withdraw and re-install.
+- There are two levels of checking: the transition level (`reload`/`unload` check the target at completion, giving inertial chaining) and the iteration level (`execute` checks at every boundary, giving partial rollback).
+- Three lines carry Theorem 70: commit at reload start, and discard the committed view only after every inverse; mark `UNLOADING` before scheduling the task; `unload` waits for each notified dependent. The wait sits **before** the whole recovery, since `fiber.dispose` initiates a fiber's effects concurrently.
+- Termination follows Theorem 73 ([Metatheory](/docs/concepts-metatheory)): the provider graph is traversed on demand.
+
+## Context access (§5.1.4, Algorithm 6)
+
+Besides reflective `ctx.get`/`ctx.set`, coeffects are read as **properties** (`ctx[key]`) through a JavaScript `Proxy`:
+
+```text
+function resolve(ctx, key)
+    fiber ← ctx.fiber
+    repeat
+        if key ∈ fiber.committed then return fiber.committed[key]
+        if key ∈ fiber.inject then throw INACTIVE_ACCESS
+        if fiber = root then throw UNDECLARED_ACCESS
+        fiber ← fiber.parent.fiber
+```
+
+Unlike `ctx.get` (which never fails), the proxy resolves against the accessing fiber's **committed view** and enforces the specification at the point of use. Reading the view rather than the store is what keeps a dependency readable during the consumer's own teardown (Theorem 70). The check is made at runtime but, since `inject` is static, could be made at compile time (§6.4, for example with Rust procedural macros or traits; see [Discussion and related work](/docs/concepts-related-work)).
+
+<Callout type="info">
+**In kardia:** there is no proxy. `ctx.get::<S>()` performs Algorithm 6 against committed views and fails with `AccessError::Undeclared`, `AccessError::Inactive` or `AccessError::TypeMismatch`; `ctx.live::<S>()` is the reflective read of the live store, which never fails for an undeclared key. The compile-time check is there too: a `#[plugin]` function taking `Injected<(A, B)>` declares `A` and `B`, and `get::<S, _>()` on it does not compile for an undeclared `S`. See [Services](/docs/guide-services) and [Plugins](/docs/guide-plugins).
+</Callout>
+
+## Component loader (§5.2)
+
+### Declarative configuration (§5.2.1)
+
+**Definition 81 – entry:** `id` (stable reconciliation key), `url` (component module), `isolate`, `intercept`, `config`, `disabled`. An entry is a faithful specification because it records exactly what the support set reads: `disabled` → `τ`, tree parent → `π`, `url` → `(d, p)`. Entries form a **configuration tree**; `@cordisjs/group` loads a list of child entries; `@cordisjs/include` grafts an external YAML or JSON file. Binding is **bidirectional**: a component that revises its own config or disables itself has the change written back.
+
+**Reconciliation** is incremental, justified by Theorem 80 (the endpoint is a function of the final config), Theorem 73 (it quiesces), Corollary 69 (rebuilding one entry leaves its neighbours untouched) and Theorem 70 (entries can be instantiated together, and a fiber waits at L-Begin, so **modules are loaded concurrently**). Changes are dispatched per field:
+
+| Field changed | Action |
+|---|---|
+| `id`, `url` | rebuild the entry |
+| `isolate` | reassign realms (Algorithm 7) |
+| `intercept` | update in place (consulted at read time; no reload) |
+| `config` | hand to the component, which typically diffs and reloads only on a material change. A group's config is its child list, so it gets a keyed diff over child ids, recursing |
+| `disabled` | unload when set, reload when cleared |
+
+**Managed realms.** `isolate: true` gives a *local* realm private to the entry, tagged by its id and carried along when the entry moves; `isolate: "name"` gives a *global* realm shared by every entry naming that string. A realm is discarded once no entry names it.
+
+**Algorithm 7 – realm reassignment with delimiters.** There is one delimiter symbol `δ_k` per key; each context stores a tag under `δ_k`, inherited by descendants and redrawn on each reassignment, so that `γ′[δ_k] = d₁ ⇔ γ′` derives from the entry's context.
+
+```text
+patch_isolation(entry, ρ′):
+    ρ ← entry.ctx[@@isolate]; store ← entry.ctx[@@store]
+    Δ ← {k | ρ(k) ≠ ρ′(k)}
+    for k in Δ: entry.ctx[δ_k] ← fresh tag
+                diff[k] ← (ρ(k), ρ′(k), entry.ctx[δ_k], store[ρ(k)].fiber.ctx[δ_k])
+    entry.ctx[@@isolate] ← ρ′
+    reload(entry.fiber)
+    for k in Δ: (s1,s2,d1,d2) ← diff[k]
+                if d1 = d2 and store[s1] and not store[s2]:     // binding is the entry's own
+                    store[s2] ← store[s1]; delete store[s1]
+    affected(fiber, k) := fiber.ctx[@@isolate][k] ∈ {s1,s2} and (fiber.ctx[δ_k] = d1) ≠ (d2 = d1)
+    notify(entry.ctx, Δ, affected)
+```
+
+A dependent gains or loses the binding exactly when the move separates it from the provider.
+
+<Callout type="info">
+**In kardia:** the declarative loader is the `kardia-loader` crate (entries, groups, realms and a plugin `Catalog`), and file-backed include with two-way sync is `kardia-include`. See [Loader](/docs/guide-loader) and [Loader internals](/docs/development-loader).
+</Callout>
+
+### Hot module replacement (§5.2.2)
+
+Because a fiber bounds all of a component's effects, a module that is a component can be replaced through fiber operations alone, with **no developer-annotated acceptance boundaries** (unlike Webpack or Vite).
+
+<Steps>
+<Step>
+**Phase 1 – classification (Algorithm 8).** The inputs are `stashed` (the changed files) and `externals` (non-replaceable modules, whose change needs a full restart). A fixed point over `get_imports`: a pending module is *accepted* if one of its imports is accepted, and *declined* if all its imports are declined; leftovers (cycles) default to declined.
+</Step>
+<Step>
+**Phase 2 – stale-entry detection (Algorithm 9).** For each entry, collect the transitive imports of `entry.url`, stopping at declined modules; if the tree meets `accepted`, the entry is stale and its tree is folded into `accepted`.
+</Step>
+<Step>
+**Phase 3 – transactional reload (Algorithm 10).** Invalidate the caches of accepted modules (backing them up), re-import each stale entry and swap in a fresh fiber; on any error, restore the caches and rebuild every stale entry from the backup, then rethrow. The system never enters a half-reloaded state. (On Node.js both the ESM and the CJS caches are cleared.)
+</Step>
+</Steps>
+
+<Callout type="info">
+**In kardia:** Rust has no module registry, so `kardia-hmr` keeps its own `ModuleGraph`, loaded from a `ModuleSource` (WebAssembly, dynamic libraries or child processes), and replaces the plugins a changed module exports through `registry.replace`. Changed host modules are reported for a restart instead of being applied. A failed import aborts only its own unit (the plugins whose modules it shares), whose cache entries are restored, while the other units are applied. See [Hot reload](/docs/guide-hot-reload) and [Loader internals](/docs/development-loader).
+</Callout>
+
+## Case study: Koishi (§5.3)
+
+- Koishi is a chatbot framework, 4+ years old, with more than 4000 community plugins (IM adapters, database drivers, consoles, features); its web console is a second, independent Cordis application in the browser. The model is therefore **expressive** (sufficient for a production system) and **general** (no domain or runtime presupposed).
+- Disabling a plugin from the console reverts its effects in place; HMR re-applies edited plugins on save while preserving caches and connections elsewhere. Authors get ordered cleanup without writing an uninstall path.
+- There is genuine dependency topology (adapters, databases, features). Reconfiguring a provider reactivates only the dependents whose resolved dependency changed; a plugin with an unavailable dependency waits without erroring.
+- **Threats to validity:** a single ecosystem, a single language, observational evidence; measuring overhead and productivity is future work.

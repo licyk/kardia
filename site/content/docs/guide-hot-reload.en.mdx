@@ -1,0 +1,189 @@
+---
+title: "Hot reload"
+description: "Reload guest modules in place with the hmr plugin: configure watch mode, set up a module graph, run reconcile transactions, and understand how failures are handled."
+---
+
+Plugins compiled into the binary can be reconfigured live, but changing their code needs a restart. **Guest plugins** are separate modules that the `hmr` plugin (`kardia-hmr`) can reload in place: when a module changes, the plugins it exports are replaced behind their running fibers, and the rest of the app follows.
+
+Rust has no module registry, so the host owns one: a `ModuleGraph` loads module code from a `ModuleSource`. The `Hmr` service reloads changed modules and replaces the plugins they export in place through [`registry.replace`](/docs/guide-effects#replace); with `watch.enabled` (and the `fs` service) it does so as files change. How to write the modules themselves is on [Guest plugins](/docs/guide-guests); how the reconciliation is built is on [Loader internals](/docs/development-loader), and the TypeScript original on [HMR](/docs/reference-hmr).
+
+## Watching guest modules [#config]
+
+To reload guest modules as they change, add an `hmr` entry with watch mode to the config file:
+
+```yaml
+- id: hmr
+  name: hmr
+  config:
+    base: .                  # relative to this file; the default
+    watch:
+      enabled: true
+      files: [plugins]       # patterns relative to base; `!` excludes
+      debounce: 100          # ms; changes in one window reload together
+- id: hello
+  name: ./plugins/hello.wasm
+```
+
+`HmrConfig`:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `base` | `.` | The base directory. A relative `base` resolves against the directory of the config file that loads the `hmr` entry (as the TypeScript code does with `ctx.baseUrl`), else against the working directory. `watch.files` and logged paths are relative to it. |
+| `watch.enabled` | `false` | Reload on file changes. Requires the `fs` service. |
+| `watch.files` | `[".", "!**/.*", "!**/target"]` | Files to watch: patterns relative to `base`, as the `fs` watch filter takes them. A leading `!` excludes, and the last pattern matching a path or one of its ancestors decides. |
+| `watch.debounce` | `100` | Changes within this many milliseconds are reloaded together. |
+
+With `watch.enabled` and a non-empty `files` list, `hmr` logs `watching [..] in <base>` and starts a watch below itself that waits for `fs`. If `fs` is there, the watch is set up before `hmr` settles; a failure to set it up is logged.
+
+The `kardia` binary registers `hmr` (also as `@cordisjs/plugin-hmr`) and resolves any entry name that is not a built-in plugin as a guest module relative to the config file, so `examples/kardia.yml` hot-reloads `plugins/hello.wat`:
+
+```sh
+cargo run -p kardia -- examples/kardia.yml
+# edit the greeting in examples/plugins/hello.wat: the old instance logs its
+# goodbye, then the new one logs your greeting
+```
+
+## Setting up hot reload in your app [#setup]
+
+A `ModuleGraph` is also a `Resolver`, so the loader can resolve entry names through it; `Hmr::plugin(graph)` is the `hmr` plugin over the same graph:
+
+```rust
+use kardia::hmr::{Hmr, ModuleGraph, WasmSource};
+use kardia::prelude::*;
+
+let root = Context::new();
+let graph = ModuleGraph::new(WasmSource::new());
+root.plugin_def(&Loader::plugin(graph.clone()), Value::Null)?.settled().await?;
+root.plugin_def(&Hmr::plugin(graph), Value::Null)?.settled().await?;
+
+let loader = (*root.get::<Loader>()?).clone();
+loader.create(json!({ "name": "/app/plugins/greeter.wasm" }), None, None).await?;
+loader.settled().await;
+```
+
+To mix built-in plugins and guest modules, resolve through a catalog first and the graph second, as the binary does (see [The loader](/docs/guide-loader#setup)). To reload through the loader's config file, register `Hmr::plugin(graph)` in the catalog under `hmr` and add an `hmr` entry.
+
+## Modules and the module graph [#graph]
+
+A **module** is identified by a `ModuleId`, an absolute path (`/app/plugins/foo.wasm`). Its code comes from a `ModuleSource`:
+
+```rust
+pub trait ModuleSource: Send + Sync + 'static {
+    /// Loading the same id again yields its current code.
+    fn load(&self, id: &str) -> Result<ModuleCode>;
+}
+
+pub struct ModuleCode {
+    pub deps: Vec<ModuleId>,                              // its static dependencies
+    pub evaluate: Arc<dyn Fn(&Imports) -> Result<Exports> + Send + Sync>,
+}
+
+pub enum Exports {
+    None,
+    Plugin(PluginDef),
+    Value(Value),
+}
+```
+
+A module's `evaluate` receives its dependencies' exports through `Imports` (`imports.get(id)`, or `imports.value(id)` for a dependency that exports a value) and returns what it exports itself. `ModuleCode::new(deps, evaluate)` builds one. Besides custom sources, three backends load guest modules from files: `WasmSource`, `DylibSource` and `ProcessSource` (see [Guest plugins](/docs/guide-guests)).
+
+```rust
+/// Module code by path; writing a module changes what its next load evaluates.
+#[derive(Clone, Default)]
+struct Files(Arc<Mutex<HashMap<String, ModuleCode>>>);
+
+impl ModuleSource for Files {
+    fn load(&self, id: &str) -> Result<ModuleCode> {
+        self.0.lock().get(id).cloned().ok_or_else(|| Error::msg(format!("cannot find module {id}")))
+    }
+}
+
+files.0.lock().insert("/app/greeter".into(), ModuleCode::new(vec![], |_| Ok(Exports::Plugin(greeter_v1()))));
+```
+
+`ModuleGraph` is the host-owned module registry, what Node's module caches are to the reference implementation: the loaded modules, their edges and their exports.
+
+| Method | Does |
+|---|---|
+| `ModuleGraph::new(source)` | a graph over a source |
+| `graph.import(id)` | imports a module and its dependencies, dependencies first, and caches them. In a cycle, a module that is still being imported is seen as `Exports::None`. A module that fails to load is not kept, so its next import tries again. |
+| `graph.resolve(name)` (as `Resolver`) | imports `name` and returns its plugin; fails with `module <name> does not export a plugin` otherwise |
+| `graph.mark_host(ids)`, `graph.is_host(id)` | host modules (below) |
+| `graph.is_loaded(id)`, `graph.loaded()` | what is loaded |
+| `graph.edges(id)`, `graph.exports(id)` | a loaded module's dependencies and exports |
+
+### Host modules [#host]
+
+Statically linked plugins are **host modules** by construction: the program itself can only change by restarting it, while live *re*configuration of those plugins remains fully supported by the loader. If you model parts of the host as modules in the graph, mark them with `graph.mark_host(ids)`. A change to a host module is not applied; it is reported in `ReconcileResult::skipped_host_modules`, and watch mode warns:
+
+```text
+skipped host modules:
+- src/app.rs
+```
+
+Edges from host modules do not make them reload with the modules they import.
+
+## Reconcile transactions [#reconcile]
+
+`HmrExt::reconcile` runs one **transaction** on the `Hmr` service. Its callback reports the changed files or directories, as absolute paths; every loaded module at or below one of them (comparing whole path segments) is reloaded:
+
+```rust
+use kardia::hmr::{Hmr, HmrExt};
+
+let hmr = root.get::<Hmr>()?;
+let changed = vec![PathBuf::from("/app/plugins/greeter.wasm")];
+let result = hmr.reconcile(move || async move { Ok(changed) }).await?;
+for failure in &result.import_failures {
+    eprintln!("not reloaded: {:?}: {}", failure.modules, failure.error);
+}
+loader.settled().await;
+```
+
+- A root that is not absolute fails the transaction: `invalid root <path>, expected an absolute path`.
+- Transactions run one at a time.
+- Starting a transaction inside another one (from its callback, or from a plugin the running transaction is reloading) fails with `cannot start a transaction inside another transaction`.
+
+A transaction follows the reference code (not the paper's Algorithm 10):
+
+<Mermaid chart={"flowchart TD\n  A[\"match loaded modules below the changed roots\"] --> B[\"accept: changed modules and their importers\"]\n  B --> C[\"stale plugins: registered plugins whose modules reach an accepted module\"]\n  C --> D[\"evict their modules from the cache\"]\n  D --> E[\"stage 1: import every stale plugin again (the only fallible step)\"]\n  E --> F[\"units: plugins sharing an evicted module commit or abort together\"]\n  F --> G[\"aborted units: restore their cache entries\"]\n  F --> H[\"stage 2: registry.replace each committed plugin in place\"]\n  H --> I[\"stage 3: settle the replaced fibers concurrently\"]"} />
+
+1. **Match.** Changed modules are the loaded modules at or below the reported roots; host modules among them are only reported.
+2. **Accept.** The changed modules and every module that imports an accepted one (except host modules) are accepted.
+3. **Stale plugins.** Every registered plugin whose module closure reaches an accepted module is stale. A plugin exported by several modules (a module re-exporting it, for example) takes its replacement from the outermost exporter, the one no other exporter imports.
+4. **Stage 1: import.** The stale plugins' modules are evicted and every stale plugin is imported again. This is the only fallible step; validity is checked here, where only the module cache has changed, so the later stages need no rollback. Nothing is restored before every plugin has been imported, so no new module links against an evicted old one. Import errors are logged.
+5. **Units.** Plugins whose closures (in the old or the new graph) share an evicted module form a **unit** that commits or aborts together. A unit with a failed import is aborted: nothing in it is applied, and its modules' cache entries are restored; the other units are not affected.
+6. **Stage 2: replace.** Each committed plugin is replaced in place through `registry.replace`, logged as `reload plugin at <module>`.
+7. **Stage 3: settle.** The replaced fibers settle concurrently. There is no rollback: a plugin that fails to apply stays failed, as on a cold start.
+
+### `ReconcileResult` [#result]
+
+| Field | Contents |
+|---|---|
+| `settled_fibers: Vec<Fiber>` | the fibers that were replaced and have settled (a fiber below another reloaded fiber may have been disposed by it, and is left out) |
+| `import_failures: Vec<ImportFailure>` | one per aborted unit |
+| `skipped_host_modules: Vec<ModuleId>` | changed host modules, which only a restart applies; the other changes are applied |
+
+An `ImportFailure` has `modules` (the evicted modules of the unit, sorted, whose cache entries were restored) and `error` (why a module of the unit failed to import, or `invalid plugin at <module>, expect a plugin export` when it no longer exports a plugin).
+
+## How a reload replaces a plugin [#replacing]
+
+A replacement goes through `registry.replace`, so each fiber of the plugin keeps its identity, parent, configuration and loader entry; only the implementation behind it changes. The fiber unloads (its effects, including the old guest instance, are disposed) and then loads the new implementation. For `hello.wat`, the old instance logs its goodbye and then the new one logs the new greeting. A guest gets a new instance with fresh state.
+
+What can go wrong, and what happens:
+
+| Failure | Outcome |
+|---|---|
+| A changed module does not load, or no longer exports a plugin | Its unit is aborted: nothing in it is reloaded and the old module stays cached, so the running plugins keep their old code. Other units reload. In watch mode, its files are retried with the next batch. |
+| The new implementation fails in `apply` | The fiber is `Failed`, as on a cold start; there is no rollback. A later reload of the module (or an `update` of the entry) recovers it. |
+| The transaction itself fails (a bad root, a nested transaction, a failing callback) | Nothing is reloaded; the error is returned (and in watch mode logged as a warning, with all files retried). |
+
+## Watch mode [#watch]
+
+In watch mode, `hmr` watches `base` through the `fs` service and turns file changes into transactions:
+- Each change is logged at debug level (`change detected at <path>`, relative to `base`).
+- Changes are collected until `debounce` milliseconds pass without another one; the window's changes reload together as one batch (`reconcile N changed files`).
+- Batches run one at a time, and each batch takes over the files retained by the one before:
+  - the files of failed imports are retried with the next batch (their import failures have been logged by the transaction);
+  - if the transaction itself fails, all its files are retried, and the error is logged as a warning;
+  - changes to host modules are only reported (`skipped host modules: …`), since restarting is up to the host.
+- The watch is an effect below the `hmr` fiber and ends with it.

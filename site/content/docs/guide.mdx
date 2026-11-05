@@ -1,0 +1,26 @@
+---
+title: "使用指南"
+description: "如何使用 kardia：配置文件、插件、服务、效应、加载器、热重载与访客插件。"
+icon: BookOpen
+---
+
+本指南讲解如何用 kardia 构建应用：从 `kardia` 可执行文件的配置文件，到用 Rust 编写的插件（plugin），再到可以原地重新加载的访客插件（guest plugin）。阅读前请先[安装](/docs/installation) kardia；[快速开始](/docs/quick-start)先展示了一个运行中的应用。
+
+<Cards>
+  <Card title="配置文件" href="/docs/guide-configuration" description="条目及其字段、表达式、双向同步与内置插件。" />
+  <Card title="编写插件" href="/docs/guide-plugins" description="用 Rust 编写服务和插件：#[derive(Service)]、#[plugin]、PluginDef，以及为加载器注册插件。" />
+  <Card title="服务" href="/docs/guide-services" description="提供和使用服务、调用者归属、拦截、事件与日志。" />
+  <Card title="效应" href="/docs/guide-effects" description="可撤销效应、撤销函数、效应作用域，以及插件如何被拆除。" />
+  <Card title="加载器" href="/docs/guide-loader" description="在 Rust 中驱动条目、分组、隔离、include 与目录。" />
+  <Card title="热重载" href="/docs/guide-hot-reload" description="原地重新加载访客模块，以及监视模式。" />
+  <Card title="访客插件" href="/docs/guide-guests" description="WebAssembly、动态库与进程访客，以及访客接口。" />
+</Cards>
+
+## 我需要哪一页？ [#which-page-do-i-need]
+
+- **用配置文件运行应用**：[配置文件](/docs/guide-configuration)，然后是[热重载](/docs/guide-hot-reload)。
+- **编写编译进应用的插件**：[编写插件](/docs/guide-plugins)、[服务](/docs/guide-services)和[效应](/docs/guide-effects)。
+- **围绕加载器构建自己的宿主（host）**：[加载器](/docs/guide-loader)。
+- **编写无需重启应用即可重新加载的插件**：[访客插件](/docs/guide-guests)。
+
+本指南描述如何使用 kardia。为什么这样设计见[开发](/docs/development)，背后的理论见[概念](/docs/concepts)。

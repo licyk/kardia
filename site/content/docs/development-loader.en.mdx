@@ -1,0 +1,88 @@
+---
+title: "Loader, include and dynamic modules"
+description: "Internals of kardia-loader, kardia-include and kardia-hmr: the Rust adaptations of the Cordis loader, the file-backed include and the hot-reload algorithm with its module backends."
+---
+
+How the Cordis loader, include and HMR packages are ported: the data model, the entry state machine, file sync and the module graph. For how to use them, see the guide pages [Loader](/docs/guide-loader), [Hot reload](/docs/guide-hot-reload) and [Guest plugins](/docs/guide-guests); for the TypeScript originals, see [Loader](/docs/reference-loader), [Include and group](/docs/reference-include) and [HMR](/docs/reference-hmr) in the Cordis reference.
+
+## `kardia-loader` [#loader]
+
+Port of `packages/loader` with these Rust adaptations:
+
+| Topic | Adaptation |
+|---|---|
+| **Data model** | `EntryOptions` as a serde struct with `#[serde(flatten)] extra: IndexMap<String, Value>` (tolerate unknown keys); `Option<Option<T>>`/`Value::Null` for "delete on merge"; `IsolateLabel::{Private, Shared(String)}`; `Disabled::{Bool, Expr}`. |
+| **Id-addressed documents instead of object identity** | TS relies on `entry.options === group.data[i]`; Rust keeps the group's `Vec<EntryOptions>` authoritative and entries hold ids; "came from the file" is a provenance flag, not `===`. |
+| **Entry state machine** | `update / _patchContext / _reconcile / init / _init / _start` ported 1:1 with the "re-check after every await" style (`fn still_current(&self, snap) -> bool`), `_initTask` as `Option<Shared<..>>`. |
+| **Two fibers per entry with `inject`** | The outer dependency holder + the inner plugin are kept: the outer `apply` resolves the plugin from the catalog, hits `ctx.checkpoint().await?`, then starts the inner fiber. |
+| **Catalog** | Replaces module import: `Catalog::register::<P>()` / `register_alias("@cordisjs/plugin-group", Group)`; a missing name yields `ModuleNotFound` located at the entry's `name`. |
+| **Managed realms** | `LocalRealm`/`GlobalRealm` as `RealmId`s with labels; the 7-step `patch-context` algorithm ported faithfully, with the delimiter test computed directly by walking scope parents (`scope.is_within(entry_marker)`) instead of temporary symbols; provider migration without restart; blocked moves tracked in `Impl::realm`. **Fix** the realm-GC early `return` (use `continue`). |
+| **Self-dispose / self-update write-back** | Core passes a `DisposeReason { SelfRequested, Parent, Loader }` instead of the TS `_disposing` flag + unregister-before-dispose trick (a deliberate breaking simplification). |
+| **`loader` await barrier** | `Loader::settled().await` and an availability check driven by an atomic task counter. |
+| **Validation** | `validate_options(&Value, deep) -> Vec<Issue>` at the boundary (deep for API calls, shallow for file input). |
+| **Expressions** (`!!js`) | JS `with(ctx) eval` cannot be ported. Decision point ([Risks](/docs/development-risks#risks)): adopt a side-effect-free expression language (recommended: CEL, or a small custom evaluator) whose identifiers resolve through `ctx.get_dyn(name)` and a serializable service view (`trait ExprValue { fn to_value(&self) -> Value }`), respecting the same evaluation-context table as the TS loader. Until then, `Expr` values are rejected with a clear validation issue. |
+
+<Callout type="info">
+Where `kardia-loader` differs from the table:
+
+- **Data model:** `EntryOptions` is a typed view read from options already accepted by `validate_options` (`EntryOptions::read`); the JSON object stays the source of truth, so unknown keys survive write-back without a `flatten` map. `IsolateLabel::{Private, Shared(String)}` and `Disabled::{Bool(bool), Expr(String)}` are as planned.
+- **Catalog:** `Catalog::register::<P>()`, `register_def(name, def)` and `alias(alias, name)` (not `register_alias`); `kardia_loader::builtins()` registers `group` and aliases `@cordisjs/plugin-group` to it, and `kardia::catalog()` adds the other built-in plugins under their names and their JavaScript package names.
+- **Checkpoint:** synchronous, `ctx.checkpoint()?`.
+- **Managed realms:** the delimiter test is `Context::is_within(..)` on contexts whose entry tables are tagged `Overlay` nodes; the realm-GC fix is in (`collect_realms` uses `continue`).
+- **Self-dispose:** `DisposeReason` was not introduced. The loader sets a per-entry `disposing` flag around its own `fiber.dispose()` call (`entry.rs`, `dispose_fiber`), the same pattern as the TS `_disposing` flag.
+- **Expressions:** implemented as a side-effect-free JavaScript subset (`kardia_loader::expr`) instead of CEL; identifiers resolve through the JSON views of services (`ctx.view(name)`, provided with `provide_serialized_as`), not through an `ExprValue` trait; see [Expressions](/docs/development-status#deviations).
+</Callout>
+
+## `kardia-include` [#include]
+
+- **Pure modules**, ported almost verbatim and unit-tested in isolation: `journal` (record, merge, flatten, apply, three-way `reconcile`; file wins), `patch` (insert/override patches, `PatchIndex` ownership, `route_journal`), anonymous id assignment.
+- **IO loop:** one task driven by `dirty_read/dirty_write` flags + `Notify`; latest-wins tree application; `flush()`.
+- **Parsing:** a YAML parser with spans and custom tags (`saphyr` family): `!!js` → `Value::Expr`; errors **and** warnings fatal; JSON via `serde_json` plus a spanned pass for locations.
+- **Atomic writes:** temp file in the same directory, stale-content check before every rename, bounded retry on `PermissionDenied`/`ResourceBusy`, read-only → keep journal in memory.
+- **Errors:** structured `ConfigFrame { id, file, line, col }` chains instead of rewritten stack strings.
+
+<Callout type="info">
+In the code, `serde_json::Value` has no expression variant: `!!js` becomes the object `{ "__jsExpr": "…" }` (`kardia_loader::EXPR_KEY`). Errors are `ConfigFileError` / `ConfigIssue` values whose locations are `file:line:col`, and the loader prints located frames as text (`at <id> (file:line:col)`) rather than a `ConfigFrame` type; see [Errors](/docs/development-status#errors).
+</Callout>
+
+## Dynamic modules and HMR (`kardia-hmr`) [#hmr]
+
+Optional, Phase 7. [Paper §6.4](/docs/concepts-related-work): *native code exposes no module registry, so introduction and retraction take the form of explicit dynamic linking (dlopen/dlclose) … WebAssembly … released when a native embedder (e.g. Wasmtime) drops it.* The plan separates the **algorithm** (portable) from the **module technology** (a backend):
+
+```rust
+pub trait ModuleSource: Send + Sync {
+    fn load(&self, id: &ModuleId) -> Result<LoadedModule, LoadError>;   // exports: Vec<PluginDef>, deps: Vec<ModuleId>
+}
+```
+
+<Callout type="info">
+In the code (`graph.rs`): `trait ModuleSource: Send + Sync + 'static { fn load(&self, id: &str) -> Result<ModuleCode>; }`. `ModuleId` is a `String` (an absolute path), `ModuleCode { deps: Vec<ModuleId>, evaluate }` evaluates against its dependencies' exports, and a module exports `Exports::{None, Plugin(PluginDef), Value(Value)}`. `ModuleGraph::new(source)` keeps an ordered table of loaded records (`deps`, `exports`) and the set of host modules.
+</Callout>
+
+- The host owns a `ModuleGraph { records: HashMap<ModuleId, ModuleRecord { deps, kind: Host|Dynamic, instance } > }` replacing Node's caches.
+- The Cordis reconcile algorithm is ported as pure graph code with tests from `reconcile.spec.ts`. This follows the **code**, not the paper's Algorithm 10 (see [HMR: paper vs. code](/docs/reference-hmr)).
+
+<Steps>
+<Step>Match changed files to loaded modules by path ancestry.</Step>
+<Step>Reverse-dependency acceptance: find the modules that must be reloaded.</Step>
+<Step>Group the affected fibers by runtime.</Step>
+<Step>Stage 1: load and validate everything.</Step>
+<Step>Build union-find units over the old ∪ new closures.</Step>
+<Step>Restore aborted units.</Step>
+<Step>Stage 2: `registry.replace` in place.</Step>
+<Step>Stage 3: settle concurrently.</Step>
+</Steps>
+
+Transactions are serialized, and re-entrancy is rejected via a task-local transaction id.
+
+Backends, in order of preference:
+
+1. **WASM components (wasmtime):** old and new instances coexist safely, dropping is sound, natural sandbox ([paper §6.3](/docs/concepts-related-work) bridge fibers). Cost: services cross a WIT boundary.
+2. **dylibs (`libloading`):** development-time only: same toolchain, each version loaded from a unique copied path, **never unloaded** (unloading Rust dylibs is unsound with TLS destructors and leaked `'static` references), C-ABI entry point.
+3. **Out-of-process plugins** (respawn = reload) via the service-broker/RPC pattern of [paper §6.2](/docs/concepts-related-work).
+
+Statically linked plugins are "host modules" by construction; changing them requires a process restart, while live *re*configuration remains fully supported by the loader.
+
+<Callout type="info">
+All three backends exist: `WasmSource` (core WASM modules, not WIT components), `DylibSource` and `ProcessSource`, sharing one JSON guest ABI, plus `kardia-guest` for writing guests in Rust. Watch mode is `HmrConfig { base, watch }`. The full account of how they differ from this plan is under [Dynamic modules](/docs/development-status#dynamic-modules).
+</Callout>

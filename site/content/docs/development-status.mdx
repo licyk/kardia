@@ -1,0 +1,105 @@
+---
+title: "状态与偏离"
+description: "kardia 的实现阶段及其退出标准、实现状态，以及实现偏离计划或 TypeScript 代码的每一处。"
+---
+
+计划按阶段执行，每个阶段以移植并通过 TypeScript 测试套件中对应的部分作为结束。所有阶段均已完成；本页记录这些阶段，以及结果偏离设计或 Cordis 的每一处。
+
+## 实现阶段 [#phases]
+
+| 阶段 | 范围 | 退出标准 |
+|---|---|---|
+| **0. 脚手架** | 工作区、crate、CI（fmt、clippy、test） | 空 crate 能够构建 |
+| **1. 效应与存储** | id、`Root`/`Context`/`Scope`、`IdTable`、效应（effect）引擎（`effect_sync`、`effect`、`EffectScope`、`EffectHandle`）、`provide`/`try_get_live`、isolate/intercept 叠加层；仅根纤程（fiber） | `dispose.spec` 已移植并通过 |
+| **2. 纤程与生命周期** | `Plugin` trait、注册表/运行时、`FiberData`、目标视图/已提交视图（committed view）、带惯性（inertia）的 refresh/reload/unload、两级守卫、失败、`update`/`restart`、实例化级联、`replace`、带检查的 `get`（算法 6）、依赖环警告 | 阶段 2 的 spec 通过；基于模型的属性测试（[测试](/docs/development-testing#model-based)）通过 |
+| **3. 服务与内置服务** | `Service`/`Svc<S>` 调用者归属、拦截元数据合并、带类型的事件 + 内部事件、日志器 + 导出器、`kardia-timer`、`kardia-logger-console` | 阶段 3 的 spec 通过；一个示例应用，包含一对提供者/消费者，并能热替换提供者 |
+| **4. 加载器** | `EntryOptions`、校验、`EntryTree`/`EntryGroup`/`Group`、条目状态机、外层/内层纤程、catalog、托管领域（realm）+ 迁移、回写钩子、`loader` 屏障；用加载器引导根的 `kardia` 二进制 | 加载器的 spec（表达式除外）通过 |
+| **5. Include 与 fs** | `kardia-fs` 监视器；`kardia-include` 的解析/日志（journal）/补丁/同步/原子写入/位置；与 `core/bin.js` 完全一致的 `kardia.yml` 引导 | include 与 fs 的 spec 通过；编辑 `kardia.yml` 能实时重新配置正在运行的应用 |
+| **6. 易用性** | `kardia-macros`：`#[plugin]`/`#[service]` 派生（NAME、inject 元组、扩展 trait），带类型依赖的未声明访问在编译期报错；可选的表达式语言 | 宏测试（trybuild） |
+| **7. 动态模块（可选）** | `ModuleSource`、`ModuleGraph`、移植的 HMR 协调（reconcile）；WASM 后端原型；dylib 开发后端 | 以内存中的来源移植 `reconcile.spec` |
+
+阶段 1–3 交付论文的核心库；4–5 交付论文的加载器；7 交付论文的 HMR。
+
+<Callout type="info">
+最终采用的名称：`try_get_live` 即 `live`，根通过 `Context::new()` 创建（没有公开的 `Root`），服务的派生宏是 `#[derive(Service)]`。阶段 3 的示例应用是 `crates/kardia/examples/provider_consumer.rs`（`cargo run -p kardia --example provider_consumer`）。
+</Callout>
+
+## 实现状态 [#status]
+
+上述所有阶段都已在 `crates/` 中实现（`cargo test --workspace`；`cargo run -p kardia -- examples/kardia.yml` 会从一个受监视的配置文件启动应用）。
+
+每个 TypeScript spec 的每个用例都已移植、确认已被覆盖，或判定为不适用。不适用的用例测试的是没有 Rust 对应物的 JavaScript 或 Node 机制：
+
+- 装饰器、原型和基于 Proxy 的可调用服务、`this` 绑定；
+- waterfall 和已弃用的 `dispatch` API；
+- Node 模块解析与加载器内部（`resolve`、`import`、`create`、`package-manager`、`loader-utils`）；
+- 文件 URL 与 Windows 盘符；
+- JavaScript 栈帧；
+- 对同一个异步迭代器的并发读取。
+
+0.1.0 版已在 crates.io 上以 [`kardia`](https://crates.io/crates/kardia) 和九个 `kardia-*` crate 的形式发布。
+
+CI（`.github/workflows/ci.yml`）在每次推送和拉取请求时，在固定的工具链（Rust 1.96.0）上运行 `cargo fmt --check`、将警告视为错误的 clippy 以及测试套件，因为 `kardia-macros` 的编译错误快照会随编译器而变化。推送 `v*` 标签会运行 `publish.yml`：先进行同样的检查，然后对 crates.io 上尚不存在的每个 crate 版本执行 `cargo publish --workspace`，并等待 crates.io 对新 crate 的数量限制过去。该工作流也可以手动启动，以继续一次中途停止的发布。[参与开发](/docs/development-contributing#releases)逐步描述了这两个工作流。
+
+## 偏离 [#deviations]
+
+以下是实现偏离本计划或 TypeScript 代码之处。其中三项较长，在表格下方各有一个小节。
+
+| 主题 | 实现 |
+|---|---|
+| 已退役的提供者 | 由[属性测试](/docs/development-testing#model-based)发现：退役一个纤程会立即解除其存活的提供，因此后继者可以在同一领域中提供服务，而旧的消费者仍在排空（它们通过自己的已提交视图读取）。TS 代码会一直保留该槽位直到排空结束，并使后继者失败。 |
+| 过期的加载 | 已退役纤程仍在进行中的加载可以注册逆操作（因此它获取的任何东西都不会泄漏），但不能注册提供。 |
+| 排空期间移除提供 | 推迟到提供者排空结束时，这样后代在自身清理期间仍能访问继承的服务，而无需依赖微任务的顺序。 |
+| 可重新指向的上下文 | 作用域节点携带其纤程；一次访问的纤程链从派生链上读出，因此移动一个条目也会移动它下面的纤程（TS 原型的行为）。条目表是可变的 `Overlay` 节点。 |
+| 带检查的类型化访问 | `Injected<D>::get::<S, _>()`（`_` 是 `S` 在 `D` 中被推断出的位置）；未声明的 `S` 无法通过编译。 |
+| 表达式 | 一个无副作用的 JavaScript 子集（`kardia_loader::expr`），作用于服务的 JSON 视图；不支持函数调用。 |
+| 错误 | 配置文件错误和加载器为条目记录的错误以文本形式携带 `file:line:col` 位置。见[错误](/docs/development-status#errors)。 |
+| 加载器 API | 解析父分组时，会等待插件仍在加载中的分组条目（它的分组只有在其 `apply` 运行后才存在）。 |
+| 服务间调用 | 服务通过它保存的上下文（它的定义处）解析自己的依赖，因此外层调用者的拦截元数据不会传到它进一步调用的服务（这些元数据保留在 `Svc::caller()` 上），而服务通过其保存的上下文创建的效应属于该服务的纤程。在 TS 中，二者都跟随使用处。 |
+| 事件 | `emit` 记录发生 panic 的监听器并继续；TS 让抛出异常的监听器中止分发。没有通用的 `waterfall`；由带类型的钩子（`on_config`、`on_update`）代替。 |
+| 日志器 | 消息由调用者格式化（`impl Display`），因此导出器收到的是已完成格式化的文本：没有 `%` 指令，也没有自定义格式化器。 |
+| 加载器钩子 | `loader/patch-context` 即 `Loader::on_patch_context(ctx, hook)`；`EntryHandle::init`；一个没有 Rust 对应物的 hmr 用例。见[加载器钩子](/docs/development-status#loader-hooks)。 |
+| 模型测试 | [属性测试](/docs/development-testing#model-based)以带随机延迟的真实 tokio 调度驱动，而不是确定性调度器。它们在每次运行期间检查顺序性，并在静止时检查保持性、恢复精确性和合流性（活跃纤程恰好是支撑集）。 |
+| 动态模块 | `ModuleSource` / `ModuleGraph` / `Hmr`，三个共享同一套 JSON 访客（guest）ABI 的文件后端（WASM、dylib、进程），`kardia-guest` SDK 以及监视模式。见[动态模块](/docs/development-status#dynamic-modules)。 |
+
+### 错误 [#errors]
+
+配置文件的解析错误和校验错误携带 `file:line:col`。
+
+加载器为某个条目记录的错误（选项与配置校验、`ModuleNotFound`、表达式失败）通过 `TreeBackend::locate` / `locate_expr` 定位：
+
+- 每个问题得到 `(at path, file:line:col)`；
+- 表达式失败得到一个 `at <path> (file:line:col)` 帧；
+- 条目以及每个有位置的祖先各得到一个 `at <id> (file:line:col)` 帧，
+
+它们以文本形式给出，而不是改写 JS 栈。
+
+include（配置文件引入）在值的所有者写下它们的地方定位这些值（所有者的文件，或其父级文件中的一个补丁），别名定位到其锚点，表达式中的字符穿过 YAML 转义定位。运行时更改的值不会被定位。`Entry::evaluate` 未公开。
+
+### 加载器钩子 [#loader-hooks]
+
+`loader/patch-context` waterfall 即 `Loader::on_patch_context(ctx, hook)`：钩子接收条目，以及以 future 形式表示的链的其余部分，这个 future 只有在被 await 时才会构建其余部分；钩子在加载器自身的隔离步骤中按注册顺序运行，并随 `ctx` 的纤程一起移除。与 TS 不同，新的隔离表与链末尾的重新设定父级一起安装，而不是在钩子运行之前安装。
+
+`EntryHandle::init` 启动一个条目，或者加入它尚未完成的启动。
+
+hmr 的 `index` 用例“waits for a second re-enable init”在 Rust 中没有可等待的 hmr 决定（被挂起的卸载完成时，事务已经做出决定）；它的移植版本检查重新启用之后只留下一个存活实例，且 hmr 不会额外执行 apply。
+
+### 动态模块 [#dynamic-modules]
+
+`ModuleSource` / `ModuleGraph` / `Hmr`，加上三个共享同一套 JSON 访客 ABI（记录在 `kardia-hmr` crate 文档中）的文件后端，以及一个为每个纤程实例化访客的桥接插件。
+
+| 后端 | 工作方式 |
+|---|---|
+| `WasmSource` | 在 wasmtime 上运行核心 WASM 模块（每个纤程一个 store），而不是 WIT 组件，因此访客不需要组件工具链（测试用 WAT 编写）。 |
+| `DylibSource` | 使用 C ABI，而不是传递 Rust 类型：cdylib 带有自己的一份 `kardia-core` 和 tokio，有独立的静态变量，也没有运行时上下文。每个版本都从一份唯一的副本加载，且永不卸载。 |
+| `ProcessSource` | 运行可执行文件，每个纤程一个子进程，通过 stdin 和 stdout 上的 JSON 行使用同一套 ABI（重新启动进程 = 重载；崩溃的访客只会使它自己的调用失败，破坏协议的访客会被杀死）。没有单独的代理服务：每个纤程的 `GuestService` 就是 RPC 端点。 |
+
+与其他后端一样，进程后端的调用是同步的，而不是[论文 §6.2](/docs/concepts-related-work) 中的异步 RPC 约定：它们会阻塞调用者直到访客应答，因此挂起的访客也会阻塞调用者。`kardia` 二进制按文件扩展名选择后端，并且不加载进程访客。
+
+访客服务是带 JSON 调用的 JSON 视图（`GuestService`）。`kardia-guest` 是 Rust 访客 SDK：一个 `Guest` trait 和 `export!`，后者在 wasm32 上生成 WASM 导出，在其他平台上生成 C 符号，因此同一份源码可以为两种后端构建。
+
+监视模式（`HmrConfig { base, watch: { enabled, files, debounce } }`）遵循 TS 代码：它通过 `fs` 监视 `base`，把每个防抖窗口内的变化作为一批重载，每次只处理一批。导入失败的文件会随下一批重试，而宿主模块的变化只会被报告。`base` 相对于 hmr 条目所在配置文件的目录解析（与 TS 代码使用 `ctx.baseUrl` 的方式相同），没有配置文件时则相对于工作目录解析。
+
+`kardia` 二进制注册了 `hmr`，并把任何不是内置插件的条目名称解析为相对于配置文件的访客模块：`examples/kardia.yml` 会热重载 `plugins/hello.wat`。
+
+关于如何使用访客，见[访客插件](/docs/guide-guests)和[热重载](/docs/guide-hot-reload)。

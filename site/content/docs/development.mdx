@@ -1,0 +1,198 @@
+---
+title: "Rust 设计"
+description: "kardia（Cordis 的 Rust 实现）的设计：目标、从论文到 Rust 的概念对应，以及 crate 布局。"
+icon: Code
+---
+
+本节是 kardia 的设计：用 Rust 重新实现 Cordis 框架。它建立在以下两者之上：
+
+- **理论**：[概念](/docs/concepts)一节（论文的定义、规则与定理）；
+- **参考实现**：[Cordis 参考](/docs/reference)一节（TypeScript，Cordis v4）。
+
+两者不一致时，本设计会明确说明遵循哪一方（见[论文与代码对照](/docs/reference-paper-vs-code)）。设计已在 [`crates/`](https://github.com/licyk/kardia/tree/main/crates) 中实现；[状态与偏离](/docs/development-status#status)记录了实现状态，以及实现偏离本文之处。
+
+<Callout type="info">
+本节最初是在编写代码之前写成的计划，其正文作为设计记录保留。凡是 `crates/` 中的代码与某个签名或草图不同之处，草图下方都有说明；有意为之的偏离列在[状态与偏离](/docs/development-status#deviations)中。
+</Callout>
+
+<Cards>
+  <Card title="并发" href="/docs/development-concurrency" description="每个根一把锁、返回动作的临界区、加锁顺序。" />
+  <Card title="核心数据结构" href="/docs/development-lifecycle" description="标识符、作用域、绑定、纤程、IdTable、依赖环检测。" />
+  <Card title="API 设计" href="/docs/development-design" description="服务与访问、效应、插件与配置、事件与日志。" />
+  <Card title="加载器内部" href="/docs/development-loader" description="kardia-loader、kardia-include、动态模块与 HMR。" />
+  <Card title="测试" href="/docs/development-testing" description="移植的 TypeScript 测试、元理论的基于模型测试、工具。" />
+  <Card title="状态与偏离" href="/docs/development-status" description="实现阶段、实现状态，以及对计划的每一处偏离。" />
+  <Card title="风险" href="/docs/development-risks" description="风险与待定决策，以及一个 API 的完整示例。" />
+  <Card title="参与开发" href="/docs/development-contributing" description="构建、测试、CI、发布，以及本文档站点。" />
+</Cards>
+
+## 目标、非目标与指导决策 [#goals]
+
+### 目标 [#goals-list]
+
+1. **在语义上忠实于演算**（[论文 §4](/docs/concepts-calculus)）：纤程（fiber）、目标视图与已提交视图（committed view）、卸载时的守卫、惯性（inertia）、失败结果、每个（键，领域（realm））只有单一来源、合流性。
+2. 在论文未作规定之处，**在行为上与 Cordis 核心保持一致**（带修订号的纪元（epoch）、两级守卫、纤程级的并发释放、`update` 否决、`replace`），以 TypeScript 测试套件作为验收规范。
+3. **地道的 Rust**：带类型的服务键、以显式的调用者归属代替 `Proxy`、可在多线程 tokio 运行时中使用的 `Send + Sync` 句柄、核心中没有 `unsafe`。
+4. 声明式的**加载器**（条目、分组、领域），以及基于文件、双向同步的 **include**（配置文件引入）。
+
+### 非目标（针对最初的几个版本） [#non-goals]
+
+- 在运行时重新求值插件*代码*（HMR）。Rust 没有模块注册表；这会成为一个可选的、后续的“模块来源”扩展（[加载器内部](/docs/development-loader#hmr)）。
+- npm 专用的工具（`package-manager`、`create`、`loader-utils`）。不移植。
+- 错误消息与 UTF-16 列号逐字节一致（有更好，但不要求）。
+
+<Callout type="info">
+HMR 只是最初几个版本的非目标。它后来已在 `kardia-hmr` 中实现（WASM、dylib 与进程后端，以及监视模式）；见[状态与偏离](/docs/development-status#dynamic-modules)。
+</Callout>
+
+### 指导决策 [#decisions]
+
+以下为摘要；每项决策的理由见最后一列链接的页面。
+
+| # | 决策 | 章节 |
+|---|---|---|
+| D1 | `Send + Sync` 的核心；每个根一把状态锁；**持锁期间不运行任何用户代码**；JS 中的每个“同步段”变成一个临界区；后续工作以动作列表返回，在解锁后执行 | [并发](/docs/development-concurrency) |
+| D2 | 纤程存放在注册表的 arena 中，以永不复用的 `FiberId` 寻址；所有交叉引用（父纤程、依赖者、已提交视图）都是 id，而不是指针 | [核心数据结构](/docs/development-lifecycle) |
+| D3 | 服务键是**字符串**（配置需要用它命名服务），通过 `Service` trait 绑定到一个 **Rust 类型**；值以 `Arc<dyn Any + Send + Sync>` 加上它的 `TypeId` 存储（用于检测键冲突） | [服务](/docs/development-design#services) |
+| D4 | 通过显式的 `Svc<S>` 句柄 =（服务 `Arc`，调用者 `Context`）实现调用者归属；服务保留自己定义处的 `Context` | [调用者归属](/docs/development-design#caller-attribution) |
+| D5 | 效应（effect）注册在当前纤程的累积器上；撤销函数（disposer）是 `FnOnce`（由类型系统保证至多执行一次）；`EffectHandle` 在 `Drop` 时**不会**释放 | [效应](/docs/development-design#effects) |
+| D6 | 异步转换是**惯性的**：正在执行的 `apply` future 永不丢弃；转向只发生在显式的检查点（`ctx.checkpoint().await?`、`scope.yield_(d).await?`） | [中断](/docs/development-design#interruption) |
+| D7 | 配置以 `serde_json::Value` 进入，在边界处**一次性**反序列化为 `P::Config` | [配置](/docs/development-design#configuration) |
+| D8 | 插件静态注册在 `Catalog` 中（名称 → 类型擦除的工厂）；动态模块是后续的可插拔后端 | [事件与内置服务](/docs/development-design#events)、[加载器内部](/docs/development-loader) |
+| D9 | 依赖环在插入纤程时报告（[论文 §6.5](/docs/concepts-related-work)），而不是默默地保持等待 | [依赖环检测](/docs/development-lifecycle#cycle-detection) |
+
+<Callout type="info">
+在代码中，`ctx.checkpoint()` 与 `scope.yield_(d)` 是同步检查（`ctx.checkpoint()?`、`scope.yield_(d)?`），而不是 future；决策本身（不丢弃 `apply` future，只在显式边界转向）仍然成立。D3 中的 `TypeId` 并不随绑定一起存储：键冲突表现为存储的 `Arc<dyn Any>` 向下转型失败时返回的 `AccessError::TypeMismatch`。
+</Callout>
+
+## 概念对应：论文 → Cordis（TS）→ Rust [#concept-mapping]
+
+| 论文 | Cordis（TypeScript） | Rust（提议） |
+|---|---|---|
+| Γ∞ 上下文 | `Context`（Proxy、原型链） | `Context`：廉价 `Clone` 的句柄：`Arc<Root>` + `FiberId` + `Arc<Scope>` |
+| 派生实现 | `ctx.extend()`、`isolate`、`intercept` | `ctx.isolate(..)` / `ctx.intercept(..)` 返回一个带子 `Scope` 的新 `Context` |
+| 效应 / 效应迭代器 | `ctx.effect(fn \| generator)` | `ctx.effect(label, \|scope\| async {..})`、`scope.defer(..)`、`scope.yield_(..).await?` |
+| 累积器 g | `fiber._disposables: DisposableList` | `FiberData::disposables: IdTable<EffectId>` |
+| 逆操作 | `() => …` | `Disposer = Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send>` |
+| Σ、Σ_iso | `reflect.store: Dict<Impl, symbol>`、`ctx[isolate]` | `State::store: HashMap<RealmId, Impl>`、`Scope::isolate: overlay HashMap<Key, RealmId>` |
+| Σ_inter | `ctx[intercept]` | `Scope::intercept: overlay HashMap<Key, serde_json::Value>` |
+| 键 k / 值 𝒱_k | 字符串名称 / `any` | `Key(Arc<str>)` / `S: Service`，检查 `TypeId` |
+| 提供者身份 | `Impl.uid` | `ImplId(u64)`（永不复用） |
+| 组件 (d, p, e) | 插件 + `inject` + `provide` | `trait Plugin { const NAME; type Config; fn inject(); fn provide(); fn apply(); }` |
+| 纤程 | `Fiber` | 注册表中的 `FiberData` + `Fiber` 句柄 |
+| 名称 𝔑 | `fiber.uid` | `FiberId(u64)` |
+| θ | `FiberState` | `enum FiberState { Pending, Loading, Active, Unloading, Failed, Disposed }` |
+| 目标视图 | `_runner.epoch` 字符串 | `Target::{Inactive, Epoch { revision, providers }}`（结构化，而非字符串） |
+| 已提交视图 ω | `fiber.committed` | `Arc<CommittedView>`（键 → `ImplId`） |
+| 惯性 | `fiber.inertia: Promise` | `Option<Shared<BoxFuture<'static, ()>>>` + 派生的任务 |
+| 守卫（relied_n） | `Impl.dependents`、`_release`、`impl.release` | `Impl::dependents: HashSet<FiberId>` + `tokio::sync::Notify` |
+| O-Insert / O-Retire | `ctx.plugin()` / 其效应的逆操作 | `ctx.plugin::<P>(cfg)` / 返回的实例化撤销函数 |
+| 失败结果 | `_error`、`FAILED` | `FiberData::error: Option<Arc<PluginError>>`、`FiberState::Failed` |
+| 代理访问检查（算法 6） | `ReflectService.handler` + `locate` | `ctx.get::<S>() -> Result<Svc<S>, AccessError>`，沿已提交视图查找 |
+| 调用者归属 | tracker / shadow 代理 | `Svc<S>::caller()`；服务持有自己的 `Context` |
+| 事件 | `EventsService` 字符串事件 | 带类型的事件：`trait Event` + `ctx.on::<E>()`，多种分发模式 |
+| 加载器条目 | `EntryOptions`、`Entry` | `EntryOptions`（serde），`kardia-loader` 中的 `Entry` 状态机 |
+| 模块导入 | Node ESM 加载器 | 静态注册插件的 `Catalog`；可选的 `ModuleSource` 后端 |
+
+<Callout type="info">
+Rust 一列是当初的提议。如今 `kardia-core` 中：
+
+- `Context` 是 `Arc<RootInner>`（私有）+ `FiberId` + `Arc<Scope>`；根通过 `Context::new()` 创建。
+- 累积器是 `FiberData::disposables: IdTable<Arc<EffectCell>>`；没有 `EffectId` 类型（`IdTable` 分配的 id 是 `u64`）。
+- `Disposer` 是一个结构体（`Disposer::new`、`fallible`、`future`、`try_future`），而不是装箱闭包的类型别名。
+- 存储是 `State::store: HashMap<RealmId, ImplId>`，旁边是 `State::impls: HashMap<ImplId, Impl>`；隔离与拦截是 `Scope` 节点和可变的 `Overlay` 表（见[核心数据结构](/docs/development-lifecycle#scope)）。
+- 已提交视图是 `Option<HashMap<Key, ImplId>>`；惯性是纤程上的一个 `bool` 标志加上派生的转换任务；守卫在一个根级的 `Notify` 上等待。
+- 失败结果是 `FiberData::error: Option<Error>`（`kardia_core::Error`，一个以 `Arc` 实现、复制代价低的错误类型）；没有 `PluginError`。
+- `Plugin` 有 `const NAME`、`type Config`、`fn inject() -> Inject`、`fn provide() -> Vec<Key>` 和 `fn apply(..)`。
+</Callout>
+
+## 工作区布局 [#layout]
+
+仓库根目录下的一个 Cargo 工作区，旁边是未改动的 `cordis/` 参考代码（TypeScript 源码的本地检出，被 git 忽略）、`examples/`、`docs/`，以及位于 `site/` 的文档站点：
+
+```text
+kardia/
+├─ Cargo.toml                 # [workspace]
+├─ crates/
+│  ├─ kardia-core/            # Phases 1–3: the paper's core library
+│  │  ├─ src/
+│  │  │  ├─ lib.rs            # public re-exports
+│  │  │  ├─ root.rs           # RootInner (shared state + lock), actions run after unlocking
+│  │  │  ├─ context.rs        # Context handle: isolate / intercept / extend, re-parenting
+│  │  │  ├─ scope.rs          # Scope chain nodes, Overlay isolation / interception tables
+│  │  │  ├─ key.rs            # Key, RealmId, ImplId, FiberId newtypes
+│  │  │  ├─ state.rs          # State, FiberData, Target, Impl (bindings)
+│  │  │  ├─ id_table.rs       # IdTable
+│  │  │  ├─ effect.rs         # effect engine, EffectScope, Disposer, EffectHandle
+│  │  │  ├─ fiber.rs          # FiberState, Fiber handle, checkpoint
+│  │  │  ├─ lifecycle.rs      # refresh / reload / unload state machine (critical sections + transitions)
+│  │  │  ├─ registry.rs       # runtimes, plugin(), replace(), aliases, cycle warning
+│  │  │  ├─ plugin.rs         # Plugin trait, Inject, closures as plugins, erased PluginDef
+│  │  │  ├─ deps.rs           # Deps tuples, Injected<D> (checked typed access)
+│  │  │  ├─ service.rs        # Service trait, Svc<S>, provide / get / live, interception metadata merge
+│  │  │  ├─ access.rs         # committed-view resolution (Algorithm 6 + isolation boundaries)
+│  │  │  ├─ events.rs         # typed events, dispatch modes, internal events, update / config hooks
+│  │  │  ├─ logger.rs         # Logger service, exporters-as-effects, ring buffer
+│  │  │  ├─ config.rs         # Value → Config deserialization, ValidationError with paths
+│  │  │  └─ error.rs          # Error, KardiaError, AccessError, Interrupted, AggregateError
+│  │  └─ tests/               # ported TypeScript specs, model-based property tests
+│  ├─ kardia-macros/          # Phase 6: optional proc macros (ergonomics, compile-time inject checks)
+│  ├─ kardia-timer/           # Phase 3: timer service (tokio::time)
+│  ├─ kardia-logger-console/  # Phase 3: console exporter
+│  ├─ kardia-fs/              # Phase 5: fs.watch service (notify + globset)
+│  ├─ kardia-loader/          # Phase 4: entries, tree, group, realms, catalog, validation, expressions
+│  ├─ kardia-include/         # Phase 5: YAML/JSON-backed trees: parse, journal, patch, sync, atomic write
+│  ├─ kardia-hmr/             # Phase 7 (optional, research): module graph + reconcile algorithm
+│  ├─ kardia-guest/           # guest SDK: write WASM / dylib guest plugins in Rust
+│  └─ kardia/                 # facade crate re-exporting the above + `kardia` binary (bootstrap like core/bin.js)
+│     ├─ src/lib.rs           #   kardia::prelude, kardia::catalog()
+│     ├─ src/main.rs          #   the `kardia` binary
+│     └─ examples/            #   provider_consumer.rs
+├─ examples/                  # kardia.yml and plugins/hello.wat, booted by `cargo run -p kardia -- examples/kardia.yml`
+├─ site/                      # this documentation site
+└─ docs/
+```
+
+<Callout type="info">
+计划中的树为绑定列出了 `store.rs`，为 `FiberData` 列出了 `fiber.rs`；在代码中，绑定和纤程数据位于 `state.rs`（provide / withdraw / get 在 `service.rs` 中），而 `context.rs`、`deps.rs` 和 `id_table.rs` 是单独的模块。上面的树以仓库现状为准。
+</Callout>
+
+### 依赖方向 [#dependencies]
+
+crate 之间的依赖方向与 TS 包一致：`core ← timer, logger-console, fs ← loader ← include, hmr ← kardia (facade)`；`hmr` 的监视模式还会用到 `fs`，而 `kardia-guest` 不依赖其中任何一个。
+
+<Mermaid chart={"flowchart BT\n  core[kardia-core]\n  timer[kardia-timer] --> core\n  console[kardia-logger-console] --> core\n  fs[kardia-fs] --> core\n  loader[kardia-loader] --> core\n  include[kardia-include] --> loader\n  include --> fs\n  include --> core\n  hmr[kardia-hmr] --> loader\n  hmr --> fs\n  hmr --> core\n  facade[kardia] --> include\n  facade --> hmr\n  facade --> timer\n  facade --> console\n  facade --> macros[kardia-macros]\n  guest[kardia-guest]"} />
+
+图中画的是各 `Cargo.toml` 中的直接依赖。上面那条链表示分层，并不是直接依赖的列表：`kardia-loader` 只依赖 `kardia-core`（不依赖 `timer`、`logger-console` 或 `fs`），而 `kardia-include` 与 `kardia-hmr` 各自依赖 `core`、`loader` 和 `fs`。门面 crate 依赖除 `kardia-guest` 以外的所有其他 crate；`kardia-macros` 不依赖任何 kardia crate（它的测试使用 `kardia-core`）。
+
+### 外部依赖 [#external-dependencies]
+
+刻意保持精简；每一行都说明了为什么需要它。
+
+| Crate | 使用者 | 用途 |
+|---|---|---|
+| `tokio`（`rt`、`sync`、`time`、`macros`） | 所有运行时 crate | 为转换派生任务、`Notify`/`watch`、定时器；二进制中使用 `rt-multi-thread` + `signal`，测试中使用 `test-util` 暂停时间 |
+| `futures` | core、timer、loader、include、hmr、门面 | `BoxFuture`、`Shared`（惯性句柄）、`join_all`、`catch_unwind` |
+| `parking_lot` | core、timer、logger-console、fs、loader、include、hmr | 每个根的状态锁（不会中毒、体积小）以及其他短临界区 |
+| `thiserror` | core、timer、loader、include | 结构化的错误类型 |
+| `serde`、`serde_json` | core、logger-console、loader、include、hmr、guest、门面 | 配置值、拦截元数据、访客 ABI |
+| `serde_path_to_error` | core | 带路径的校验问题（Standard Schema 的对应物） |
+| `indexmap` | core、include、hmr | 有序映射：条目选项、日志（journal）、已加载模块 |
+| `saphyr-parser` | include | 带位置与标签的 YAML：`!!js`、源码位置 |
+| `chrono` | logger-console | 时间模板中的时间戳 |
+| `notify`、`globset` | fs | 文件监视、glob 过滤 |
+| `syn`、`quote`、`proc-macro2` | macros | `#[derive(Service)]` / `#[plugin]` 过程宏 |
+| `proptest`（dev） | core | 元理论的基于模型测试 |
+| `trybuild`（dev） | macros | 针对未声明访问的编译失败测试 |
+| `wasmtime` / `libloading`（特性 `wasm` / `dylib`） | hmr | WASM 与 dylib 模块后端 |
+
+`kardia-loader` 使用 `serde_json` 但不使用 `serde`；`logger-console` 使用 `serde` 而不使用 `serde_json`。
+
+不使用的：
+
+- `async-trait`：trait 中返回位置的 `impl Future` 已经稳定。
+- `anyhow`：`kardia_core::Error` 同样可用于二进制和示例。
+- `inventory` / `linkme`：显式的 `Catalog::register` 已经足够。
+- `smallvec`：普通的 `Vec` 就够了。
+- `tempfile`：原子写入就是在同一目录下写临时文件再重命名，用 `std` 即可。
+- `anstream` / `anstyle`：控制台颜色就是普通的 ANSI 转义序列。

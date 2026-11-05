@@ -1,0 +1,96 @@
+---
+title: "Cordis reference"
+description: "An analysis of the TypeScript Cordis v4 code base, the reference implementation that kardia ports."
+icon: FileCode
+---
+
+kardia is a Rust port of [Cordis](https://github.com/cordiverse/cordis), the TypeScript plugin framework described in the paper [A Programming Paradigm for Spatiotemporal Composability](https://arxiv.org/abs/2608.25512). The [Concepts](/docs/concepts) section covers the paper's model; this section covers the **code**: how the TypeScript implementation actually realizes that model, where it refines or departs from the paper, and which parts a port must preserve.
+
+These pages describe Cordis, not kardia. Names such as `Context`, `Fiber`, `ctx.effect` and paths such as `cordis/packages/core/src/fiber.ts` refer to the TypeScript code. How kardia maps them to Rust is covered in the [Development](/docs/development) section.
+
+<Callout type="info">
+The analysed code is the TypeScript checkout at `cordis/` (a separate git repository, ignored by the outer repository's `.gitignore`), at HEAD `6663348 fix(fs-node): reject drive-relative paths on Windows (#285)`. The `cordis` core package is version `4.0.0-rc.12`, the paper's "Cordis v4". File:line references (`reflect.ts:182-185`) are against that revision.
+</Callout>
+
+## Pages in this section [#pages]
+
+<Cards>
+  <Card title="Context and reflection" href="/docs/reference-context" description="The first-class Context, prototype-chained derivation, the ReflectService store, provide/notify, the Proxy access path, locate and interception." />
+  <Card title="Effects" href="/docs/reference-effects" description="Accepted effect shapes, the _execute engine, fiber.effect step by step, ownership transfer, DisposableList and teardown order." />
+  <Card title="Fiber lifecycle and registry" href="/docs/reference-fibers" description="Plugins and runtimes, the Fiber structure, target digests, the transition state machine, the two guards and the nine rules." />
+  <Card title="Services and traceability" href="/docs/reference-services" description="The Service base class, use site vs. def site, traceable proxies, shadow contexts and associated properties." />
+  <Card title="Events and logger" href="/docs/reference-events" description="EventsService, dispatch modes, the internal events, and the logger's name resolution, levels and exporters." />
+  <Card title="Loader" href="/docs/reference-loader" description="Entries and their two fibers, expressions, Entry.update, keyed group reconciliation, managed realms and validation." />
+  <Card title="Include and group" href="/docs/reference-include" description="File-backed entry trees with two-way sync: the IO loop, the journal, patches, source locations and errors." />
+  <Card title="HMR" href="/docs/reference-hmr" description="Transactional hot module replacement: the reconcile transaction, union-find units, in-place replacement and watch mode." />
+  <Card title="Auxiliary packages" href="/docs/reference-auxiliary" description="timer, logger-console, fs-node, package-manager, loader-utils and create: ordinary services built on the core primitives." />
+  <Card title="Paper vs. implementation" href="/docs/reference-paper-vs-code" description="Faithful correspondences, every deviation and refinement, defects found while reading, and what the Rust port follows." />
+</Cards>
+
+## Packages [#packages]
+
+About 7.5k lines of TypeScript source and about 13.8k lines of TypeScript tests.
+
+| Package (dir) | npm name | Version | Src LOC | Role | Paper section |
+|---|---|---|---|---|---|
+| `core` | `cordis` | 4.0.0-rc.12 | ~2,030 | Context, effects, fibers, registry, reflection, services, events, logger | §3, §5.1 |
+| `loader` | `@cordisjs/plugin-loader` | 1.0.0-rc.9 | ~1,430 | Declarative entries, reconciliation, expressions, managed realms | §5.2.1 |
+| `group` | `@cordisjs/plugin-group` | 1.0.0 | 3 | Re-export of the loader's `Group` | §5.2.1 |
+| `include` | `@cordisjs/plugin-include` | 1.2.0 | ~1,210 | File-backed (YAML/JSON) subtrees with two-way sync | §5.2.1 |
+| `hmr` | `@cordisjs/plugin-hmr` | 1.1.2 | ~790 | Transactional hot module replacement | §5.2.2 |
+| `loader-utils` | `@cordisjs/loader-utils` | 0.1.0 | ~170 | Node internal ESM loader glue | – |
+| `timer` | `@cordisjs/plugin-timer` | 1.1.4 | ~150 | Fiber-scoped timers | – |
+| `logger-console` | `@cordisjs/plugin-logger-console` | 1.0.0 | ~140 | Console log exporter | – |
+| `fs-node` | `@cordisjs/plugin-fs-node` | 0.1.0 | ~240 | `fs.watch` service (chokidar) | – |
+| `package-manager` | `@cordisjs/plugin-package-manager` | 0.1.0 | ~960 | Transactional npm/pnpm/yarn installs | – |
+| `create` | `create-cordis` | 0.3.2 | ~400 | Project scaffolding CLI | – |
+
+Paper §3 is covered by [Revertible effects](/docs/concepts-revertible-effects) (§3.1), [Reactive coeffects](/docs/concepts-reactive-coeffects) (§3.2) and [The context paradigm](/docs/concepts-context-paradigm) (§3.3–3.4); §5 by [Implementation](/docs/concepts-implementation). The core's only runtime dependencies are `cosmokit` (utilities) and `@standard-schema/spec` (the config validation interface). Plugins peer-depend on `cordis`.
+
+### Runtime dependency graph [#dependency-graph]
+
+```text
+cordis (core) ◄── loader ◄── group
+      ▲  ▲  ▲        ▲  ▲
+      │  │  │        │  └── include ──(optional fs service)──► fs-node
+      │  │  │        └── (imports via) loader-utils ◄── hmr ──(optional fs service)──► fs-node
+      │  │  └── timer, logger-console, fs-node, package-manager
+      │  └── core/bin.js: Context + Loader + include('./cordis.yml')
+create (standalone)
+```
+
+<Mermaid chart={"flowchart RL\n  loader --> core[\"cordis (core)\"]\n  group --> loader\n  include --> loader\n  include -.->|\"optional fs service\"| fsnode[\"fs-node\"]\n  loader -->|\"imports via\"| lu[\"loader-utils\"]\n  hmr --> lu\n  hmr -.->|\"optional fs service\"| fsnode\n  timer --> core\n  lc[\"logger-console\"] --> core\n  fsnode --> core\n  pm[\"package-manager\"] --> core\n  bin[\"core/bin.js: Context + Loader + include('./cordis.yml')\"] --> core\n  create[\"create (standalone)\"]"} />
+
+## Tooling [#tooling]
+
+- Yarn 4 workspaces (`external/*`, `packages/*`), ESM only, TypeScript executed directly via a `tsx` fork.
+- The `yakumo` build orchestrator (`yakumo.yml`: `yakumo`, `yakumo-tsc`, `yakumo-esbuild`, `yakumo-vitest`): `build` = esbuild bundles + `tsc` declarations; `test` = vitest; coverage variants.
+- Vitest with `pool: 'forks'` and `--expose-internals` (needed by hmr; forked processes isolate module-cache mutation per test file).
+- ESLint (`@cordisjs/eslint-config`).
+- CI (`.github/workflows/build.yml`): lint (Node 26), build + publish on `main`, tests on Ubuntu/Windows/macOS × Node 24/26.
+
+## Core source map [#core-source-map]
+
+Files under `packages/core/src`:
+
+| File | Lines | Contents | Page |
+|---|---|---|---|
+| `context.ts` | 78 | `Context` class, derivation (`extend`, `isolate`, `intercept`) | [Context and reflection](/docs/reference-context) |
+| `reflect.ts` | 324 | `ReflectService`: store, `provide`, `get/set`, `notify`, accessors, mixins, Proxy handler, `locate` | [Context and reflection](/docs/reference-context) |
+| `fiber.ts` | 553 | `Fiber`, effect engine, lifecycle state machine, update/restart, `ValidationError` | [Effects](/docs/reference-effects), [Fiber lifecycle](/docs/reference-fibers) |
+| `registry.ts` | 246 | Plugin types, `Inject`, `RegistryService` (`plugin`, `inject`, `replace`) | [Fiber lifecycle](/docs/reference-fibers) |
+| `service.ts` | 83 | `Service` base class, interception resolution | [Services and traceability](/docs/reference-services) |
+| `utils.ts` | 285 | `DisposableList`, symbols, traceable proxies, error stack composition | [Effects](/docs/reference-effects), [Services and traceability](/docs/reference-services) |
+| `events.ts` | 224 | `EventsService`, dispatch modes, internal events | [Events and logger](/docs/reference-events) |
+| `logger.ts` | 233 | `Logger`, `LoggerService`, formatting | [Events and logger](/docs/reference-events) |
+
+## The test suite as specification [#tests]
+
+The tests are the most precise specification of intended behaviour and should be treated as the acceptance suite for a port (see [Testing](/docs/development-testing) for how kardia ports them). Highlights:
+
+| Package | Spec files |
+|---|---|
+| core | `fiber.spec` (inertia locks, failure, update), `update.spec` (concurrent updates), `service-dispose.spec` (guard and drain ordering), `isolate.spec`, `shadow.spec`, `associate.spec`, `replace.spec`, `dispose.spec` (effect shapes), `events.spec` |
+| loader | `evaluate.spec`, `rebuild.spec` (interleavings), `isolate*.spec`, `commit.spec`, `validate.spec` |
+| include | `sync.spec` (journal/patch/merge matrix), `write.spec`, `location.spec` |
+| hmr | `reconcile.spec`, `index.spec`, `watch.spec` |

@@ -1,0 +1,96 @@
+---
+title: "Cordis 参考"
+description: "对 TypeScript Cordis v4 代码库的分析；它是 kardia 所移植的参考实现。"
+icon: FileCode
+---
+
+kardia 是 [Cordis](https://github.com/cordiverse/cordis) 的 Rust 移植。Cordis 是论文 [A Programming Paradigm for Spatiotemporal Composability](https://arxiv.org/abs/2608.25512) 所描述的 TypeScript 插件（plugin）框架。[概念](/docs/concepts)部分介绍论文的模型；本部分介绍**代码**：TypeScript 实现如何真正落实这一模型，在哪些地方细化或偏离了论文，以及移植时必须保留哪些部分。
+
+这些页面描述的是 Cordis，而不是 kardia。上下文（`Context`）、纤程（fiber，`Fiber`）、效应（effect，`ctx.effect`）等名称以及 `cordis/packages/core/src/fiber.ts` 等路径都指 TypeScript 代码。kardia 如何把它们映射到 Rust，见[开发](/docs/development)部分。
+
+<Callout type="info">
+所分析的代码是位于 `cordis/` 的 TypeScript 检出（一个独立的 git 仓库，被外层仓库的 `.gitignore` 忽略），HEAD 为 `6663348 fix(fs-node): reject drive-relative paths on Windows (#285)`。`cordis` 核心包版本为 `4.0.0-rc.12`，即论文中的 "Cordis v4"。文件与行号引用（`reflect.ts:182-185`）均基于该版本。
+</Callout>
+
+## 本部分的页面 [#pages]
+
+<Cards>
+  <Card title="上下文与反射" href="/docs/reference-context" description="一等上下文、原型链派生、ReflectService 存储、provide/notify、Proxy 访问路径、locate 与拦截。" />
+  <Card title="效应" href="/docs/reference-effects" description="可接受的效应形态、_execute 引擎、fiber.effect 逐步解析、所有权转移、DisposableList 与拆除顺序。" />
+  <Card title="纤程生命周期与注册表" href="/docs/reference-fibers" description="插件与 runtime、Fiber 结构、目标摘要、状态转换机、两层守卫与九条规则。" />
+  <Card title="服务与可追溯性" href="/docs/reference-services" description="Service 基类、使用点与定义点、可追溯代理、影子上下文与关联属性。" />
+  <Card title="事件与日志" href="/docs/reference-events" description="EventsService、分发模式、内部事件，以及日志器的名称解析、级别与导出器。" />
+  <Card title="加载器" href="/docs/reference-loader" description="条目及其两个纤程、表达式、Entry.update、按键分组协调、托管领域与校验。" />
+  <Card title="Include 与分组" href="/docs/reference-include" description="带双向同步的文件支撑条目树：IO 循环、变更记录（journal）、补丁、源位置与错误。" />
+  <Card title="HMR" href="/docs/reference-hmr" description="事务式热模块替换：reconcile 事务、并查集单元、原地替换与监听模式。" />
+  <Card title="辅助包" href="/docs/reference-auxiliary" description="timer、logger-console、fs-node、package-manager、loader-utils 与 create：基于核心原语构建的普通服务。" />
+  <Card title="论文与实现对照" href="/docs/reference-paper-vs-code" description="忠实对应、全部偏离与细化、阅读中发现的缺陷，以及 Rust 移植遵循哪一方。" />
+</Cards>
+
+## 包 [#packages]
+
+约 7.5k 行 TypeScript 源码，约 13.8k 行 TypeScript 测试。
+
+| 包（目录） | npm 名称 | 版本 | 源码行数 | 职责 | 论文章节 |
+|---|---|---|---|---|---|
+| `core` | `cordis` | 4.0.0-rc.12 | ~2,030 | 上下文、效应、纤程、注册表、反射、服务、事件、日志 | §3, §5.1 |
+| `loader` | `@cordisjs/plugin-loader` | 1.0.0-rc.9 | ~1,430 | 声明式条目、协调、表达式、托管领域 | §5.2.1 |
+| `group` | `@cordisjs/plugin-group` | 1.0.0 | 3 | 重新导出加载器的 `Group` | §5.2.1 |
+| `include` | `@cordisjs/plugin-include` | 1.2.0 | ~1,210 | 以文件（YAML/JSON）支撑、双向同步的子树 | §5.2.1 |
+| `hmr` | `@cordisjs/plugin-hmr` | 1.1.2 | ~790 | 事务式热模块替换 | §5.2.2 |
+| `loader-utils` | `@cordisjs/loader-utils` | 0.1.0 | ~170 | Node 内部 ESM 加载器胶水代码 | – |
+| `timer` | `@cordisjs/plugin-timer` | 1.1.4 | ~150 | 纤程作用域的定时器 | – |
+| `logger-console` | `@cordisjs/plugin-logger-console` | 1.0.0 | ~140 | 控制台日志导出器 | – |
+| `fs-node` | `@cordisjs/plugin-fs-node` | 0.1.0 | ~240 | `fs.watch` 服务（chokidar） | – |
+| `package-manager` | `@cordisjs/plugin-package-manager` | 0.1.0 | ~960 | 事务式 npm/pnpm/yarn 安装 | – |
+| `create` | `create-cordis` | 0.3.2 | ~400 | 项目脚手架 CLI | – |
+
+论文 §3 见[可撤销效应](/docs/concepts-revertible-effects)（§3.1）、[响应式余效应](/docs/concepts-reactive-coeffects)（§3.2）与[上下文范式](/docs/concepts-context-paradigm)（§3.3–3.4）；§5 见[实现](/docs/concepts-implementation)。核心的运行时依赖只有 `cosmokit`（工具函数）和 `@standard-schema/spec`（配置校验接口）。插件以 peer 依赖的方式依赖 `cordis`。
+
+### 运行时依赖图 [#dependency-graph]
+
+```text
+cordis (core) ◄── loader ◄── group
+      ▲  ▲  ▲        ▲  ▲
+      │  │  │        │  └── include ──(optional fs service)──► fs-node
+      │  │  │        └── (imports via) loader-utils ◄── hmr ──(optional fs service)──► fs-node
+      │  │  └── timer, logger-console, fs-node, package-manager
+      │  └── core/bin.js: Context + Loader + include('./cordis.yml')
+create (standalone)
+```
+
+<Mermaid chart={"flowchart RL\n  loader --> core[\"cordis (core)\"]\n  group --> loader\n  include --> loader\n  include -.->|\"可选 fs 服务\"| fsnode[\"fs-node\"]\n  loader -->|\"经由其导入\"| lu[\"loader-utils\"]\n  hmr --> lu\n  hmr -.->|\"可选 fs 服务\"| fsnode\n  timer --> core\n  lc[\"logger-console\"] --> core\n  fsnode --> core\n  pm[\"package-manager\"] --> core\n  bin[\"core/bin.js: Context + Loader + include('./cordis.yml')\"] --> core\n  create[\"create（独立）\"]"} />
+
+## 工具链 [#tooling]
+
+- Yarn 4 工作区（`external/*`、`packages/*`），仅 ESM，TypeScript 通过一个 `tsx` 分支直接执行。
+- `yakumo` 构建编排器（`yakumo.yml`：`yakumo`、`yakumo-tsc`、`yakumo-esbuild`、`yakumo-vitest`）：`build` = esbuild 打包 + `tsc` 声明文件；`test` = vitest；另有覆盖率变体。
+- Vitest 使用 `pool: 'forks'` 与 `--expose-internals`（hmr 需要；分叉进程使每个测试文件的模块缓存修改彼此隔离）。
+- ESLint（`@cordisjs/eslint-config`）。
+- CI（`.github/workflows/build.yml`）：lint（Node 26），在 `main` 上构建并发布，在 Ubuntu/Windows/macOS × Node 24/26 上运行测试。
+
+## 核心源码地图 [#core-source-map]
+
+`packages/core/src` 下的文件：
+
+| 文件 | 行数 | 内容 | 页面 |
+|---|---|---|---|
+| `context.ts` | 78 | `Context` 类，派生（`extend`、`isolate`、`intercept`） | [上下文与反射](/docs/reference-context) |
+| `reflect.ts` | 324 | `ReflectService`：存储、`provide`、`get/set`、`notify`、访问器、mixin、Proxy 处理器、`locate` | [上下文与反射](/docs/reference-context) |
+| `fiber.ts` | 553 | `Fiber`、效应引擎、生命周期状态机、update/restart、`ValidationError` | [效应](/docs/reference-effects)、[纤程生命周期](/docs/reference-fibers) |
+| `registry.ts` | 246 | 插件类型、`Inject`、`RegistryService`（`plugin`、`inject`、`replace`） | [纤程生命周期](/docs/reference-fibers) |
+| `service.ts` | 83 | `Service` 基类，拦截解析 | [服务与可追溯性](/docs/reference-services) |
+| `utils.ts` | 285 | `DisposableList`、符号、可追溯代理、错误栈拼接 | [效应](/docs/reference-effects)、[服务与可追溯性](/docs/reference-services) |
+| `events.ts` | 224 | `EventsService`、分发模式、内部事件 | [事件与日志](/docs/reference-events) |
+| `logger.ts` | 233 | `Logger`、`LoggerService`、格式化 | [事件与日志](/docs/reference-events) |
+
+## 测试套件即规范 [#tests]
+
+测试是对预期行为最精确的规范，应当作为移植的验收套件（kardia 如何移植它们，见[测试](/docs/development-testing)）。要点：
+
+| 包 | 测试文件 |
+|---|---|
+| core | `fiber.spec`（惯性锁、失败、更新）、`update.spec`（并发更新）、`service-dispose.spec`（守卫与排空顺序）、`isolate.spec`、`shadow.spec`、`associate.spec`、`replace.spec`、`dispose.spec`（效应形态）、`events.spec` |
+| loader | `evaluate.spec`、`rebuild.spec`（交错执行）、`isolate*.spec`、`commit.spec`、`validate.spec` |
+| include | `sync.spec`（journal/补丁/合并矩阵）、`write.spec`、`location.spec` |
+| hmr | `reconcile.spec`、`index.spec`、`watch.spec` |

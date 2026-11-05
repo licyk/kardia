@@ -1,4 +1,5 @@
-//! Model-based tests of the metatheory (plan §11.2).
+//! Model-based tests of the metatheory
+//! (<https://licyk.github.io/kardia/docs/development-testing#model-based>).
 //!
 //! Synthetic components write to a shared table and revert exactly; random
 //! orchestration sequences run under random schedules (delays in loads and

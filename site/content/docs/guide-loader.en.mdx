@@ -1,0 +1,374 @@
+---
+title: "The loader"
+description: "Run plugins from declarative entries: set up the loader and its catalog, drive trees, groups and entries from Rust, include config files with two-way sync, and locate config errors."
+---
+
+The **loader** (`kardia-loader`) keeps a tree of **entries** (a plugin name plus its configuration) in step with live fibers, in both directions: changes to the entries are reconciled into the running fibers, and a plugin that updates or disposes itself is written back to its entry. The **include** plugin (`kardia-include`) grafts the entries of a YAML or JSON file into that tree and keeps the file in sync both ways.
+
+This page is the library user's view: how to set the loader up, drive it from Rust, include files and find config errors. The entry fields themselves (`id`, `name`, `config`, `group`, `disabled`, `inject`, `intercept`, `isolate`) and expressions are listed in [The configuration file](/docs/guide-configuration). How the loader is built is on [Loader internals](/docs/development-loader), and every place where it departs from the TypeScript loader is listed on [Status and deviations](/docs/development-status).
+
+## Setting up the loader [#setup]
+
+`Loader::plugin(resolver)` returns the loader plugin. Once it runs, it provides the `loader` service:
+
+```rust
+use kardia::loader::Catalog;
+use kardia::prelude::*;
+
+let root = Context::new();
+let catalog = kardia::catalog();                        // every built-in plugin
+catalog.register::<Greeter>();                           // your own, under `Greeter::NAME`
+catalog.register_def("db", db());                        // or a `PluginDef` under a name
+catalog.alias("database", "db");
+
+root.plugin_def(&Loader::plugin(catalog), Value::Null)?.settled().await?;
+let loader = (*root.get::<Loader>()?).clone();
+```
+
+**Resolving names.** The loader turns an entry's `name` into a `PluginDef` through a `Resolver`, the analogue of a module import. Resolution may be asynchronous:
+
+```rust
+pub trait Resolver: Send + Sync + 'static {
+    fn resolve(&self, name: &str) -> BoxFuture<'static, Result<PluginDef, Error>>;
+}
+```
+
+A `Catalog` is the static resolver: a registry of plugins by name.
+
+| `Catalog` method | Does |
+|---|---|
+| `Catalog::new()` | an empty catalog |
+| `catalog.register::<P>()` | registers a typed plugin under `P::NAME` |
+| `catalog.register_def(name, def)` | registers a `PluginDef` under a name |
+| `catalog.alias(alias, name)` | makes `alias` resolve to whatever `name` resolves to |
+| `catalog.get(name)` | looks a name up |
+
+A missing name fails with `ModuleNotFound` (`Cannot find plugin 'name'`), which the loader reports located at the entry's `name` (see [Locating config errors](#errors)). `kardia_loader::builtins()` is a catalog with the `group` plugin (also as `@cordisjs/plugin-group`); `kardia::catalog()` adds `timer`, `logger-console`, `fs` and `include`, each also under its TypeScript package name.
+
+A resolver can mix sources. The `kardia` binary resolves built-ins from its catalog and treats any other name as a guest module path relative to the config file:
+
+```rust
+struct Plugins {
+    catalog: Catalog,
+    graph: ModuleGraph,
+    base: PathBuf,       // the directory of the configuration file
+}
+
+impl Resolver for Plugins {
+    fn resolve(&self, name: &str) -> BoxFuture<'static, Result<PluginDef>> {
+        if self.catalog.get(name).is_some() {
+            return self.catalog.resolve(name);
+        }
+        let id: PathBuf = self.base.join(name).components().collect();
+        self.graph.resolve(&id.to_string_lossy())
+    }
+}
+```
+
+`Loader::plugin_with(resolver, backend)` also sets the backend of the loader's own tree (see [Tree backends](#backends)); `Loader::plugin` uses `MemoryTree`, which keeps it in memory only. `crates/kardia/src/main.rs` shows the full setup of the binary.
+
+## Entries, groups and trees [#model]
+
+<Mermaid chart={"flowchart TD\n  L[\"loader tree (MemoryTree)\"] --> R[\"root group\"]\n  R --> T[\"entry: timer\"]\n  R --> I[\"entry: include\"]\n  I --> FT[\"subtree (kardia.yml)\"]\n  FT --> FR[\"root group\"]\n  FR --> H[\"entry: hmr\"]\n  FR --> G[\"entry: plugins (group: true)\"]\n  G --> SG[\"subgroup\"]\n  SG --> C[\"entry: console\"]\n  SG --> W[\"entry: hello\"]"} />
+
+- An **entry** is a JSON object of options. The JSON stays the source of truth, so unknown keys are tolerated and survive write-back. Keys are kept in a stable order: `id`, `name`, the rest alphabetically, `config` last.
+- A **group** is an entry with `group: true` running the `group` plugin. Its `config` is a list of entries, which the group reconciles in place on every update instead of restarting: entries are created, updated and removed by id, concurrently, and one bad entry does not stop the others. Groups are never disabled themselves; their `disabled` verdict is passed on to their members.
+- A **tree** is a set of groups with one backend that persists its changes. The loader's own tree lives in memory. A plugin can create a subtree (`loader.create_tree(ctx, backend)`); the include does this for each file.
+- **Ids** are unique within a tree. Entries without one get a random eight-hex-digit id. Across nested trees an entry has a **composite id**, its tree owners' ids and its own joined by `:` (`kardia_loader::SEP`), such as `include:hmr`; an `id` must therefore not contain `:`.
+- **Typed view.** `EntryOptions::read(&options)` reads validated options into a typed view (`id`, `name`, `config`, `group`, `disabled: Option<Disabled>` with `Disabled::{Bool, Expr}`, `inject`, `intercept`, `isolate: Vec<(String, IsolateLabel)>` with `IsolateLabel::{Private, Shared(label)}`); the JSON object stays the source of truth.
+- **Two fibers per entry with `inject`.** An entry that declares `inject` runs an outer fiber (tagged `loader:outer`, `kardia_loader::OUTER_TAG`) that holds the dependencies, resolves the plugin, passes a `ctx.checkpoint()?`, and then starts the inner fiber that runs the plugin. Without `inject`, the entry has only the inner fiber.
+
+**When an entry runs.** A literal `disabled: true` or a disabled ancestor group blocks the entry. A `disabled` expression is evaluated in the outer fiber's context (which sees the entry's `inject`); if it fails, the entry is disabled and the failure reported. The entry's `intercept` is evaluated next; a plugin does not run with an `intercept` that cannot be evaluated. Expressions in `config` are interpolated in the plugin's context on every load, while the source keeps the expressions; a group's `config` is its entry list and is not interpolated.
+
+## Driving the loader from Rust [#api]
+
+The loader has three kinds of handle: `TreeHandle`, `GroupHandle` and `EntryHandle`. `Loader`'s own `create`, `remove`, `update`, `resolve`, `entries` and `root` act on its own tree.
+
+### `Loader` [#loader-api]
+
+| Method | Does |
+|---|---|
+| `Loader::plugin(resolver)` / `Loader::plugin_with(resolver, backend)` | the loader plugin |
+| `loader.create(options, parent, position).await` | creates an entry; returns its composite id |
+| `loader.update(id, patch, parent, position).await` | patches, and optionally moves, an entry |
+| `loader.remove(id)` | removes an entry |
+| `loader.resolve(id)` | the `EntryHandle` of a (composite) id |
+| `loader.entries()` | every entry of every tree, depth first |
+| `loader.root()`, `loader.tree()` | its own root group and tree |
+| `loader.settled().await` | waits until no entry is initializing and every entry fiber has settled |
+| `loader.is_busy()` | whether some entry is still initializing |
+| `loader.create_tree(ctx, backend)` | a tree owned by the plugin running in `ctx` |
+| `loader.entry_of(ctx)` | the entry a context belongs to (the nearest on its derivation chain) |
+| `loader.on_patch_context(ctx, hook)` | see [below](#patch-context) |
+| `loader.set_logs(true)` | logs `apply plugin <name>` / `unload plugin <name>` under the `loader` logger |
+| `loader.context()` | the loader's context |
+
+An entry can also wait for the loader: declaring `inject: { loader: { await: true } }` makes the `loader` service available to it only once every entry has settled.
+
+### `TreeHandle`, `GroupHandle`, `EntryHandle` [#handles]
+
+| `TreeHandle` | |
+|---|---|
+| `create`, `update`, `remove`, `resolve`, `entries` | as on `Loader`, within this tree |
+| `root()`, `context()` | its root group and context |
+| `base_dir()` | the directory relative paths in this tree resolve against: the backend's, else the enclosing tree's, else the working directory |
+| `handle()` | the object behind the tree (`TreeBackend::handle`), for its owner to find it again |
+| `locate(id, path, value)`, `locate_expr(id, path, expr, offset)` | where a value is written (see [errors](#errors)) |
+
+| `GroupHandle` | |
+|---|---|
+| `data()` | the group's entry options, in order |
+| `update(config).await` | keyed reconciliation of the group's entries with `config` |
+| `stop()` | removes every entry of the group, keeping its data |
+| `owner()` | the entry whose plugin owns this group (none for the loader's root group) |
+| `tree()`, `context()` | its tree and context |
+
+| `EntryHandle` | |
+|---|---|
+| `id()` | the composite id |
+| `options()` | the current options |
+| `inner_fiber()`, `outer_fiber()` | the plugin's fiber, and the fiber holding `inject` (if any) |
+| `is_disabled()` | whether the entry is, or reads as, disabled, including through its ancestors |
+| `parent()`, `subgroup()`, `subtree()` | its group, and the group or tree its plugin owns |
+| `init().await` | starts the entry if it is not running, or joins its pending start |
+
+### Creating, updating, moving and removing [#crud]
+
+```rust
+// create `db` in the root group, then a group with a member
+let db = loader.create(json!({ "name": "db", "config": { "url": "postgres://primary" } }), None, None).await?;
+loader.create(json!({ "id": "jobs", "name": "group", "group": true, "config": [] }), None, None).await?;
+loader.create(json!({ "id": "worker", "name": "worker" }), Some("jobs"), Some(0)).await?;
+
+// reconfigure in place; `null` deletes a key
+loader.update(&db, json!({ "config": { "url": "postgres://replica" }, "intercept": null }), None, None).await?;
+
+// move `worker` to the root group, at the end
+loader.update("worker", json!({}), Some(None), None).await?;
+
+loader.remove("jobs")?;
+loader.settled().await;
+```
+
+- **`create(options, parent, position)`** validates the options deeply (including a group's members) before anything is committed, assigns an id if there is none, inserts the entry at `position` (clamped; `None` appends) in the group of entry `parent` (`None` for the root group) and starts it. A group entry creates its group when its plugin loads, so a `parent` that is still loading is awaited. (Entries that come from a file or a group update are validated shallowly instead, each group member when its group reconciles it; `kardia_loader::validate_options(&options, deep)` is the check.)
+- **`update(id, patch, parent, position)`** merges `patch` into the options (`null` deletes a key), validates the result and applies it. `parent: None` leaves the entry where it is; `Some(None)` moves it to the root group and `Some(Some(id))` into the group of entry `id`, also across trees: a move into another tree takes the entry's group members along and fails if one of their ids already exists there.
+- What an update does to the running plugin depends on what changed:
+  - a changed `name` or `inject`, or an entry that is not running: the entry is rebuilt (its fibers disposed, then started again);
+  - otherwise the running fibers are patched in place: the entry is re-attached under its (new) group with its new isolation table (re-attaching an entry's context also moves every fiber below it, as with a re-pointed JavaScript prototype), `intercept` is swapped in place, and a changed `config` reaches the plugin as `fiber.update_with(config, true)`, which the plugin's update hook may take over instead of restarting.
+- **`remove(id)`** disposes the entry and removes it from its group.
+
+**Write-back.** Changes a plugin makes to itself reach its entry:
+- a plugin that disposes itself is persisted as `disabled: true`;
+- a plugin that updates its own configuration (`fiber.update(..)`, which emits `ConfigCommitted`) has the new `config` written to its entry;
+- a dependency loss unloads an entry's outer fiber without disposing it; the entry then reads as disabled until its outer fiber is reactivated, and nothing is written.
+
+Every change applied to a tree is reported to its backend as an `EntryChange`, after it has been applied:
+
+| `EntryChange` fields | Meaning |
+|---|---|
+| `id`, `group` | the entry's local id and the group it is now in |
+| `options` absent | the entry was removed from `group` |
+| `legacy` absent | the entry was created in `group` |
+| both present | the entry was updated; `from` is the group it left if it moved within the tree |
+
+A move into another tree is reported as a removal from the source tree and a creation in the target.
+
+### Tree backends [#backends]
+
+A `TreeBackend` decides where a tree's changes go. Every method has a default:
+
+| `TreeBackend` method | Default | Purpose |
+|---|---|---|
+| `commit(&change)` | nothing | called synchronously after a change has been applied to the tree |
+| `resolver()` | `None` (the loader's resolver) | resolves plugin names for this tree |
+| `base_dir()` | `None` | the directory relative paths inside this tree resolve against |
+| `handle()` | `None` | the object behind the tree, for its owner to find it again |
+| `locate(id, path, value)` | `None` | where the value at `path` in the options of entry `id` is written; with `value`, only if that is the value written there; without, a missing value is located at its closest written ancestor |
+| `locate_expr(id, path, expr, offset)` | `None` | where char `offset` of the expression `expr` at `path` is written |
+
+```rust
+struct Recorder(Arc<Mutex<Vec<EntryChange>>>);
+
+impl TreeBackend for Recorder {
+    fn commit(&self, change: &EntryChange) {
+        self.0.lock().push(change.clone());
+    }
+}
+
+let def = Loader::plugin_with(Arc::new(catalog), Arc::new(Recorder(changes.clone())));
+```
+
+## Isolation and interception through entries [#isolation]
+
+Entries set up [isolation](/docs/guide-services#isolation) and [interception](/docs/guide-services#interception) declaratively.
+
+**`isolate`** gives the entry's services their own realm:
+- `isolate: { db: true }` makes `db` private to the entry;
+- `isolate: { db: shared }` puts `db` into a realm shared by every entry using the label `shared`.
+
+(The TypeScript loader names these realms `db#<id>` and `db@shared`; in kardia they are plain `RealmId`s, which print as `realm#<n>`.)
+
+When an entry's effective realms change (a new `isolate`, or a move to another group), a binding provided from inside the entry **migrates** to the new realm without restarting its provider, as long as the new realm is free; the consumers of both realms re-resolve. A shared realm is released once no entry uses its label for that service any more.
+
+**`intercept`** is metadata for the services the entry's plugin uses, keyed by service: `intercept: { logger: { name: db, level: 3 } }`. It is evaluated (it may contain expressions) and swapped in place, so a running plugin sees new metadata without a restart. A failing `intercept` disables the entry.
+
+**`inject`** as a map attaches metadata to a declared dependency: `inject: { loader: { await: true } }`. The metadata may contain expressions, evaluated in the parent group's context; a failure disables the entry.
+
+```yaml
+- id: db-test
+  name: db
+  isolate: { database: true }          # its own `database`, invisible to the rest
+  intercept:
+    logger: { name: db-test, level: 3 }
+  config: { url: postgres://test }
+```
+
+## Including config files [#include]
+
+The `include` plugin (`kardia_include::IncludePlugin`) loads the entries of a YAML or JSON file as a subtree and keeps the file in sync both ways. It declares the `loader` service; with `watch` it also needs `fs`.
+
+| Option | Meaning |
+|---|---|
+| `path` | the file, relative to the base directory of the tree the include entry is in (for a nested include, the directory of the including file); `.json`, `.yaml` or `.yml` |
+| `watch` | re-read the file whenever it changes (needs the `fs` service) |
+| `initial` | entries written to the file if it does not exist yet |
+| `patches` | overrides and additions applied on top of the file (below) |
+
+```rust
+let entry = json!({ "name": "include", "config": { "path": "kardia.yml", "watch": true } });
+let id = loader.create(entry, None, None).await?;
+if let Some(error) = loader.resolve(&id)?.inner_fiber().and_then(|fiber| fiber.error()) {
+    return Err(error);               // the file could not be read, parsed or validated
+}
+```
+
+**Starting.** The include reads the file. If the file is missing and `initial` is set, it writes `initial` (with ids assigned) and reads that; without `initial` it fails with `config file not found: <path>`. Any other read, parse or validation failure fails the plugin, as does an unsupported extension (`extension "toml" not supported`). A file must be a top-level array of objects.
+
+**File edits → tree.** Each read is reconciled into the subtree; only the latest intended tree is applied, older ones are skipped. A file that fails to parse mid-edit (an empty or truncated file is routine while editing) is logged as a warning, the running tree stays as it was, and nothing is written until a later read succeeds.
+
+**Tree changes → file.** Runtime changes of the subtree (API edits, plugin self-updates and self-disposals) are recorded in a journal and written back to whoever owns them: the file, or a patch in the include's own configuration, which is persisted through the include's own entry in the parent tree. Shutting down does not write to the file.
+
+**Anonymous entries.** Entries the file leaves without an id get one before the loader sees them, and the id is written back. An anonymous entry that looks exactly like one from the previous read keeps that id (unless the file now names it explicitly), so editing a neighbour does not restart it.
+
+### Patches [#patches]
+
+`patches` let a parent file adjust an included file without editing it:
+
+| Patch | Effect |
+|---|---|
+| `{ insert: [..] }` | appends entries to the included root |
+| `{ id, insert: [..] }` | appends entries to the group `id` |
+| `{ id, name?, ..keys }` | overrides keys of entry `id` |
+
+```yaml
+- id: shared
+  name: include
+  config:
+    path: ./shared.yml
+    patches:
+      - id: db                       # override a key of `db` in shared.yml
+        config: { url: postgres://replica }
+      - insert:                      # add an entry
+          - id: debug
+            name: logger-console
+```
+
+A patch that does not apply (`patch insert: entry x not found`, `… is not a group`) is reported as a warning and owns nothing. Every inserted entry gets an id, so that runtime changes can be routed back to it. The include tracks who supplies each entry and key (the file, a patch overriding a key, or an entry written inside a patch), and writes a runtime change of a patch-owned value into the patch, not the file. New `patches` are applied in place when the include's configuration is updated; a different `path` or `watch` restarts it.
+
+### Writes and conflicts [#writes]
+
+- **Atomic writes.** The include writes a temp file in the same directory (`.<name>.<pid>.<seq>.tmp`) and renames it over the file, so no reader sees a truncated file.
+- **Stale-content check.** Before every rename, it checks that the file still holds the content it last read. If someone else wrote the file meanwhile, it reads and merges first, then writes again.
+- **Transient failures.** A rename that fails with `PermissionDenied` or `ResourceBusy` (such as a virus scanner holding the file) is retried up to 10 times, waiting 20 ms longer each time.
+- **Read-only or missing files.** Changes are kept in memory, with a warning: `config file <path> is read-only, N pending change(s) kept in memory` (or `is missing`). A failed write logs `failed to write config file <path>, N pending change(s) kept in memory`.
+- **Conflicts: the file wins.** When the file changes while runtime changes are pending, the include merges three ways. Conflicting runtime changes are dropped so that the tree follows the file, and each drop is logged as `config conflict in <path>: entry <id> <reason>; file wins`, with one of these reasons:
+  - `key "k" modified both in file and at runtime`
+  - `removed in file, modified at runtime`
+  - `modified in file, removed at runtime`
+  - `added in file, removed at runtime`
+  - `moved both in file and at runtime`
+
+### The `Include` handle [#include-api]
+
+`Include::of(&tree)` returns the running include behind a tree it created:
+
+| Method | Does |
+|---|---|
+| `include.filename()` | the absolute path of the file |
+| `include.tree()` | its `TreeHandle` |
+| `include.refresh().await` | re-reads the file and reconciles the tree with it (what a watcher triggers), then waits for every pending read and write |
+| `include.flush().await` | resolves once every pending read and write has been processed and the tree reflects the outcome |
+| `include.stop().await` | flushes what the user last did, then removes the tree's entries |
+
+`IncludePlugin::with_rename(rename)` is the plugin with a custom rename function in place of `std::fs::rename`, for fault-injection tests.
+
+In YAML, `!!js <source>` reads as an expression object `{ "__jsExpr": source }` and is written back the same way. Unknown tags are errors, since they would leave the data incomplete. Written YAML uses block style, with single-quoted strings where needed.
+
+## Locating config errors [#errors]
+
+Errors in config files point at the place they refer to, as `file:line:col`.
+
+**Read, parse and validation errors** of a file are a `ConfigFileError { stage, path, cause, issues }`:
+
+```text
+failed to validate config file /app/kardia.yml
+  - entry must be an object (at /app/kardia.yml:3:3)
+```
+
+The first line names the stage (`read`, `parse` or `validate`) and, for a read failure, its cause; each issue follows with its position.
+
+**Entry errors** the loader logs (option and config validation, `ModuleNotFound`, expression failures) are located through the tree backend's `locate` / `locate_expr`. Each issue gets `(at <path>, file:line:col)`, an expression failure an `at <path> (file:line:col)` frame, and the entry and each ancestor that has a position an `at <id> (file:line:col)` frame:
+
+```text
+invalid config:
+  - port must be a number (at port, /app/kardia.yml:8:13)
+    at a (/app/kardia.yml:5:7)
+    at g (/app/kardia.yml:1:3)
+```
+
+```text
+invalid entry options:
+  - name must be a string (at name, /app/kardia.yml:6:13)
+    at a (/app/kardia.yml:5:7)
+```
+
+```text
+Cannot find plugin 'missing-plugin' (at name, /app/kardia.yml:2:9)
+    at a (/app/kardia.yml:1:3)
+```
+
+How values are located:
+- the include locates a value where its owner writes it: in its file, or in a patch in its parent's file;
+- a YAML alias is located at its anchor;
+- a char of an expression is located through YAML escapes;
+- a missing value is located at the key that should hold it (its closest written ancestor);
+- a JSON file is located by parsing it as YAML as well (JSON is YAML), so it gets the same positions;
+- values changed at runtime are not located, and an error that cannot be located at all is logged as it is.
+
+The loader does not expose an `Entry::evaluate` for evaluating expressions of an entry from outside.
+
+A custom `TreeBackend` gets the same output by implementing `locate` and `locate_expr`; `TreeHandle::locate` and `TreeHandle::locate_expr` call them for a local id.
+
+## The `on_patch_context` hook [#patch-context]
+
+The loader patches an entry's context when the entry starts and when its options change in place: it re-attaches the context under its group, installs the isolation table and reconciles the running fibers. `loader.on_patch_context(ctx, hook)` wraps that step (the TypeScript `loader/patch-context` waterfall):
+
+```rust
+let logger = ctx.logger();
+loader.on_patch_context(&ctx, move |entry: EntryHandle, next: PatchNext| {
+    let logger = logger.clone();
+    async move {
+        logger.debug(format_args!("patching {}", entry.id()));
+        let result = next.await;        // the rest of the chain, then the patch itself
+        logger.debug(format_args!("patched {}", entry.id()));
+        result
+    }
+})?;
+```
+
+- The hook gets the entry and `next`, the rest of the chain as a future. `next` builds the rest only when it is awaited, so a hook runs after the ones registered before it, and a hook that does not await `next` stops the later hooks and the patch.
+- Hooks run in registration order, inside the loader's own isolation step.
+- The registration is an effect of `ctx`'s fiber, so the hook is removed with it.
+- Unlike the TypeScript loader, the new isolation table is installed together with the re-parenting at the end of the chain, not before the hooks run.
+
+`EntryHandle::init().await` starts an entry if it is not running, or joins its pending start; concurrent callers share one start.

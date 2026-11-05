@@ -1,0 +1,349 @@
+---
+title: "API design"
+description: "The design of kardia's API: services, keys and checked access, caller attribution, effects and interruption, plugins and configuration, the lifecycle state machine, events, the logger and the built-in plugin crates."
+---
+
+This page covers the public API of `kardia-core` and the built-in plugin crates: services and access (decisions D3, D4), effects (D5, D6), plugins, configuration and the lifecycle (D7), and events, the logger and built-in services. The data structures these operate on are on [Core data structures](/docs/development-lifecycle). For a user-oriented introduction, see the guide pages [Plugins](/docs/guide-plugins), [Services](/docs/guide-services) and [Effects](/docs/guide-effects).
+
+<Callout type="info">
+The signatures below are the plan's design. Most of them exist in the code under the same names; where a name, a parameter or a return type changed, a note under the sketch gives the current API. The deliberate behavioural departures are listed on [Status and deviations](/docs/development-status#deviations).
+</Callout>
+
+## Services, keys and access [#services]
+
+### The `Service` trait [#service-trait]
+
+```rust
+pub trait Service: Send + Sync + 'static {
+    /// Coeffect key. Strings (not TypeIds) because configuration names services.
+    const NAME: &'static str;
+    /// Interception metadata (paper Def. 26); merged right-biased.
+    type Meta: Mergeable + DeserializeOwned + Default + Send + Sync + 'static = ();  // (associated type defaults are unstable → use a separate `Intercept` trait in practice)
+}
+pub trait Mergeable { fn merge(self, inner: Self) -> Self; }   // default for JSON objects: shallow assign
+```
+
+(Associated type defaults are not stable; the implementation will put `Meta` on a separate `trait Intercepted: Service` with a blanket "no metadata" default.)
+
+<Callout type="info">
+In the code there is neither a `Meta` type nor `Mergeable` / `Intercepted`. Interception metadata stays JSON: `trait Service: Any + Send + Sync { const NAME: &'static str; fn merge_intercept(values: Vec<Value>) -> Value { merge_shallow(values) } }`, where the values come outermost first and the default is a right-biased shallow merge of JSON objects. A service reads typed metadata with `ctx.intercept_meta::<T>(key)`. `#[derive(Service)]` (from `kardia-macros`) implements the trait; `#[service(name = "database")]` sets the key, which defaults to the hyphenated type name.
+</Callout>
+
+### Providing [#providing]
+
+```rust
+impl Context {
+    pub fn provide<S: Service>(&self, value: S) -> Result<EffectHandle, KardiaError>;
+    pub fn provide_arc<S: Service>(&self, value: Arc<S>) -> Result<EffectHandle, KardiaError>;
+}
+```
+
+Semantics follow `ReflectService.provide` exactly:
+
+- a tracked effect;
+- single source per realm (`AlreadyProvided { key, by }`);
+- notify immediately only if the providing fiber is `Active`, otherwise on its transition to `Active`;
+- the inverse removes the binding, notifies the realm, **waits until `dependents` is empty**, then removes the provision.
+
+In-place overwrite (`reflect.set`) is offered as `ctx.replace_value::<S>(..)` and, as in Cordis and the paper, is *not* observed by dependents.
+
+<Callout type="info">
+In the code, `provide` and `provide_arc` return `kardia_core::Result<EffectHandle>` (the error is `kardia_core::Error`, which wraps `KardiaError::AlreadyProvided` and the other variants). Further variants: `provide_as` / `provide_arc_as` (any value under an explicit key), `provide_checked` (with an availability predicate) and `provide_serialized_as` (a value with a JSON view for expressions and tooling). `ctx.replace_value` was not implemented: `KardiaError::NotProvided` and `ForeignBinding` are declared for it but no API returns them. Retiring a provider unbinds its live provisions at once (see [Retired providers](/docs/development-status#deviations)).
+</Callout>
+
+### Accessing (Algorithm 6) [#accessing]
+
+```rust
+impl Context {
+    pub fn get<S: Service>(&self) -> Result<Svc<S>, AccessError>;      // checked: committed view walk
+    pub fn try_get_live<S: Service>(&self) -> Option<Svc<S>>;          // reflective ctx.get: live store, never fails
+    pub fn get_dyn(&self, key: &str) -> Result<DynSvc, AccessError>;   // by name (loader expressions, tooling)
+}
+pub enum AccessError {
+    Undeclared { key: Key },                   // "cannot get property without inject"
+    Inactive { key: Key },                     // "cannot get required service in inactive context"
+    TypeMismatch { key: Key, expected: &'static str },
+}
+```
+
+`get` implements `locate`:
+
+1. own provisions in the same realm;
+2. walk fibers upward;
+3. stop at an isolation boundary;
+4. the first fiber whose `committed` has the key returns it;
+5. a fiber that declares the key without a committed impl → `Inactive`;
+6. reaching the root → root has **unchecked** access to the live store (as in Cordis).
+
+Reading the committed view (not the store) keeps a dependency readable during the consumer's own teardown (Theorem 70).
+
+Typed declarations: `Plugin::Inject` can be a tuple of service types (`(Database, Cache)`), implemented with `macro_rules!` over tuples, producing both the runtime `InjectSpec` and a typed accessor `ctx.deps::<P::Inject>() -> Result<(Svc<Database>, Svc<Cache>)>`. This is the first, macro-free step towards the compile-time mediation the paper suggests ([§5.1.4](/docs/concepts-implementation), [§6.4](/docs/concepts-related-work)).
+
+<Callout type="info">
+In the code: `get` and `AccessError` are as sketched. `try_get_live` is `live::<S>()` (and `live_as::<T>(key)`); `get_dyn` is `get_as::<T>(key)` for a typed value under a name, and `view(key)` for the JSON view of a service, which the loader's expressions use. Typed declarations use the `Deps` trait (implemented with `macro_rules!` for tuples of up to eight services): `Inject::of::<(Database, Cache)>()` builds the runtime declaration, and `ctx.deps::<(Database, Cache)>()` returns `(Svc<Database>, Svc<Cache>)`. `Plugin` has no `Inject` associated type; it declares with `fn inject() -> Inject`. The compile-time step is `Injected<D>`, used by `#[plugin]` (see [Checked typed access](/docs/development-status#deviations)).
+</Callout>
+
+### Caller attribution (D4) [#caller-attribution]
+
+```rust
+pub struct Svc<S: ?Sized> { inner: Arc<S>, caller: Context, impl_id: ImplId }
+impl<S: ?Sized> Deref for Svc<S> { type Target = S; }
+impl<S: ?Sized> Svc<S> { pub fn caller(&self) -> &Context; pub fn intercept(&self) -> S::Meta where S: Intercepted; }
+```
+
+- Effects created *on behalf of the caller* use `svc.caller().effect(..)`: they land in the caller's fiber, exactly what Cordis's tracker achieves with `this.ctx`.
+- A service resolves *its own* dependencies through the `Context` it stored at construction (its def site), so no shadow contexts are needed.
+- Service crates expose caller-aware APIs as **extension traits on `Svc<S>`** (allowed by coherence because the trait is local):
+
+```rust
+pub trait TimerExt { fn timeout(&self, d: Duration, f: impl FnOnce() + Send + 'static) -> EffectHandle; }
+impl TimerExt for Svc<Timer> { fn timeout(&self, d, f) -> EffectHandle { self.caller().effect_sync("timer.timeout", …) } }
+```
+
+- Interception metadata is resolved at access time per Def. 27 / `resolveIntercept`: `[declared inject meta, outer…, inner]` merged right-biased.
+
+<Callout type="info">
+In the code, `Svc<T>` holds the value `Arc<T>`, the caller `Context`, the `key`, the `impl_id` and the providing fiber, with `caller()`, `key()`, `impl_id()`, `arc()`, `provider()` and `logger()`. `intercept()` is `meta() -> Value` (merged with `S::merge_intercept`) and `intercepts() -> Vec<Value>` (the unmerged list, declared `inject` metadata first). The timer's `TimerExt::timeout` returns `Result<EffectHandle>` and registers `self.caller().effect_sync("ctx.timeout()", …)`. Service-to-service calls follow the def site, unlike TS (see [Service-to-service calls](/docs/development-status#deviations)).
+</Callout>
+
+### Associated properties and mixins [#mixins]
+
+Cordis's `foo.bar` associated services and `ctx.mixin` are JS-object conveniences. In Rust: a service named `foo.bar` is just another key; "extending another plugin's type" is done with extension traits (compile time) or with a registry service built on `IdTable` (runtime). No accessor/mixin layer is ported.
+
+## Effects (D5, D6) [#effects]
+
+### API [#effects-api]
+
+```rust
+pub type Disposer = Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send>;
+
+impl Context {
+    /// Effect function: run `f`, which returns its inverse.
+    pub fn effect_sync<F>(&self, label: &'static str, f: F) -> Result<EffectHandle, KardiaError>
+        where F: FnOnce() -> Option<Disposer>;
+    /// Effect iterator: `f` receives a scope; each `yield_` is an iteration boundary.
+    pub fn effect<F, Fut>(&self, label: &'static str, f: F) -> Result<EffectHandle, KardiaError>
+        where F: FnOnce(EffectScope) -> Fut, Fut: Future<Output = Result<(), PluginError>> + Send + 'static;
+    /// Register a plain inverse on the current fiber (e.g. inside `apply`).
+    pub fn on_dispose(&self, d: impl FnOnce() + Send + 'static) -> EffectHandle;
+    /// Iteration boundary for the fiber's own `apply` (L-Divert checkpoint).
+    pub async fn checkpoint(&self) -> Result<(), Interrupted>;
+}
+pub struct EffectScope { /* local disposers, guard */ }
+impl EffectScope {
+    pub fn defer(&mut self, d: Disposer);                         // collect without a boundary
+    pub fn adopt(&mut self, h: EffectHandle);                     // ownership transfer of a nested effect
+    pub async fn yield_(&mut self, d: Disposer) -> Result<(), Interrupted>;  // collect + boundary check
+}
+#[derive(Clone)] pub struct EffectHandle { /* root, fiber, effect id */ }
+impl EffectHandle {
+    pub async fn dispose(&self);          // at-most-once; waits for setup to finish first
+    pub async fn ready(&self) -> Result<(), PluginError>;  // `await ctx.effect(...)` in TS
+}
+```
+
+<Callout type="info">
+In the code (`effect.rs`, `fiber.rs`):
+
+- `Disposer` is a struct consumed when it runs (`Disposer::new(FnOnce())`, `fallible(FnOnce() -> Result<()>)`, `future(..)`, `try_future(..)`); its closure runs synchronously when disposal starts and may return a future that finishes the work. Panics are caught and reported as errors.
+- Labels are `impl Into<String>`. `effect_sync` takes `FnOnce(&EffectScope) -> Result<()>`: the body collects its inverses on the scope instead of returning one. `effect` takes `FnOnce(EffectScope) -> Fut` with `Fut: Future<Output = Result<()>>`; the body is spawned. Both return `kardia_core::Result<EffectHandle>`.
+- `on_dispose` returns `Result<EffectHandle>`; `ctx.defer(label, disposer)` registers an arbitrary `Disposer`.
+- `ctx.checkpoint()`, `scope.checkpoint()` and `scope.yield_(d)` are synchronous: `ctx.checkpoint()?`, `scope.yield_(d)?`. `EffectScope` methods take `&self` (the scope is `Clone`), and there is a `defer_fn` shorthand; `adopt` takes `impl Into<EffectHandle>` (a `Fiber` converts).
+- `EffectHandle::dispose()` returns a `Disposal`, a future of `Result<()>` that can also be dropped; `ready()` returns a future of `Result<()>`. The handle also has `label()`, `is_active()` and `meta()`.
+</Callout>
+
+### Semantics (from `fiber.ts:292-357`) [#effects-semantics]
+
+- `assert_active`: effects on a removed fiber fail with `KardiaError::InactiveEffect`.
+- Inside one effect: disposers run **sequentially in reverse order**.
+- Ownership transfer: a nested `EffectHandle` created inside an effect is registered on the fiber; `scope.adopt(h)` moves it under the outer effect (the TS `collect` → `_disposables.delete`).
+- A failing effect body disposes what it collected; synchronous errors propagate to the caller, async ones are logged and reported via `ready()`.
+- Fiber unload drains the accumulator in reverse insertion order and runs the disposers **concurrently** (`join_all`), logging failures and panics (`catch_unwind`), because Cordis tests require sibling effects to clean up concurrently (`service-dispose.spec.ts`). Ordered teardown is obtained by grouping steps in one effect.
+- `EffectHandle` is a non-owning handle: dropping it does **not** dispose. Component lifetime is dynamic and governed by the fiber, which is exactly where the paper distinguishes Cordis from RAII ([§7.3](/docs/concepts-related-work): lexical scoping is complementary, for resources local to one effect; inside a disposer, ordinary `Drop` types are fine).
+
+### Interruption and cancellation safety (D6) [#interruption]
+
+Rust *can* cancel a future by dropping it, something JS cannot, so a Rust host could offer the paper's *aborting* L-Divert. The plan deliberately does **not** drop in-flight `apply` futures: a future dropped between "acquire resource" and "register its disposer" would leak exactly what temporal composability promises to recover. Instead:
+
+- the host is **inertial** ([paper §4.4](/docs/concepts-metatheory)): a stale load lands, then unloads;
+- explicit boundaries, `scope.yield_(..).await?` and `ctx.checkpoint().await?`, return `Err(Interrupted)` when the fiber's target changed since the load began (the TS `while (runner.epoch === oldEpoch)` check). Returning `Interrupted` from `apply` is not a failure; the fiber unloads what it registered.
+
+This is the loader's outer-fiber pattern (`yield () => {}` after import) made explicit.
+
+<Callout type="info">
+The boundaries are synchronous in the code (`scope.yield_(..)?`, `ctx.checkpoint()?`). `ctx.checkpoint()` fails once the load has been superseded (the fiber's target no longer equals the target of its episode) or the fiber was retired; `scope.checkpoint()` fails once the effect has been disposed. Async effect bodies are spawned and never dropped half-way; disposal waits for the body to reach its end or a boundary.
+</Callout>
+
+## Plugins, configuration and the lifecycle [#plugins]
+
+### Plugin trait [#plugin-trait]
+
+```rust
+pub trait Plugin: Send + Sync + 'static {
+    const NAME: &'static str;
+    type Config: DeserializeOwned + Send + Sync + 'static;     // `()` for no config
+    type Inject: InjectSet = ();                               // (via helper trait; defaults unstable)
+    fn inject_meta() -> InjectSpec { Self::Inject::spec() }    // declared keys + interception metadata
+    fn provide() -> &'static [&'static str] { &[] }            // declarative provision (p), for tooling & cycle check
+    fn apply(ctx: Context, config: Arc<Self::Config>)
+        -> impl Future<Output = Result<(), PluginError>> + Send;
+}
+impl Context {
+    pub fn plugin<P: Plugin>(&self, config: P::Config) -> Result<Fiber, KardiaError>;
+    pub fn plugin_value<P: Plugin>(&self, config: serde_json::Value) -> Result<Fiber, KardiaError>;
+    pub fn inject<F, Fut>(&self, deps: InjectSpec, f: F) -> Result<Fiber, KardiaError>;   // closure plugin
+}
+```
+
+Erased form stored in runtimes: `PluginDef { key: RuntimeKey, name, inject: Arc<InjectSpec>, provide, decode: fn(&Value) -> Result<ErasedConfig, ValidationError>, apply: Arc<dyn Fn(Context, ErasedConfig) -> BoxFuture<'static, Result<(), PluginError>> + Send + Sync> }`. `RuntimeKey` is `TypeId::of::<P>()` for typed plugins and a pointer identity for closure plugins (dynamic modules add their own key kind, see [Loader internals](/docs/development-loader#hmr)).
+
+<Callout type="info">
+In the code (`plugin.rs`, `registry.rs`):
+
+- `Plugin` has `const NAME`, `type Config`, `fn inject() -> Inject` (default: empty), `fn provide() -> Vec<Key>` (default: empty) and `fn apply(ctx: Context, config: Arc<Self::Config>) -> impl Future<Output = Result<()>> + Send`. `Inject` (ordered keys, each with optional interception metadata) replaces `InjectSet` / `InjectSpec`.
+- `ctx.plugin::<P>(config)`, `ctx.plugin_value::<P>(value)`, `ctx.plugin_def(&def, value)` and `ctx.inject(inject, f)` return `kardia_core::Result<Fiber>`; the closure of `inject` is `Fn(Context) -> Fut`. `ctx.plugin::<P>(config)` requires `P::Config: Serialize`: the typed config is serialized to a `Value` and decoded like any other configuration, so a `Deserialize`-only config is passed as JSON with `plugin_value`.
+- `PluginDef` is a cheap clone of `Arc<{ key, name: Option<String>, inject, provide, tags, decode, apply }>`, built with `PluginDef::of::<P>()`, `PluginDef::new(apply)` or `PluginDef::typed(apply)` and refined with `.name(..)`, `.inject(..)`, `.provides(..)`, `.tag(..)`, `.validate_with(..)`. `RuntimeKey` is `Type(TypeId)` or `Def(u64)` (a counter-assigned identity for closure-based definitions). Dynamic modules reuse `Def`; they add no key kind of their own.
+</Callout>
+
+### Configuration (D7) [#configuration]
+
+- Configuration arrives as `serde_json::Value` (from files, the loader API, or `plugin_value`) and is decoded **once** per (re)load attempt with `serde_path_to_error`, producing `ValidationError { issues: Vec<Issue { path, message }> }`, the analogue of Standard Schema issues. Unknown fields are tolerated unless the plugin opts into `deny_unknown_fields` (repository rule: tolerate unknown fields).
+- `Fiber::update(value)`:
+  1. validate first (a rejected config leaves the running instance untouched);
+  2. emit `ConfigCommitted` (loader write-back) unless `no_save`;
+  3. offer the new config to the plugin's **update hook**;
+  4. if no hook accepts it, `restart()` (`revision += 1` → new target → unload → reload).
+
+  Hook registration is an effect: `ctx.on_config_update::<P>(|new| async { …; Ok(Handled::Yes) })`.
+
+<Callout type="info">
+In the code, `Fiber::update(value)` and `Fiber::update_with(value, no_save)` return `Result<Settle>`: validation errors are returned at once, and the `Settle` future resolves when the update has taken effect (`db.update(json!(..))?.await?`). The update hook is `ctx.on_update::<C>(|new: &C| -> bool)` (returning `true` takes the update over, no restart) or `ctx.on_update_with::<C>(..)` (returning the future that `update` resolves with); `C` is the plugin's decoded configuration type. Before a plugin's own decoding, the configuration passes through the root's config hooks (`ctx.on_config(..)`), which the loader uses to evaluate expressions.
+</Callout>
+
+### The lifecycle state machine (`lifecycle.rs`) [#lifecycle]
+
+A faithful port of `_checkImpl` / `_refresh` / `_setEpoch` / `_reload` / `_unload` / `_updateState`, split into pure critical sections returning actions:
+
+```rust
+// critical section: recompute target (refresh)
+fn refresh(st: &mut State, id: FiberId) -> Actions {
+    let f = st.fiber(id);
+    let target = st.compute_target(id);          // Inactive if removed || error || missing key; else Epoch{revision, providers}
+    if target == f.target || f.error.is_some() { return Actions::none() }
+    let old = replace(&mut st.fiber_mut(id).target, target.clone());
+    if st.fiber(id).inertia.is_some() { return Actions::none() }        // inertial
+    match (old, &target) {
+        (Target::Inactive, Target::Epoch { .. }) => st.begin(id, Transition::Reload),   // L-Begin → Loading
+        _                                         => st.begin(id, Transition::Unload),  // L-Leave → Unloading (+ notify consumers)
+    }
+}
+
+// spawned task
+async fn reload(root: Arc<Root>, id: FiberId) {
+    let (start, apply_fut) = root.with(|st| st.commit_view(id));        // ω := resolved; register as dependent; snapshot target
+    tokio::task::yield_now().await;                                     // coalesce superseded updates (TS: await Promise.resolve())
+    let outcome = if root.with(|st| st.target_is(id, &start)) {
+        AssertUnwindSafe(apply_fut).catch_unwind().await                // run apply; effects register themselves
+    } else { Ok(Ok(())) };
+    root.run(|st| st.finish_reload(id, &start, outcome));               // Active | Failed | chain into unload
+}
+
+async fn unload(root: Arc<Root>, id: FiberId) {
+    root.wait_until(|st| st.provisions_free(id)).await;                 // fiber-level guard (relied_n)
+    let disposers = root.with(|st| st.drain_disposables_rev(id));
+    join_all(disposers.into_iter().map(run_logged)).await;              // concurrent, errors logged
+    root.run(|st| st.finish_unload(id));                                // release providers, ω := None, Inactive | chain into reload
+}
+```
+
+- `begin` sets the state, creates the `inertia` shared future, and, on leaving `Active`, emits notifications for every provision still bound (L-Leave before any inverse).
+- `finish_reload`: if the target is unchanged → `Active` (or `Failed` if the apply errored; the error is recorded only if still current, so a superseded failure only cleans up); otherwise chain into `unload`.
+- `finish_unload`: drop self from each committed impl's `dependents` and wake providers whose set became empty; then `Inactive` (→ `Pending`/`Failed`/`Disposed` by `settled_state()`) or chain into `reload` if the target is no longer ⊥.
+- `wait_until` uses `Notify` with `Notified::enable()` registered *before* releasing the lock (no lost wake-ups).
+
+<Mermaid chart={"flowchart TD\n  R[refresh: compute target] --> C{target changed and no error?}\n  C -- no --> X[nothing to do]\n  C -- yes --> I{transition in flight?}\n  I -- yes --> X2[record target only: inertia]\n  I -- no --> B{old target inactive?}\n  B -- yes --> L[begin reload: commit view, Loading]\n  B -- no --> U[begin unload: notify consumers, Unloading]\n  L --> FR[finish_reload]\n  FR -- target unchanged --> A[Active or Failed]\n  FR -- target changed --> U\n  U --> G[wait for dependents to drain]\n  G --> D[dispose accumulator concurrently]\n  D --> FU[finish_unload]\n  FU -- target is an epoch --> L\n  FU -- target inactive --> P[Pending, Failed or Disposed]"} />
+
+<Callout type="info">
+The code splits the work slightly differently (`lifecycle.rs`). `refresh` computes the target and calls `set_target`, the port of `_setEpoch`, which records it and, unless the fiber has failed or a transition is in flight (`inertia: bool`), calls `begin_reload` (commit ω := resolved, register as dependent, record the episode, queue `Action::Reload`) or `begin_unload` (queue `Action::Unload`) and updates the state; `update_state` emits `StatusChanged` and, on entering or leaving `Active`, notifies the consumers of the fiber's live provisions. The spawned `reload` first yields (to coalesce superseded updates), then reads the plugin and its configuration (`prepare_execute`), resolves the configuration through the config hooks, runs `apply` with `catch_unwind`, and calls `finish_reload`. `unload` waits until no binding of the fiber has dependents, drains the accumulator newest first (`start_drain`), disposes all effects concurrently with `join_all`, logs failures, and calls `finish_unload`. `wait_until` registers `Notified::enable()` on the root-wide notifier before checking the predicate.
+</Callout>
+
+### Instantiation (O-Insert / O-Retire) [#instantiation]
+
+`ctx.plugin(..)` creates `FiberData` (fresh `FiberId`, child `Scope`), resolves injections, and registers on the **parent** fiber an effect whose body inserts the fiber into its runtime and runs `refresh`, and whose inverse marks it removed, forces the target to ⊥, awaits the transition chain and settles to `Disposed` (TS `fiber.ts:178-206`). Unloading a parent therefore cascades to children through the parent's accumulator; re-enabling creates a *fresh* fiber ([paper §4.4](/docs/concepts-metatheory), Configuration).
+
+### Registry replace [#replace]
+
+`registry.replace(old, new)` (aliases + `_replace` on each fiber: new runtime, new inject, re-resolve, clear error, `revision += 1`, refresh) is ported as is; it is the primitive behind HMR and is useful on its own (swapping an implementation behind live fibers).
+
+<Callout type="info">
+In the code: `ctx.registry().replace(&old_def, &new_def) -> Vec<Fiber>` returns the fibers moved to the new definition, and each moved fiber emits `Replaced`.
+</Callout>
+
+### `Fiber` handle API [#fiber-handle]
+
+```rust
+impl Fiber {
+    pub fn id(&self) -> FiberId;  pub fn state(&self) -> FiberState;  pub fn context(&self) -> Context;
+    pub async fn settled(&self) -> Result<(), Arc<PluginError>>;   // TS fiber.await()
+    pub async fn dispose(&self);                                    // retire
+    pub async fn restart(&self) -> Result<(), Arc<PluginError>>;
+    pub async fn update(&self, config: serde_json::Value, no_save: bool) -> Result<(), UpdateError>;
+    pub fn effects(&self) -> Vec<EffectMeta>;                      // introspection (labels, children)
+}
+```
+
+<Callout type="info">
+In the code (`fiber.rs`): `context()` returns `&Context`. `settled()` and `restart()` return a `Settle` (a boxed future of `kardia_core::Result<()>`), `dispose()` a `Disposal` (a future of `Result<()>`; disposing the root fiber restarts it, reverting everything registered on it), and `update(config)` / `update_with(config, no_save)` a `Result<Settle>`. There are also `config()`, `inject()`, `error()`, `runtime()`, `def()`, `name()`, `parent()`, `is_removed()`, `is_root()`, `effect_handle()` and `effect_count()`. `ctx.fiber()` returns the fiber of a context.
+</Callout>
+
+## Events, logger and built-in services [#events]
+
+### Typed events [#typed-events]
+
+```rust
+pub trait Event: Send + Sync + 'static { type Output: Send = (); }
+impl Context {
+    pub fn on<E: Event>(&self, f: impl Fn(&E) -> E::Output + Send + Sync + 'static) -> EffectHandle;
+    pub fn emit<E: Event>(&self, e: &E);
+    pub async fn parallel<E: Event>(&self, e: &E) -> Result<(), AggregateError>;
+    pub async fn serial<E: Event>(&self, e: &E) -> Option<E::Output>;   // first "bailed" result
+    pub fn bail<E: Event>(&self, e: &E) -> Option<E::Output>;
+}
+```
+
+- Listeners are stored in an `IdTable` per event `TypeId`; registration is an effect of the listener's fiber.
+- Dispatch snapshots the table and skips removed listeners.
+- Optional realm filtering (`E: Scoped`) reproduces `Context.filter` for `ServiceChanged`.
+- Waterfall-style extension points (`internal/config`, `internal/get`, `internal/update`) are replaced by **explicit hook traits** (config transform hook for the loader, update hook per fiber, commit hook) rather than stringly-typed events.
+
+Internal events: `PluginInserted/Removed`, `StatusChanged { fiber, old, new }`, `ServiceChanged { key, realm }`, `ConfigCommitted { fiber, value }`, `Replaced { fiber }`.
+
+<Callout type="info">
+In the code (`events.rs`): `trait Event: Any + Send + Sync { type Output: Bailable; fn filter(&self, listener: &Context) -> bool { true } }`. `Bailable` (implemented for `()`, `bool`, `Option<T>` and `Result<T, Error>`) says which results stop a `bail` / `serial` dispatch and which count as failures of a `parallel` one. `filter` replaces `E: Scoped`: `ServiceChanged` reaches only listeners whose context resolves the key to the same realm. Listeners are kept in a `Vec` per `TypeId`. `on` returns `Result<EffectHandle>`; there are also `on_prepend`, `on_async`, `once` and `listener_count`. The hooks are `ctx.on_config(..)` (config transform), `ctx.on_update::<C>(..)` (update hook per fiber), and the `ConfigCommitted` event as the commit point. `ConfigCommitted` carries `{ fiber, config }`. `emit` logs a panicking listener and continues (see [Events](/docs/development-status#deviations)).
+</Callout>
+
+### Logger [#logger]
+
+`Logger` is a core service:
+
+- `ctx.logger(name)` → `Logger { name, level, fiber }` (name defaults to the calling fiber's runtime name, overridable by interception metadata `{ name, level }`);
+- `Exporter` trait objects registered via `logger.exporter(e)` **as effects**;
+- ring buffer of the last 1000 `Message { sn, ts, name, level, args }`.
+
+Format strings use Rust formatting (`format_args!`) instead of printf directives. A `tracing` bridge (a `tracing_subscriber::Layer` feeding exporters) can be added in `kardia-logger-console`; it is not required by core.
+
+<Callout type="info">
+In the code (`logger.rs`): `ctx.logger()` takes no name (it is named by `intercept("logger", { name })` or after the fiber's plugin), `ctx.logger_named(name)` names it explicitly, and `svc.logger()` logs on a caller's behalf. Levels are `error`, `warn`, `info` and `debug`, and each takes `impl Display`, so `format_args!(..)` works directly. Exporters are registered with `ctx.add_exporter(Arc<dyn Exporter>)`, an effect of the current fiber; `Exporter::export(&Message)` and an optional per-name `level`. `Message` is `{ sn, ts, name, level, text, fiber }`: the text is already formatted (see [Logger](/docs/development-status#deviations)). The buffer holds 1000 messages by default (`ctx.log_buffer()`, `ctx.set_log_buffer_size(n)`). No `tracing` bridge has been added.
+</Callout>
+
+### Built-in plugin crates [#built-ins]
+
+| Crate | Port of | Rust building blocks |
+|---|---|---|
+| `kardia-timer` | `plugin-timer` | `tokio::time::{sleep, interval}`, `JoinHandle::abort` as disposers; `timeout(d) -> Result<(), Disposed>` future; `interval(d) -> impl Stream`; `throttle/debounce` handles |
+| `kardia-logger-console` | `plugin-logger-console` | ANSI colours, label alignment, level map |
+| `kardia-fs` | `plugin-fs-node` | `notify` (watch parent dir for single files), `globset` + ported last-match-wins/ancestor predicate |
+
+<Callout type="info">
+The timer API in the code (`TimerExt` on `Svc<Timer>`): `timeout(delay, callback)` and `interval(delay, callback)` are effects returning `Result<EffectHandle>`; `sleep(delay)` is the future that fails with `Disposed` if the caller is disposed first; `ticks(delay)` returns `Ticks`, whose `tick().await` resolves on the next tick (instead of a `Stream`); `throttle` and `debounce` return `Scheduled<A>` handles. `ctx.timer()` (`TimerContext`) is shorthand for `ctx.get::<Timer>()`.
+</Callout>

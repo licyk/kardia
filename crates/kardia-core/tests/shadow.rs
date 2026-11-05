@@ -1,7 +1,8 @@
-//! Port of `packages/core/tests/shadow.spec.ts`, re-expressed on `Svc`
-//! (plan §6.4): a service resolves its dependencies through the context it
-//! stored when it was constructed (its def site), while `Svc::caller` is the
-//! context that accessed it (its use site).
+//! Port of `packages/core/tests/shadow.spec.ts`, re-expressed on `Svc`: a
+//! service resolves its dependencies through the context it stored when it
+//! was constructed (its def site), while `Svc::caller` is the context that
+//! accessed it (its use site). See
+//! <https://licyk.github.io/kardia/docs/development-design#caller-attribution>.
 
 mod common;
 

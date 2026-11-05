@@ -1,0 +1,198 @@
+---
+title: "Rust design"
+description: "The design of kardia, the Rust implementation of Cordis: goals, the concept mapping from the paper to Rust, and the crate layout."
+icon: Code
+---
+
+This section is the design of kardia, the Rust re-implementation of the Cordis framework. It builds on
+
+- the **theory**: the [Concepts](/docs/concepts) section (the paper's definitions, rules and theorems), and
+- the **reference implementation**: the [Cordis reference](/docs/reference) section (TypeScript, Cordis v4),
+
+and is explicit about which of the two it follows where they differ (see [Paper vs. code](/docs/reference-paper-vs-code)). The design is implemented in [`crates/`](https://github.com/licyk/kardia/tree/main/crates); [Status and deviations](/docs/development-status#status) records the status and where the implementation departs from this text.
+
+<Callout type="info">
+The section started as a plan written before the code. Its text is kept as the record of the design. Where the code in `crates/` now differs from a signature or sketch, a note below the sketch says so, and [Status and deviations](/docs/development-status#deviations) lists the deliberate departures.
+</Callout>
+
+<Cards>
+  <Card title="Concurrency" href="/docs/development-concurrency" description="One lock per root, critical sections that return actions, lock ordering." />
+  <Card title="Core data structures" href="/docs/development-lifecycle" description="Identifiers, scopes, bindings, fibers, IdTable, cycle detection." />
+  <Card title="API design" href="/docs/development-design" description="Services and access, effects, plugins and configuration, events and logger." />
+  <Card title="Loader internals" href="/docs/development-loader" description="kardia-loader, kardia-include, dynamic modules and HMR." />
+  <Card title="Testing" href="/docs/development-testing" description="Ported TypeScript specs, model-based tests of the metatheory, tooling." />
+  <Card title="Status and deviations" href="/docs/development-status" description="Implementation phases, status, and every departure from the plan." />
+  <Card title="Risks" href="/docs/development-risks" description="Risks and open decisions, and a worked example of the API." />
+  <Card title="Contributing" href="/docs/development-contributing" description="Building, testing, CI, releases and this documentation site." />
+</Cards>
+
+## Goals, non-goals, guiding decisions [#goals]
+
+### Goals [#goals-list]
+
+1. **Semantic fidelity to the calculus** ([paper §4](/docs/concepts-calculus)): fibers, target vs. committed views, the guard on unload, inertia, failure outcomes, single source per (key, realm), confluence.
+2. **Behavioural parity with Cordis core** where the paper is silent (epoch with revision, two-level guard, concurrent fiber-level disposal, `update` veto, `replace`), using the TypeScript test suite as the acceptance specification.
+3. **Idiomatic Rust**: typed service keys, explicit caller attribution instead of `Proxy`, `Send + Sync` handles usable from a multi-threaded tokio runtime, no `unsafe` in the core.
+4. A declarative **loader** (entries, groups, realms) and file-backed **include** with two-way sync.
+
+### Non-goals (for the first releases) [#non-goals]
+
+- Re-evaluating plugin *code* at runtime (HMR). Rust has no module registry; this becomes an optional, later "module source" extension ([Loader internals](/docs/development-loader#hmr)).
+- npm-specific tooling (`package-manager`, `create`, `loader-utils`). Not ported.
+- Byte-exact parity of error messages and UTF-16 column numbers (nice-to-have, not required).
+
+<Callout type="info">
+HMR was a non-goal for the first releases only. It has since been implemented in `kardia-hmr` (WASM, dylib and process backends, watch mode); see [Status and deviations](/docs/development-status#dynamic-modules).
+</Callout>
+
+### Guiding decisions [#decisions]
+
+A summary; each decision is justified on the page linked in the last column.
+
+| # | Decision | Section |
+|---|---|---|
+| D1 | `Send + Sync` core; one state lock per root; **no user code runs while the lock is held**; every JS "synchronous segment" becomes one critical section; follow-up work is returned as an action list and executed after unlocking | [Concurrency](/docs/development-concurrency) |
+| D2 | Fibers live in a registry arena addressed by never-reused `FiberId`s; all cross references (parent, dependents, committed view) are ids, never pointers | [Core data structures](/docs/development-lifecycle) |
+| D3 | Service keys are **strings** (needed by configuration) bound to a **Rust type** via a `Service` trait; values stored as `Arc<dyn Any + Send + Sync>` plus their `TypeId` (detects key collisions) | [Services](/docs/development-design#services) |
+| D4 | Caller attribution by an explicit `Svc<S>` handle = (service `Arc`, caller `Context`); services keep their own def-site `Context` | [Caller attribution](/docs/development-design#caller-attribution) |
+| D5 | Effects are registered on the current fiber's accumulator; disposers are `FnOnce` (at-most-once enforced by the type system); `EffectHandle` does **not** dispose on `Drop` | [Effects](/docs/development-design#effects) |
+| D6 | Async transitions are **inertial**: an in-flight `apply` future is never dropped; divert happens at explicit checkpoints (`ctx.checkpoint().await?`, `scope.yield_(d).await?`) | [Interruption](/docs/development-design#interruption) |
+| D7 | Configuration enters as `serde_json::Value` and is deserialized **once** into `P::Config` at the boundary | [Configuration](/docs/development-design#configuration) |
+| D8 | Plugins are statically registered in a `Catalog` (name → erased factory); dynamic modules are a later, pluggable backend | [Events and built-ins](/docs/development-design#events), [Loader internals](/docs/development-loader) |
+| D9 | Dependency cycles are reported when a fiber is inserted ([paper §6.5](/docs/concepts-related-work)), not silently left pending | [Cycle detection](/docs/development-lifecycle#cycle-detection) |
+
+<Callout type="info">
+In the code, `ctx.checkpoint()` and `scope.yield_(d)` are synchronous checks (`ctx.checkpoint()?`, `scope.yield_(d)?`), not futures; the decision itself (no dropped `apply` futures, divert at explicit boundaries) holds. The `TypeId` of D3 is not stored with the binding: a key collision surfaces as `AccessError::TypeMismatch` when the stored `Arc<dyn Any>` fails to downcast.
+</Callout>
+
+## Concept mapping: paper → Cordis (TS) → Rust [#concept-mapping]
+
+| Paper | Cordis (TypeScript) | Rust (proposed) |
+|---|---|---|
+| Γ∞ context | `Context` (Proxy, prototype chain) | `Context` – cheap `Clone` handle: `Arc<Root>` + `FiberId` + `Arc<Scope>` |
+| derived realization | `ctx.extend()`, `isolate`, `intercept` | `ctx.isolate(..)` / `ctx.intercept(..)` return a new `Context` with a child `Scope` |
+| effect / effect iterator | `ctx.effect(fn \| generator)` | `ctx.effect(label, \|scope\| async {..})`, `scope.defer(..)`, `scope.yield_(..).await?` |
+| accumulator g | `fiber._disposables: DisposableList` | `FiberData::disposables: IdTable<EffectId>` |
+| inverse | `() => …` | `Disposer = Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send>` |
+| Σ, Σ_iso | `reflect.store: Dict<Impl, symbol>`, `ctx[isolate]` | `State::store: HashMap<RealmId, Impl>`, `Scope::isolate: overlay HashMap<Key, RealmId>` |
+| Σ_inter | `ctx[intercept]` | `Scope::intercept: overlay HashMap<Key, serde_json::Value>` |
+| key k / value 𝒱_k | string name / `any` | `Key(Arc<str>)` / `S: Service`, `TypeId` checked |
+| provider identity | `Impl.uid` | `ImplId(u64)` (never reused) |
+| component (d, p, e) | plugin + `inject` + `provide` | `trait Plugin { const NAME; type Config; fn inject(); fn provide(); fn apply(); }` |
+| fiber | `Fiber` | `FiberData` in the registry + `Fiber` handle |
+| name 𝔑 | `fiber.uid` | `FiberId(u64)` |
+| θ | `FiberState` | `enum FiberState { Pending, Loading, Active, Unloading, Failed, Disposed }` |
+| target view | `_runner.epoch` string | `Target::{Inactive, Epoch { revision, providers }}` (structured, not a string) |
+| committed view ω | `fiber.committed` | `Arc<CommittedView>` (key → `ImplId`) |
+| inertia | `fiber.inertia: Promise` | `Option<Shared<BoxFuture<'static, ()>>>` + spawned task |
+| guard (relied_n) | `Impl.dependents`, `_release`, `impl.release` | `Impl::dependents: HashSet<FiberId>` + `tokio::sync::Notify` |
+| O-Insert / O-Retire | `ctx.plugin()` / its effect's inverse | `ctx.plugin::<P>(cfg)` / the returned instantiation disposer |
+| failure outcome | `_error`, `FAILED` | `FiberData::error: Option<Arc<PluginError>>`, `FiberState::Failed` |
+| proxy access check (Alg. 6) | `ReflectService.handler` + `locate` | `ctx.get::<S>() -> Result<Svc<S>, AccessError>` walking committed views |
+| caller attribution | tracker / shadow proxies | `Svc<S>::caller()`; services hold their own `Context` |
+| events | `EventsService` string events | typed events: `trait Event` + `ctx.on::<E>()`, dispatch modes |
+| loader entry | `EntryOptions`, `Entry` | `EntryOptions` (serde), `Entry` state machine in `kardia-loader` |
+| module import | Node ESM loader | `Catalog` of statically registered plugins; optional `ModuleSource` backends |
+
+<Callout type="info">
+The Rust column was the proposal. In `kardia-core` today:
+
+- `Context` is `Arc<RootInner>` (private) + `FiberId` + `Arc<Scope>`; a root is created with `Context::new()`.
+- The accumulator is `FiberData::disposables: IdTable<Arc<EffectCell>>`; there is no `EffectId` type (`IdTable` hands out `u64` ids).
+- `Disposer` is a struct (`Disposer::new`, `fallible`, `future`, `try_future`), not a boxed-closure type alias.
+- The store is `State::store: HashMap<RealmId, ImplId>` next to `State::impls: HashMap<ImplId, Impl>`; isolation and interception are `Scope` nodes and mutable `Overlay` tables (see [Core data structures](/docs/development-lifecycle#scope)).
+- The committed view is `Option<HashMap<Key, ImplId>>`; inertia is a `bool` flag on the fiber plus the spawned transition task; the guard waits on one root-wide `Notify`.
+- The failure outcome is `FiberData::error: Option<Error>` (`kardia_core::Error`, a cheap `Arc`-backed error); there is no `PluginError`.
+- `Plugin` has `const NAME`, `type Config`, `fn inject() -> Inject`, `fn provide() -> Vec<Key>` and `fn apply(..)`.
+</Callout>
+
+## Workspace layout [#layout]
+
+A Cargo workspace at the repository root, next to the untouched `cordis/` reference code (a local checkout of the TypeScript sources, ignored by git), `examples/`, `docs/` and the documentation site in `site/`:
+
+```text
+kardia/
+├─ Cargo.toml                 # [workspace]
+├─ crates/
+│  ├─ kardia-core/            # Phases 1–3: the paper's core library
+│  │  ├─ src/
+│  │  │  ├─ lib.rs            # public re-exports
+│  │  │  ├─ root.rs           # RootInner (shared state + lock), actions run after unlocking
+│  │  │  ├─ context.rs        # Context handle: isolate / intercept / extend, re-parenting
+│  │  │  ├─ scope.rs          # Scope chain nodes, Overlay isolation / interception tables
+│  │  │  ├─ key.rs            # Key, RealmId, ImplId, FiberId newtypes
+│  │  │  ├─ state.rs          # State, FiberData, Target, Impl (bindings)
+│  │  │  ├─ id_table.rs       # IdTable
+│  │  │  ├─ effect.rs         # effect engine, EffectScope, Disposer, EffectHandle
+│  │  │  ├─ fiber.rs          # FiberState, Fiber handle, checkpoint
+│  │  │  ├─ lifecycle.rs      # refresh / reload / unload state machine (critical sections + transitions)
+│  │  │  ├─ registry.rs       # runtimes, plugin(), replace(), aliases, cycle warning
+│  │  │  ├─ plugin.rs         # Plugin trait, Inject, closures as plugins, erased PluginDef
+│  │  │  ├─ deps.rs           # Deps tuples, Injected<D> (checked typed access)
+│  │  │  ├─ service.rs        # Service trait, Svc<S>, provide / get / live, interception metadata merge
+│  │  │  ├─ access.rs         # committed-view resolution (Algorithm 6 + isolation boundaries)
+│  │  │  ├─ events.rs         # typed events, dispatch modes, internal events, update / config hooks
+│  │  │  ├─ logger.rs         # Logger service, exporters-as-effects, ring buffer
+│  │  │  ├─ config.rs         # Value → Config deserialization, ValidationError with paths
+│  │  │  └─ error.rs          # Error, KardiaError, AccessError, Interrupted, AggregateError
+│  │  └─ tests/               # ported TypeScript specs, model-based property tests
+│  ├─ kardia-macros/          # Phase 6: optional proc macros (ergonomics, compile-time inject checks)
+│  ├─ kardia-timer/           # Phase 3: timer service (tokio::time)
+│  ├─ kardia-logger-console/  # Phase 3: console exporter
+│  ├─ kardia-fs/              # Phase 5: fs.watch service (notify + globset)
+│  ├─ kardia-loader/          # Phase 4: entries, tree, group, realms, catalog, validation, expressions
+│  ├─ kardia-include/         # Phase 5: YAML/JSON-backed trees: parse, journal, patch, sync, atomic write
+│  ├─ kardia-hmr/             # Phase 7 (optional, research): module graph + reconcile algorithm
+│  ├─ kardia-guest/           # guest SDK: write WASM / dylib guest plugins in Rust
+│  └─ kardia/                 # facade crate re-exporting the above + `kardia` binary (bootstrap like core/bin.js)
+│     ├─ src/lib.rs           #   kardia::prelude, kardia::catalog()
+│     ├─ src/main.rs          #   the `kardia` binary
+│     └─ examples/            #   provider_consumer.rs
+├─ examples/                  # kardia.yml and plugins/hello.wat, booted by `cargo run -p kardia -- examples/kardia.yml`
+├─ site/                      # this documentation site
+└─ docs/
+```
+
+<Callout type="info">
+The plan's tree listed `store.rs` for bindings and `fiber.rs` for `FiberData`; in the code, bindings and fiber data live in `state.rs` (provide / withdraw / get are in `service.rs`), and `context.rs`, `deps.rs` and `id_table.rs` are separate modules. The tree above follows the repository.
+</Callout>
+
+### Dependency direction [#dependencies]
+
+Crate dependencies mirror the TS packages: `core ← timer, logger-console, fs ← loader ← include, hmr ← kardia (facade)`; `hmr` also uses `fs` for its watch mode, and `kardia-guest` depends on none of them.
+
+<Mermaid chart={"flowchart BT\n  core[kardia-core]\n  timer[kardia-timer] --> core\n  console[kardia-logger-console] --> core\n  fs[kardia-fs] --> core\n  loader[kardia-loader] --> core\n  include[kardia-include] --> loader\n  include --> fs\n  include --> core\n  hmr[kardia-hmr] --> loader\n  hmr --> fs\n  hmr --> core\n  facade[kardia] --> include\n  facade --> hmr\n  facade --> timer\n  facade --> console\n  facade --> macros[kardia-macros]\n  guest[kardia-guest]"} />
+
+The diagram shows the direct dependencies in the `Cargo.toml` files. The chain above is a layering, not a list of direct dependencies: `kardia-loader` depends only on `kardia-core` (not on `timer`, `logger-console` or `fs`), while `kardia-include` and `kardia-hmr` each depend on `core`, `loader` and `fs`. The facade depends on every other crate except `kardia-guest`; `kardia-macros` depends on no kardia crate (its tests use `kardia-core`).
+
+### External dependencies [#external-dependencies]
+
+Kept deliberately small; each line says why it is needed.
+
+| Crate | Used by | Purpose |
+|---|---|---|
+| `tokio` (`rt`, `sync`, `time`, `macros`) | all runtime crates | task spawning for transitions, `Notify`/`watch`, timers; `rt-multi-thread` + `signal` in the binary, `test-util` for paused time in tests |
+| `futures` | core, timer, loader, include, hmr, facade | `BoxFuture`, `Shared` (inertia handles), `join_all`, `catch_unwind` |
+| `parking_lot` | core, timer, logger-console, fs, loader, include, hmr | the per-root state lock (non-poisoning, small) and other short critical sections |
+| `thiserror` | core, timer, loader, include | structured error types |
+| `serde`, `serde_json` | core, logger-console, loader, include, hmr, guest, facade | configuration values, interception metadata, the guest ABI |
+| `serde_path_to_error` | core | validation issues with paths (Standard Schema analogue) |
+| `indexmap` | core, include, hmr | ordered maps: entry options, the journal, loaded modules |
+| `saphyr-parser` | include | YAML with spans and tags: `!!js`, source locations |
+| `chrono` | logger-console | timestamps in the time template |
+| `notify`, `globset` | fs | file watching, glob filters |
+| `syn`, `quote`, `proc-macro2` | macros | the `#[derive(Service)]` / `#[plugin]` proc macros |
+| `proptest` (dev) | core | model-based tests of the metatheory |
+| `trybuild` (dev) | macros | compile-fail tests for undeclared access |
+| `wasmtime` / `libloading` (features `wasm` / `dylib`) | hmr | the WASM and dylib module backends |
+
+`kardia-loader` uses `serde_json` but not `serde`; `logger-console` uses `serde` without `serde_json`.
+
+Not used:
+
+- `async-trait`: return-position `impl Future` in traits is stable.
+- `anyhow`: `kardia_core::Error` also serves the binary and the examples.
+- `inventory` / `linkme`: explicit `Catalog::register` is enough.
+- `smallvec`: plain `Vec`s suffice.
+- `tempfile`: the atomic write is a temp file in the same directory plus a rename, with `std`.
+- `anstream` / `anstyle`: console colours are plain ANSI escapes.

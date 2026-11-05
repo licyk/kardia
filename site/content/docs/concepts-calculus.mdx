@@ -1,0 +1,197 @@
+---
+title: "动态组合演算"
+description: "论文 §4.1–4.2：组件、纤程与注册表，以及让纤程在 Inactive、Reloading、Active 与 Unloading 之间迁移的九条编排规则与生命周期规则。"
+---
+
+本页概述论文（[arXiv:2608.25512](https://arxiv.org/abs/2608.25512)）的 §4.1–4.2。它是 Rust 核心必须实现的*状态机*的参考。Cordis 的实现见 Cordis 参考中的[纤程生命周期](/docs/reference-fibers)；kardia 的状态机见[生命周期](/docs/development-lifecycle)。
+
+## 组件与纤程（§4.1）
+
+### 定义 48：组件（component）
+
+```text
+ℭΓ := (d : 𝔇Γ) × (p : 𝔓Γ) × ℑΓ^{d∪p}
+```
+
+- `d`：余效应（coeffect）**规约**（所需的键）。
+- `p`：余效应**提供**（provision）（`Set(K)`，它*可以*设置的键；其效应函数不得设置 `p` 以外的任何键）。
+- `e`：一个带见证的**效应迭代器**（在 `≃_{d∪p}` 意义下带见证）：组件激活期间贡献的效应（effect），以及它们的逆操作。
+
+### 定义 49：纤程（fiber）
+
+实例化 `(d, p, e)` 的纤程是 `⟨d, p, e, π, σ, τ, θ⟩`：
+
+| 字段 | 含义 |
+|---|---|
+| `d, p, e` | 来自组件 |
+| `π` | 父纤程的名字，或 `root` |
+| `σ` | 纤程**自己的**余效应表（激活前为空） |
+| `τ` | 退役标志（新建时为 `⊥`，编排器使其退役后为 `⊤`） |
+| `θ` | 生命周期状态 |
+
+```text
+Θ := Inactive | Reloading(i, g, ω) | Active(g, ω) | Unloading(g, ω)
+   i – remaining iterator, g – accumulator so far, ω : d → 𝔑 – committed view
+```
+
+（`i` 为剩余的迭代器，`g` 为迄今为止的累加器，`ω : d → 𝔑` 为已提交视图。）
+
+`installed_n(γ) := θ_n ≠ Inactive`。稳定状态是 `Inactive`（不贡献任何东西）和 `Active`（贡献其效应）。`Reloading` 和 `Unloading` 之所以存在，是因为实际的转移需要一段时间。**已提交视图（committed view）`ω` 把每个声明的键映射到转移提交时*提供该键的纤程的名字***。
+
+### 定义 50：注册表（registry）
+
+状态携带 `F_γ : 𝔑 ⇀ 𝔉Γ`，其父指针构成一棵以 `root` 为根的树。**名字是原子**：从不被计算或检视，只做相等比较；新纤程取一个未被使用的名字（生成式名字）。
+
+余效应上下文是**派生的，而不是存储的**：
+
+```text
+σ_γ := ⋃ { σ_m | m ∈ dom(F_γ), θ_m = Active(−,−) }      (46)
+```
+
+由于 `dom(σ_n) ⊆ p_n`，且不同纤程的提供互不相交（由 O-Insert 保证），这一定义是良定的。因此每个键至多有一个可能的提供者 `provider_k(γ)`。
+
+重要推论：
+
+- 只有 **Active** 纤程提供服务。`Reloading` 纤程已经把绑定写入自己的表，但这些绑定对依赖者尚不可见；`Unloading` 纤程已经停止提供，尽管其绑定仍然存在。正是这一点使提供者能够*在撤回任何东西之前先停止提供*。
+- 引入领域（realm）的演算会把不相交条件放宽为“在同一领域内不相交”（§4.4，见[元理论](/docs/concepts-metatheory)）。单一共享领域使提供非空的组件同一时刻只能有一个纤程。
+
+### 定义 51：注册表投影
+
+`σ^S_γ := ⋃ { σ_m|_S | m ∈ dom(F_γ) }`：**所有**纤程（不只是 Active 纤程）在键集 `S` 上的绑定。见证条件在这里读取，因为转移自身的写入在纤程变为 Active 之前一直留在该纤程的表中。
+
+## 九条规则（§4.2）
+
+有两种关系：**编排**规则 `γ ⇒ δ`（编排器*可以*执行的动作；前提说明何时合法，而不是何时发生），以及**生命周期**规则 `γ ⟶ δ`（只要前提成立，系统就会主动执行）。任意交错都是合法的运行。
+
+<Mermaid chart={"stateDiagram-v2\n  [*] --> Inactive: O-Insert\n  Inactive --> Reloading: L-Begin\n  Reloading --> Reloading: L-Iter\n  Reloading --> Active: L-Finish\n  Reloading --> Unloading: L-Divert\n  Active --> Unloading: L-Leave\n  Unloading --> Inactive: L-Unload\n  Inactive --> [*]: O-Remove"} />
+
+O-Retire 可在任意状态下设置 `τ`，图中省略。下面是论文记法下的同一张图：
+
+```text
+            ┌──────── L-Iter ────────┐
+            ▼                        │
+  O-Insert ──► Inactive ── L-Begin ─► Reloading ── L-Finish ─► Active
+  O-Remove ◄──    ▲                      │                        │
+                  │                   L-Divert                 L-Leave
+                  └────── L-Unload ── Unloading ◄─────────────────┘
+  (O-Retire sets τ at any state; omitted from the figure)
+```
+
+### 编排（§4.2.1）
+
+```text
+O-Insert  n ∉ dom(F)   π ∈ dom(F) ∪ {root}   (d,p,e) ∈ ℭ   ∀m. p ∩ p_m = ∅
+          ─────────────────────────────────────────────────────────────
+          γ ⇒ γ[n ↦ ⟨d, p, e, π, ∅, ⊥, Inactive⟩]
+
+O-Retire  n ∈ dom(F)                ⟹  γ ⇒ γ[τ_n ↦ ⊤]
+
+O-Remove  τ_n = ⊤   θ_n = Inactive   σ_n = ∅   ∀m. π_m ≠ n
+          ⟹  γ ⇒ γ ∖ n
+```
+
+- 退役是一个**请求**，且无条件；由生命周期规则执行它。退役与移除分开，是为了让一个已退役的 Active 纤程先被停用（过早移除会丢弃累加器并导致泄漏）。
+- O-Remove 先移除子纤程再移除父纤程，并且只移除表为空的条目。
+- O-Insert 的最后一个前提就是**单一来源纪律**。
+
+#### 定义 52：实例化
+
+`e_n` 的一次迭代可以实例化一个组件：它执行 `π = n` 的 O-Insert，并**以新纤程的 O-Retire 作为其逆操作产出**。逆操作*使其退役而不是移除*，因为逆操作必须总是可应用的，而 O-Remove 带有前提（一个 Active 子纤程会阻止它）。一个已退役、Inactive 且为空的条目是*残留的*（vestigial）（引理 62，见[元理论](/docs/concepts-metatheory)）：它与不存在无法区分。使子纤程退役不会让父纤程等待；孙纤程逐层处理。
+
+### 生命周期（§4.2.2）
+
+#### 定义 53：目标视图与静止
+
+```text
+target_n(γ) := ⊥                                   if τ_n ∨ ¬(γ ⊧ d_n)
+               (k ∈ d_n) ↦ provider_k(γ)            otherwise
+
+quiet(γ) := ∀n. (θ_n = Inactive ⇒ target_n = ⊥)
+              ∧ (θ_n = Active(−, ω_n) ⇒ target_n = ω_n)
+              ∧ no fiber in Reloading/Unloading
+```
+
+（若纤程已退役或依赖未满足，目标为 `⊥`，否则把每个声明的键映射到其提供者。静止（quiescence）要求：Inactive 纤程的目标为 `⊥`，Active 纤程的目标等于其已提交视图，且没有纤程处于 Reloading/Unloading。）
+
+目标只取决于退役与余效应解析。**记录提供者的名字而不是值**，才使比较有意义：否则另一个提供相等值的纤程会被判为相等。（实现上：`fiber.committed` 保存该映射，`fiber.target` 保存其哈希。）
+
+#### 激活
+
+```text
+L-Begin   θ_n = Inactive    ω = target_n(γ) ≠ ⊥
+          ⟹ γ ⟶ γ[θ_n ↦ Reloading(e_n, id, ω)]
+
+L-Iter    θ_n = Reloading(i, g, ω)   target_n(γ) = ω   i(γ) = (δ, h, Just(i′))
+          ⟹ γ ⟶ δ[θ_n ↦ Reloading(i′, g ∘ h, ω)]
+
+L-Finish  θ_n = Reloading(i, g, ω)   target_n(γ) = ω   i(γ) = (δ, h, Nothing)
+          ⟹ γ ⟶ δ[θ_n ↦ Active(g ∘ h, ω)]
+```
+
+每次迭代以 `g ∘ h` 的方式组合其逆操作，因此累加器按 LIFO 顺序应用逆操作。
+
+#### 停用
+
+停用不能是一步完成的：一个*因其提供者即将离开*而被拆除的消费者，其拆除代码可能恰恰需要那个提供者（例如把连接归还给连接池）。因此**决定**与**执行**被分开，并且执行受到守卫。
+
+**定义 54：被依赖**：`relied_n(γ) := ∃m ≠ n, k ∈ d_m. installed_m(γ) ∧ ω_m(k) = n`
+
+```text
+L-Divert  θ_n = Reloading(i, g, ω)   target_n(γ) ≠ ω
+          (δ, h) = (γ, id)  ∨  i(γ) = (δ, h, −)          ← abort  or  land the iteration
+          ⟹ γ ⟶ δ[θ_n ↦ Unloading(g ∘ h, ω)]
+
+L-Leave   θ_n = Active(g, ω)   target_n(γ) ≠ ω
+          ⟹ γ ⟶ γ[θ_n ↦ Unloading(g, ω)]
+
+L-Unload  θ_n = Unloading(g, ω)   ¬relied_n(γ)   g(γ) = δ
+          ⟹ γ ⟶ δ[θ_n ↦ Inactive]
+```
+
+（L-Divert 的两个选项：中止（abort），或让当前迭代落地（land）。）
+
+- **L-Divert** 可以发生在任意两次迭代之间；它带着迄今为止累加的逆操作进入 Unloading（而不经过 Active，否则依赖者会针对一个即将离开的组件激活）。*中止*选项需要一个迭代边界；*落地*选项让正在进行的迭代完成（异步宿主需要它，§4.4）。
+- **L-Leave** 只记录决定：纤程停止提供（其表离开 `σ_γ`），而它自己的已提交视图和其他所有纤程的已提交视图都保持不变。
+- **L-Unload** 是*唯一*应用累加器的规则；它最后才丢弃已提交视图。它的前提 `¬relied_n` 就是**守卫**：提供者的撤回要等到每个把某个键解析到它的消费者都离开之后。
+- 守卫是**按绑定**的（检查已提交视图），并沿余效应排序，*而不是*沿纤程树排序：父纤程可以在其子纤程仍处于 Unloading 时运行自己的逆操作。
+- 守卫为何不会死锁：一旦提供者被标记（L-Leave 或 L-Divert），其表就离开 `σ_γ`，任何目标视图都不会再指向它，而每个提交到它的消费者自身也正在离开（定理 73，见[元理论](/docs/concepts-metatheory)）。
+- 这些规则是非确定性的，且不涉及调度器：对所有序列成立的定理对每种调度策略都成立。
+
+<Callout type="info">
+**在 kardia 中**：纤程的目标是 `Target::Inactive`（`⊥`）或 `Target::Epoch { revision, providers }`，后者按 `inject` 顺序列出各提供者的 `ImplId`；`ImplId` 和 `FiberId` 永不复用。已提交视图（`ω`）是一个在整个生命周期片段（episode）内固定的键 → `ImplId` 映射；每个绑定都记录其已提交视图指向它的纤程集合（`relied_n`），守卫就等待这个集合清空。在插件的 `apply` 中，`ctx.checkpoint()` 是一个迭代边界：一旦本次加载已被取代或纤程已退役，它返回 `Err(Interrupted)`，这就是 L-Divert 的中止选项。见[生命周期](/docs/development-lifecycle)。
+</Callout>
+
+### 约束（§4.2.3）
+
+**定义 55：约束于 `n`。** 若一个映射 (1) 只*写* `σ_n` 以及其他表在 `d_n` 的键上所存的值（对某个余效应进行操作的消费者会写提供者表中该键的值），从不写控制字段或注册表的定义域；并且 (2) 只*读* `σ_n` 和 `σ_m|_{d_n}`，则称它约束于 `n`。实例化是唯一的例外（它写入一个新条目；其逆操作写入一个 `τ`）。
+
+**定义 56：`n` 的上下文中介迭代器。** 包含单位元和三种迭代形式的最小集合：在 `d_n ∪ p_n` 的某个键上提升一个操作阶段；在 `p_n` 的某个键上提升一个提供阶段（落入 `σ_n`）；一次实例化。**每个纤程的效应函数都必须属于这个集合。**
+
+**引理 57**：其成员约束于 `n`，并在 `≃_{d_n ∪ p_n}` 意义下带见证。
+
+实际含义：组件不得根据它未声明的纤程的生命周期状态做分支，不得读写其两项声明之外的表，也不得访问任何表都不持有的东西。
+
+## 表 1：规则即写入
+
+| 规则 | 之前的 `θ` | 之后的 `θ` | 状态映射 `Ψ` | 修改的控制字段 |
+|---|---|---|---|---|
+| O-Insert | 未定义 | `Inactive` | `id` | `dom(F)` |
+| O-Retire | 任意 | 不变 | `id` | `τ_n` |
+| O-Remove | `Inactive` | 未定义 | `id` | `dom(F)` |
+| L-Begin | `Inactive` | `Reloading(e_n, id, ω)` | `id` | `θ_n` |
+| L-Iter | `Reloading(i,g,ω)` | `Reloading(i′, g∘h, ω)` | `pr₁∘i` | `θ_n` |
+| L-Finish | `Reloading(i,g,ω)` | `Active(g∘h, ω)` | `pr₁∘i` | `θ_n` |
+| L-Divert | `Reloading(i,g,ω)` | `Unloading(g∘h, ω)` | `id` 或 `pr₁∘i` | `θ_n` |
+| L-Leave | `Active(g,ω)` | `Unloading(g, ω)` | `id` | `θ_n` |
+| L-Unload | `Unloading(g,ω)` | `Inactive` | `g` | `θ_n` |
+
+每一步都可分解为 `γ^{t+1} = edit^t(Ψ^t(γ^t))`：`Ψ` 移动表（数据），`edit` 移动控制字段。元理论正是利用了这条接缝。
+
+## 对实现的工程要点
+
+1. 每个纤程保留*两个*视图：**目标**视图（每次相关变化时重新计算）和**已提交**视图（在整个生命周期片段内固定）。二者不等时触发转移。
+2. 用**永不复用的 id** 标识提供者，使“被一个相等的值替换”仍会触发重新加载。
+3. 提供者**只在 Active 期间**才算可用。
+4. 先把正在停用的纤程**标记为停止服务**（L-Leave），通知依赖者，只有当不再有已安装的依赖者提交到它时才运行累加器（守卫）。
+5. 子纤程的实例化是父纤程的一个普通的被追踪效应；其逆操作只*使*子纤程*退役*。
+6. 只有在纤程变为 Inactive 且为空之后，才移除其注册表条目。

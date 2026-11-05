@@ -1,0 +1,84 @@
+---
+title: "Quick start"
+description: "Run an app from a config file and change it while it runs."
+---
+
+The `kardia` binary loads an app from a YAML (or JSON) config file and keeps it in step with the file: editing the file reconfigures the running app, and changes the app makes to its own entries are written back.
+
+## Run the example [#run-the-example]
+
+<Steps>
+<Step>
+
+**Run it from a clone of the repository.**
+
+```sh
+git clone https://github.com/licyk/kardia
+cd kardia
+cargo run -p kardia -- examples/kardia.yml
+```
+
+</Step>
+<Step>
+
+**Or install the binary from crates.io** and point it at your own config file:
+
+```sh
+cargo install kardia
+kardia path/to/kardia.yml
+```
+
+</Step>
+</Steps>
+
+Without an argument, the binary reads `kardia.yml` from the working directory. See [Installation](/docs/installation) for the requirements.
+
+## The example app [#the-example-app]
+
+`examples/kardia.yml` is a list of entries, one plugin each:
+
+```yaml
+# Run with `cargo run -p kardia -- examples/kardia.yml`, then edit this file:
+# the running app follows (e.g. enable the console logger below).
+- id: timer
+  name: timer
+# Reloads guest modules below `plugins/` in place when they change.
+- id: hmr
+  name: hmr
+  config:
+    watch:
+      enabled: true
+      files:
+        - plugins
+- id: plugins
+  name: group
+  group: true
+  config:
+    - id: console
+      name: logger-console
+      disabled: true
+    # a WebAssembly guest plugin: edit its greeting while the app runs
+    - id: hello
+      name: ./plugins/hello.wat
+```
+
+- `timer` is the built-in timer service.
+- `hmr` reloads the guest modules below `plugins/` when their files change.
+- `plugins` is a group of two entries: the console logger, disabled for now, and `hello`, a WebAssembly guest plugin written by hand in WebAssembly text (`examples/plugins/hello.wat`).
+
+[The configuration file](/docs/guide-configuration) explains every field.
+
+## Things to try while it runs [#things-to-try-while-it-runs]
+
+- **Change the config.** In `examples/kardia.yml`, set `disabled: false` on the `console` entry: the console logger starts. Set it back to `true` and it stops.
+- **Hot-reload a plugin.** Edit the greeting in `examples/plugins/hello.wat`. The `hmr` entry reloads the WebAssembly plugin in place: the old instance logs its goodbye, then the new one logs your greeting.
+- **Stop the app.** Press Ctrl-C. Shutting down does not write to the config file.
+
+## Next steps [#next-steps]
+
+<Cards>
+  <Card title="The configuration file" href="/docs/guide-configuration" description="Entries, expressions, two-way sync and the built-in plugins." />
+  <Card title="Writing plugins" href="/docs/guide-plugins" description="Services and plugins in Rust, and loading them from a config file." />
+  <Card title="Hot reload" href="/docs/guide-hot-reload" description="Reloading guest modules as their files change." />
+  <Card title="Guest plugins" href="/docs/guide-guests" description="WebAssembly, dynamic-library and process guests." />
+</Cards>

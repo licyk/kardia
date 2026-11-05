@@ -1,0 +1,68 @@
+---
+title: "Installation"
+description: "Requirements, installing kardia from crates.io, and what each crate is for."
+---
+
+## Requirements [#requirements]
+
+- **Rust 1.85 or newer.**
+- **The `wasm32-unknown-unknown` target**, only needed to build WebAssembly guest plugins, or to run the full test suite:
+
+  ```sh
+  rustup target add wasm32-unknown-unknown
+  ```
+
+## Use kardia as a library [#use-kardia-as-a-library]
+
+Add the facade crate to your project:
+
+```sh
+cargo add kardia
+cargo add serde --features derive
+cargo add tokio --features rt-multi-thread,macros
+```
+
+or in `Cargo.toml`:
+
+```toml
+[dependencies]
+kardia = "0.1"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+```
+
+`serde` is needed as a direct dependency for typed plugin configs: `kardia::prelude` re-exports `Deserialize`, but the derive refers to the `serde` crate by name.
+
+The facade re-exports the other crates (`kardia::loader`, `kardia::timer`, …), and `kardia::prelude` holds the names most plugins need. [Writing plugins](/docs/guide-plugins) continues from here.
+
+## Install the binary [#install-the-binary]
+
+The `kardia` binary loads an app from a config file:
+
+```sh
+cargo install kardia
+kardia path/to/kardia.yml   # without an argument: kardia.yml in the working directory
+```
+
+See [Quick start](/docs/quick-start).
+
+## Crates [#crates]
+
+kardia is split into ten crates, all published on crates.io. Most projects depend only on `kardia`; a guest plugin depends only on `kardia-guest`.
+
+| Crate | Contents | Use it for |
+|---|---|---|
+| `kardia` | The facade (`kardia::prelude`) and the `kardia` binary | Everything: re-exports the crates below, except `kardia-guest` |
+| `kardia-core` | Contexts, effects, fibers, services, events, logger | The runtime itself ([Services](/docs/guide-services), [Effects](/docs/guide-effects)) |
+| `kardia-macros` | `#[derive(Service)]` and `#[plugin]` | Declaring services and plugins ([Writing plugins](/docs/guide-plugins)) |
+| `kardia-timer` | Built-in service: timer | `timeout`, `interval`, `sleep`, `throttle`, `debounce` that end with their plugin |
+| `kardia-logger-console` | Built-in service: console logger | Printing logs to the terminal |
+| `kardia-fs` | Built-in service: file watching | Watching files and directories |
+| `kardia-loader` | Entries, groups, isolation, expressions, catalog | Declarative plugin trees ([Loader](/docs/guide-loader)) |
+| `kardia-include` | YAML/JSON config files, kept in sync both ways | Config files ([The configuration file](/docs/guide-configuration)) |
+| `kardia-hmr` | Module graph, hot reload, watch mode, WASM, dylib and process backends | [Hot reload](/docs/guide-hot-reload) of guest modules |
+| `kardia-guest` | SDK for guest plugins in Rust | Writing [guest plugins](/docs/guide-guests) |
+
+<Mermaid chart={"flowchart TD\n  kardia --> core[kardia-core]\n  kardia --> macros[kardia-macros]\n  kardia --> timer[kardia-timer]\n  kardia --> logger[kardia-logger-console]\n  kardia --> fs[kardia-fs]\n  kardia --> loader[kardia-loader]\n  kardia --> include[kardia-include]\n  kardia --> hmr[kardia-hmr]\n  timer --> core\n  logger --> core\n  fs --> core\n  loader --> core\n  include --> loader\n  include --> fs\n  hmr --> loader\n  hmr --> fs\n  guest[kardia-guest]"} />
+
+`kardia-guest` stands alone: a guest plugin is a separate module that talks to the host through the guest interface, not through the host's crates.

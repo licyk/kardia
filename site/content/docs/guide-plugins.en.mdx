@@ -1,0 +1,400 @@
+---
+title: "Writing plugins"
+description: "Services and plugins in Rust: #[derive(Service)], #[plugin], the Plugin trait, PluginDef, and registering plugins for the loader."
+---
+
+Plugins written in Rust are compiled into your app. This page shows how to declare services, write plugins that provide and use them, start them, and make them available to config files. Why the API looks this way is explained on [API design](/docs/development-design).
+
+## Add the dependency [#add-the-dependency]
+
+```toml
+[dependencies]
+kardia = "0.1"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+```
+
+`use kardia::prelude::*;` brings in the names most plugins need: `Context`, `Plugin`, `PluginDef`, `Inject`, `Injected`, `Service`, `Svc`, `Fiber`, `Result`, the two macros, the timer, `Loader`, `Deserialize` and `json!`.
+
+## A first example [#a-first-example]
+
+Services are plain types. The `#[plugin]` macro reads a plugin's dependencies from its signature, so accessing a service it did not declare is a compile error:
+
+```rust
+use std::time::Duration;
+
+use kardia::prelude::*;
+
+#[derive(Service)]
+#[service(crate = ::kardia)]
+struct Database {
+    url: String,
+}
+
+#[derive(Deserialize)]
+struct DbConfig {
+    url: String,
+}
+
+/// Provides `database`, and logs when it is stopped.
+fn db() -> PluginDef {
+    PluginDef::typed(|ctx: Context, config: std::sync::Arc<DbConfig>| async move {
+        let logger = ctx.logger();
+        ctx.on_dispose(move || logger.info("closing"))?;
+        ctx.provide(Database { url: config.url.clone() })?;
+        Ok(())
+    })
+    .name("db")
+    .provides([Database::NAME])
+}
+
+/// Starts once `database` and `timer` are available, and stops with them.
+#[plugin(crate = ::kardia)]
+async fn greeter(ctx: Injected<(Database, Timer)>) -> Result<()> {
+    let (db, timer) = ctx.deps()?;
+    ctx.logger().info(format_args!("using {}", db.url));
+    timer.interval(Duration::from_secs(1), || println!("tick"))?;
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let root = Context::new();
+    root.plugin::<TimerPlugin>(())?;
+    root.plugin::<Greeter>(())?; // waits for `database`
+    let db = root.plugin_def(&db(), json!({ "url": "postgres://primary" }))?;
+    db.settled().await?;
+    db.update(json!({ "url": "postgres://replica" }))?.await?; // greeter restarts with it
+    db.dispose().await?; // greeter stops again
+    Ok(())
+}
+```
+
+What happens:
+
+1. `greeter` declares `database` and `timer`. It stays pending until both are available.
+2. `db` provides `database`, so `greeter` starts.
+3. Updating `db`'s config restarts it. `greeter` depends on it, so `greeter` stops first and starts again with the new database.
+4. Disposing `db` withdraws `database`: `greeter` stops, and its interval and the `closing` log line are reverted and run as part of the teardown.
+
+A longer, runnable version, which also hot-replaces the database implementation:
+
+```sh
+cargo run -p kardia --example provider_consumer
+```
+
+<Callout type="info">
+With the facade crate `kardia`, both macros take `crate = ::kardia`. The generated code refers to `::kardia_core` by default, which only works if you depend on `kardia-core` directly.
+</Callout>
+
+## Services [#services]
+
+A service is any `Send + Sync + 'static` type bound to a **key**, a string. Keys are strings rather than type ids because config files name services.
+
+```rust
+#[derive(Service)]
+#[service(crate = ::kardia)]
+struct ConnectionPool; // key: "connection-pool"
+
+#[derive(Service)]
+#[service(crate = ::kardia, name = "database")]
+struct Db {
+    url: String,
+}
+
+// without the macro
+struct Cache;
+
+impl Service for Cache {
+    const NAME: &'static str = "cache";
+}
+```
+
+`#[derive(Service)]` uses the type name, hyphenated, as the key unless `name` is given. The `Service` trait has one more item, `merge_intercept`, which merges interception metadata; its default (a right-biased shallow merge of JSON objects) suits most services. See [Services](/docs/guide-services).
+
+### Providing a service [#providing-a-service]
+
+A plugin provides a service from its `apply`:
+
+| Method | Provides |
+|---|---|
+| `ctx.provide(value)` | A `Service` value under its key |
+| `ctx.provide_arc(arc)` | The same, from an existing `Arc` |
+| `ctx.provide_as(key, value)` | Any value under an explicit key |
+| `ctx.provide_serialized_as(key, value)` | A `serde::Serialize` value that also has a JSON view |
+
+Providing is an effect of the providing plugin:
+
+- The binding is withdrawn when the plugin stops. Its consumers stop first.
+- One realm (a scope of services, see [isolation](/docs/guide-loader)) holds at most one binding per key. Providing a key that is already bound fails with `KardiaError::AlreadyProvided`, naming the provider.
+- Consumers see the binding once the providing plugin is active.
+
+### Services for expressions [#services-for-expressions]
+
+[Expressions](/docs/guide-configuration#expressions) in config files and tooling read services as JSON. Only a service with a JSON view can be read this way: one provided with `provide_serialized_as`, or a `serde_json::Value` provided directly:
+
+```rust
+ctx.provide_as("settings", json!({ "enabled": true }))?;
+```
+
+An entry that injects `settings` can then use `disabled: !!js "!settings.enabled"`.
+
+### Using a service [#using-a-service]
+
+| Access | Checked against | Fails with |
+|---|---|---|
+| `ctx.get::<S>()` | The plugin's declared dependencies, at run time | `AccessError::Undeclared` if `S` is not declared; `AccessError::Inactive` if it is declared but has no binding |
+| `Injected<D>::get::<S, _>()` | `D`, at compile time | A compile error if `S` is not in `D` |
+| `Injected<D>::deps()`, `ctx.deps::<D>()` | All of `D` at once | As `get` |
+| `ctx.get_as::<T>(key)`, `ctx.view(key)` | A key given at run time (the JSON view for `view`) | As `get`, or `AccessError::TypeMismatch` |
+| `ctx.live::<S>()`, `ctx.live_as::<T>(key)` | Nothing: reads the current binding, if its provider is active | Never fails; returns `Option` |
+
+The checked accesses read the plugin's **committed view**: the bindings it resolved when it started. Access walks from the plugin's own provisions up through its ancestors, stops at an isolation boundary, and returns the first binding the plugin committed to. Because consumers read their committed view rather than the live store, a dependency stays readable while the consumer itself is being torn down (Theorem 70 in [Metatheory](/docs/concepts-metatheory)). The root context has unchecked access to the live store.
+
+The typed accesses return `Svc<S>`, which dereferences to `S` and remembers the accessing context (the caller). Services such as `timer` use the caller to make what they do on your behalf an effect of *your* plugin; [Services](/docs/guide-services) explains caller attribution, interception and events.
+
+## Plugins [#plugins]
+
+A plugin is the paper's component `(d, p, e)`: the services it depends on (`d`), the services it provides (`p`), and the effects it performs when it runs (`e`). There are four ways to write one.
+
+### `#[plugin]` on an async function [#plugin-macro]
+
+```rust
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct GreetConfig {
+    greeting: String,
+}
+
+#[plugin(crate = ::kardia, name = "hello", provide = ["greeting"])]
+async fn hello_world(ctx: Context, config: Arc<GreetConfig>) -> Result<()> {
+    ctx.provide_as("greeting", config.greeting.clone())?;
+    Ok(())
+}
+
+#[plugin(crate = ::kardia)]
+async fn user(ctx: Injected<(Database,)>) -> Result<()> {
+    let db = ctx.get::<Database, _>()?;
+    ctx.logger().info(format_args!("using {}", db.url));
+    Ok(())
+}
+```
+
+- The function must be `async` and return `Result<()>`.
+- The first parameter is `Context` (no declared dependencies) or `Injected<(A, B, …)>` (declares `A`, `B`, …; up to eight).
+- The optional second parameter is the configuration, as `Arc<Config>`. Without it, the plugin takes no configuration (`()`).
+- The macro generates a plugin type named after the function in CamelCase (`hello_world` → `HelloWorld`, `user` → `User`) and keeps the function.
+- Arguments: `name` sets the plugin name (default: the hyphenated function name, `hello-world`), `provide` lists the keys it provides, `crate` the path to the kardia crate.
+
+With `Injected<D>`, `ctx.get::<S, _>()` compiles only if `S` is in `D` (the `_` is the inferred position of `S` in `D`). `Injected` dereferences to `Context`, so everything else on `Context` is available; `ctx.context()` gives the unchecked context.
+
+### Implementing `Plugin` [#plugin-trait]
+
+```rust
+struct DbPlugin;
+
+impl Plugin for DbPlugin {
+    const NAME: &'static str = "db";
+    type Config = DbConfig;
+
+    fn provide() -> Vec<Key> {
+        vec![Database::NAME.into()]
+    }
+
+    async fn apply(ctx: Context, config: Arc<DbConfig>) -> Result<()> {
+        let url = config.url.clone();
+        let logger = ctx.logger();
+        ctx.on_dispose(move || logger.info(format_args!("closing {url}")))?;
+        ctx.checkpoint()?;
+        ctx.provide(Database { url: config.url.clone() })?;
+        Ok(())
+    }
+}
+
+struct Report;
+
+impl Plugin for Report {
+    const NAME: &'static str = "report";
+    type Config = ();
+
+    fn inject() -> Inject {
+        Inject::of::<(Database, Cache)>()
+    }
+
+    async fn apply(ctx: Context, _: Arc<()>) -> Result<()> {
+        let (db, _cache) = ctx.deps::<(Database, Cache)>()?;
+        ctx.logger().info(format_args!("using {}", db.url));
+        Ok(())
+    }
+}
+```
+
+(`Key` is `kardia::Key`, `Arc` is `std::sync::Arc`.) The trait:
+
+```rust
+pub trait Plugin: Send + Sync + 'static {
+    const NAME: &'static str;
+    type Config: DeserializeOwned + Send + Sync + 'static; // `()` for no config
+
+    /// Declared dependencies (d), with optional interception metadata.
+    fn inject() -> Inject { Inject::new() }
+
+    /// Declared provisions (p): metadata for tooling and the dependency-cycle check.
+    fn provide() -> Vec<Key> { Vec::new() }
+
+    fn apply(ctx: Context, config: Arc<Self::Config>) -> impl Future<Output = Result<()>> + Send;
+}
+```
+
+`provide()` does not provide anything by itself: the plugin still calls `ctx.provide` in `apply`. The declaration lets kardia detect a dependency cycle when the plugin is started and log it as a warning, naming the plugins in the cycle (they stay pending), instead of leaving them pending silently.
+
+### `Inject` [#inject]
+
+`Inject` is an ordered list of service keys, each with optional interception metadata:
+
+```rust
+Inject::of::<(Database, Cache)>()                  // from service types (tuples of up to eight)
+Inject::new().with("database").with_meta("logger", json!({ "level": 3 }))
+Inject::from(["database", "cache"])                // from keys; also from a Vec
+```
+
+A plugin starts once every declared service is available, restarts when one is replaced, and stops when one goes away.
+
+### `PluginDef`: plugins from closures [#plugin-def]
+
+A `PluginDef` is the type-erased form the runtime stores. You can build one from a closure:
+
+| Constructor | Configuration | Registry identity |
+|---|---|---|
+| `PluginDef::of::<P>()` | `P::Config` | The type `P`: every call gives the same identity |
+| `PluginDef::typed(f)` | Deserialized into the closure's `Arc<C>` | New for every call |
+| `PluginDef::new(f)` | Raw `Value` | New for every call |
+
+and configure it with builder methods:
+
+| Method | Sets |
+|---|---|
+| `.name(name)` | The plugin name, used in logs and by the logger |
+| `.inject(inject)` | Declared dependencies (anything that converts into `Inject`) |
+| `.provides(keys)` | Declared provisions |
+| `.validate_with(f)` | A check or transform of the raw configuration before it is decoded |
+| `.tag(tag)` | A marker that hosts such as the loader recognise |
+
+```rust
+let raw = PluginDef::new(|ctx: Context, config: Value| async move {
+    ctx.logger().info(format_args!("config: {config}"));
+    Ok(())
+})
+.name("raw")
+.inject(["database"]);
+```
+
+The identity matters when replacing a plugin: `root.registry().replace(&old, &new)` swaps the implementation behind every running instance of `old`, keeping their place in the tree and their configuration. This is what hot reload does; `provider_consumer` shows it.
+
+### `ctx.inject`: an anonymous plugin [#ctx-inject]
+
+```rust
+root.inject(Inject::of::<(Database,)>(), |ctx| async move {
+    let db = ctx.get::<Database>()?;
+    ctx.logger().info(format_args!("closure plugin using {}", db.url));
+    Ok(())
+})?;
+```
+
+## Starting plugins [#starting-plugins]
+
+`Context::new()` creates a root context. Plugins started from a context become its children:
+
+| Method | Takes |
+|---|---|
+| `ctx.plugin::<P>(config)` | A typed configuration (`P::Config` must also be `Serialize`) |
+| `ctx.plugin_value::<P>(value)` | A JSON configuration |
+| `ctx.plugin_def(&def, value)` | A `PluginDef` and a JSON configuration |
+| `ctx.inject(inject, f)` | Dependencies and a closure |
+
+Each returns a `Fiber`, the handle to that running instance. Starting a plugin is itself an effect of the calling plugin, so a child stops when its parent stops. Stopping the root (`root.fiber().dispose().await`) reverts everything.
+
+### The `Fiber` handle [#fiber-handle]
+
+The fiber handle offers:
+
+| Method | Does |
+|---|---|
+| `state()` | `Pending` (waiting for dependencies), `Loading`, `Active`, `Unloading`, `Failed` or `Disposed` |
+| `settled().await` | Waits until no transition is in flight; fails with the plugin's error |
+| `update(value)?.await` | Replaces the configuration (below) |
+| `update_with(value, no_save)` | The same; `no_save: true` skips the write-back to a config file |
+| `restart().await` | Unloads and loads the plugin again |
+| `dispose().await` | Stops the plugin and removes it |
+| `error()` | The error of the last failed load |
+| `context()`, `config()`, `name()`, `parent()`, `effects()` | Introspection |
+
+A `Failed` plugin recovers only through `update`, `restart` or a replacement.
+
+## Configuration [#configuration]
+
+The configuration enters as JSON (from a config file, `plugin_value` or `update`) and is decoded once per load into `Config`, with serde:
+
+- A decoding error names the failing path, such as `invalid config: … (at items.1)`.
+- Unknown fields are tolerated, unless the config type opts into `#[serde(deny_unknown_fields)]`.
+- A missing configuration (`null`) is read as an empty object, so a config type whose fields all have defaults (`#[serde(default)]`) accepts it. `()` accepts anything.
+
+`fiber.update(value)` validates the new configuration first: a rejected configuration leaves the running instance untouched. The new configuration is then offered to the plugin's update hooks. If no hook takes it over, the plugin restarts.
+
+```rust
+// inside apply: take updates of GreetConfig over instead of restarting
+ctx.on_update(|config: &GreetConfig| {
+    println!("new greeting: {}", config.greeting);
+    true
+})?;
+```
+
+`ctx.on_update_with` does the same with a hook that returns the future `update` should wait for. A hook is an effect, so it goes away with the plugin.
+
+## Stopping cleanly [#stopping-cleanly]
+
+Everything a plugin registers through its context is an effect that is reverted when it stops: provided services, listeners, timers, child plugins, and plain disposers such as `ctx.on_dispose(…)`. [Effects](/docs/guide-effects) covers effects in full; two points matter while writing `apply`:
+
+- **Register the inverse right after acquiring a resource**, so that nothing leaks if the plugin is stopped while starting.
+- **`ctx.checkpoint()?`** is a point where a superseded load stops. It returns `Err(Interrupted)` when the plugin's target changed since the load began (it was updated, disposed or lost a dependency). Returning that error from `apply` is not a failure: the plugin unloads what it registered so far. kardia never cancels a running `apply` by itself.
+
+## Loading your plugins from a config file [#loading-your-plugins-from-a-config-file]
+
+The [loader](/docs/guide-loader) resolves the `name` of each entry. To load your own plugins from a config file, register them in a `kardia::loader::Catalog` and pass it to `Loader::plugin`:
+
+```rust
+use kardia::fs::FsPlugin;
+use kardia::prelude::*;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let root = Context::new();
+    root.plugin::<FsPlugin>(())?; // needed by `watch: true`
+
+    let catalog = kardia::catalog(); // every built-in plugin
+    catalog.register::<Greeter>(); // under its NAME
+    catalog.register_def("db", db()); // a PluginDef under any name
+    catalog.alias("my-greeter", "greeter"); // a second name
+
+    root.plugin_def(&Loader::plugin(catalog), Value::Null)?.settled().await?;
+    let loader = (*root.get::<Loader>()?).clone();
+    let entry = json!({ "name": "include", "config": { "path": "app.yml", "watch": true } });
+    loader.create(entry, None, None).await?;
+
+    tokio::signal::ctrl_c().await?; // tokio's "signal" feature
+    root.fiber().dispose().await
+}
+```
+
+- `kardia::catalog()` holds every built-in plugin except `hmr` (which needs a module graph, see [Hot reload](/docs/guide-hot-reload)), under its name and its TypeScript package name; `kardia::loader::builtins()` holds only `group`.
+- An entry name that is not in the catalog fails with `ModuleNotFound`, located at the entry's `name`.
+- `Loader::plugin` takes any `kardia::loader::Resolver`; `Catalog` is one. The `kardia` binary uses its own resolver that falls back to guest modules for names that are not built-in plugins: [`crates/kardia/src/main.rs`](https://github.com/licyk/kardia/blob/main/crates/kardia/src/main.rs) shows the full setup, including `hmr`.
+
+## Next [#next]
+
+<Cards>
+  <Card title="Services" href="/docs/guide-services" description="Caller attribution, interception, events and the logger." />
+  <Card title="Effects" href="/docs/guide-effects" description="Effects, disposers, effect scopes and teardown." />
+  <Card title="Loader" href="/docs/guide-loader" description="Entries, groups, isolation and include from Rust." />
+  <Card title="API design" href="/docs/development-design" description="Why the plugin API looks the way it does." />
+</Cards>

@@ -1,0 +1,147 @@
+---
+title: "Effects"
+description: "How Cordis core tracks revertible effects: accepted shapes, the execution engine, fiber.effect, ownership transfer and teardown order."
+---
+
+This page covers `cordis/packages/core/src/fiber.ts:60-363` and `utils.ts`. The paper counterpart is §3.1 and Algorithm 1; see [Revertible effects](/docs/concepts-revertible-effects).
+
+## Accepted effect shapes [#shapes]
+
+`fiber.ts:64-76`:
+
+```ts
+type Disposable<T = any> = () => T
+type SyncEffect<T>  = Disposable<T> | Iterable<Disposable<T>, void, void>
+type AsyncEffect<T> = Promise<Disposable<T>> | AsyncIterable<Disposable<T>, void, void>
+type Effect<T>      = SyncEffect<T> | AsyncEffect<T>
+```
+
+An effect callback may therefore return:
+
+| Callback returns | Paper reading |
+|---|---|
+| a function | an effect function 𝔈Γ (the returned function is the inverse) |
+| `undefined`/`null` | identity effect (nothing to undo) |
+| a `Promise<function>` | async effect function |
+| a sync generator yielding disposers | effect iterator ℑΓ, run to completion synchronously |
+| an async generator yielding disposers | effect iterator with **iteration boundaries** that check a guard |
+
+Anything else throws `TypeError('Invalid effect')`.
+
+## The engine `_execute(runner)` [#execute]
+
+`fiber.ts:240-290`. `EffectRunner { epoch, execute, collect, getOuterStack }` abstracts the two users of the engine, a single `ctx.effect` call and a fiber's whole `apply`:
+
+- `execute()` produces the effect value;
+- `collect(dispose)` records a yielded inverse;
+- `epoch` is the **guard**. For async iterators the loop runs `while (runner.epoch === oldEpoch)`; when the epoch changes, the loop stops after the current iteration lands and `iter.return()` is called so the generator's `finally` blocks run (`fiber.ts:269-285`).
+
+**Sync iterators are not interruptible** (there is no guard check); they could not be interrupted anyway in a single-threaded host. Every `collect` is type-checked (`safeCollect`).
+
+`composeError(…, getOuterStack)` stitches the error stack together with the stack captured where the effect or plugin was *created* (`buildOuterStack`). This produces long stack traces that point at the user's `ctx.plugin(...)`/`ctx.effect(...)` call site. It is pure DX and JS-specific.
+
+## `fiber.effect(execute, label)`: the tracked effect [#fiber-effect]
+
+`fiber.ts:292-357`. `ctx.effect` is `ctx.fiber.effect` (mixed in by `ReflectService`). Step by step:
+
+<Steps>
+<Step>
+`assertActive()`: a fiber whose `uid` is `null` (removed) cannot create effects (`CordisError('INACTIVE_EFFECT')`).
+</Step>
+<Step>
+A local list `disposables` and a local `dispose()` that runs them **in reverse order**. If one returns a promise, the remaining ones are chained after it (sequential LIFO, `fiber.ts:298-311`).
+</Step>
+<Step>
+`EffectMeta { label, children }` for introspection (`fiber.getEffects()`, used by tooling).
+</Step>
+<Step>
+A runner whose `epoch` is a boolean (`armed` in Algorithm 1) and whose `collect`:
+- pushes the disposer into the local list,
+- **removes it from the fiber's top-level list** (`this._disposables.delete(dispose)`), an ownership transfer (see [below](#ownership)),
+- records child metadata.
+</Step>
+<Step>
+Execute. On a synchronous throw, dispose what was collected and rethrow.
+</Step>
+<Step>
+Async failures: `task.catch(dispose)`. A failing async effect rolls back what it collected, and errors are logged rather than left unhandled.
+</Step>
+<Step>
+Build the returned **wrapper** (the disposer):
+
+```ts
+wrapper = () => { if (!runner.epoch) return; runner.epoch = false;
+                  return task ? task.then(dispose) : dispose() }
+```
+
+- at-most-once (`epoch` flips to `false`), Theorem 7's soundness invariant;
+- flipping `epoch` also stops an in-flight async iterator at its next boundary;
+- if setup is still running, disposal waits for it first (`task.then(dispose)`).
+</Step>
+<Step>
+`wrapper.then(...)` makes the disposer **awaitable**: `await ctx.effect(...)` waits for setup to finish and resolves to a disposer.
+</Step>
+<Step>
+`disposables.push(this._disposables.push(wrapper))`: the wrapper is registered in the **fiber's** list, and the function that removes it from that list is the first local disposable (so disposing an effect manually also unregisters it from the fiber).
+</Step>
+</Steps>
+
+### Nesting and ownership transfer [#ownership]
+
+Calling `ctx.effect` inside another effect's callback first registers the inner wrapper in the fiber's list. If the outer callback **yields or returns** that wrapper, `collect` moves ownership: the wrapper leaves the fiber's list and becomes part of the outer effect. If it is not yielded, it stays a direct child of the fiber. This implements the paper's "parent composition" (`ctx.dispose ← dispose ∘ ctx.dispose`) *without* nesting effect scopes: the accumulator of a fiber is the `DisposableList` `fiber._disposables`.
+
+```ts
+ctx.effect(function* () {
+  yield ctx.on('foo', handler)        // ctx.on returns an effect wrapper → owned by this effect
+  yield ctx.provide('bar', value)     // ditto
+  yield () => console.log('cleanup')  // plain inverse
+})
+```
+
+## `DisposableList` [#disposable-list]
+
+`utils.ts:5-40`. An insertion-ordered `Map<number, T>` plus a `WeakMap<T, number>`:
+
+- `push(v)` returns a remover `() => map.delete(sn)`;
+- `delete(v)` removes by identity;
+- `clear()` returns the values **reversed** (LIFO) and empties the list.
+
+It is used for fiber disposables, runtime fiber lists and per-fiber hook lists. It is an instance of the "insert with fresh id, remove by id" commutative-key design from paper §3.4.2 (see [The context paradigm](/docs/concepts-context-paradigm)).
+
+## Fiber-level accumulator vs. the paper [#accumulator]
+
+The fiber's accumulator is not one composed closure but the list `fiber._disposables`. On unload (`fiber.ts:488-498`):
+
+```ts
+await Promise.all(this._disposables.clear().map(async (dispose) => {
+  await composeError(async (info) => { await Promise.resolve(); …; await dispose() })
+  // errors are logged, not propagated
+}))
+```
+
+Disposers are **initiated in reverse order but run concurrently**; each starts after a microtask. Inside a single effect they are sequential LIFO. The paper acknowledges this ("`fiber.dispose` initiates a fiber's effects concurrently", §5.1.3), and it is sound under the independence results (Theorem 43: inverses of independent effects can run in any order; see [Metatheory](/docs/concepts-metatheory)).
+
+<Callout type="warn">
+Ordered teardown *within* one logical effect must therefore be expressed by grouping it in one `ctx.effect` (a generator).
+</Callout>
+
+## Error handling summary [#errors]
+
+| Situation | Behaviour |
+|---|---|
+| sync throw in effect callback | collected disposers run, error rethrown to caller |
+| async rejection in effect | collected disposers run, error logged |
+| invalid yielded value | `TypeError('Invalid effect')` |
+| error in a disposer during fiber unload | logged; other disposers still run (`tests/fiber.spec.ts: 'dispose error'`, `service-dispose.spec.ts: 'releases dependencies after a cleanup error'`) |
+| effect on removed fiber | `CordisError INACTIVE_EFFECT` |
+
+## Tests documenting the semantics [#tests]
+
+`tests/dispose.spec.ts` covers:
+
+- `dispose by plugin`, `dispose manually`, `yield dispose`;
+- `async return 1/2`, `async yield 1`;
+- `async yield 2/3 (aborted)`: disposing during setup stops the generator and disposes only what was yielded;
+- `async yield (aborted, finally)`: `finally` runs;
+- `async yield 4 (await dispose)`;
+- `return/yield with error`, `async yield invalid effect`.

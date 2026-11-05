@@ -1,0 +1,81 @@
+---
+title: "事件与日志"
+description: "Cordis 的 EventsService（以效应注册、分发模式、内部事件）与其日志器（名称解析、级别、导出器）。"
+---
+
+本页介绍 `cordis/packages/core/src/events.ts` 与 `logger.ts`。在论文中，事件监听器是*可交换键*的典型例子（“registration takes an entry of its own”，§3.4.2，见[上下文范式](/docs/concepts-context-paradigm)）；日志器则是拦截（interception）元数据的一个例子。
+
+## `EventsService` [#events]
+
+`events.ts`。根上只有一个实例，以 `ctx.on/once/emit/parallel/serial/bail/waterfall` 的形式混入上下文。
+
+### 存储与注册 [#registration]
+
+`_hooks: Record<name, Hook[]>`，其中 `Hook { ctx, callback, prepend?, global?, removed? }`。
+
+`on(name, listener, options)`（`events.ts:187-200`）：
+
+1. 在调用方纤程（fiber）上调用 `assertActive()`；
+2. `listener = ctx.reflect.bind(listener)`：参数与 `this` 被追踪到监听器的上下文；
+3. `bail('internal/listener', name, listener, options)` 让特殊事件接管注册（用于每个纤程的 `internal/update`）；
+4. 否则调用 `register()`：一个 **`fiber.effect`**，它 push 或 unshift 钩子并返回 `unregister`（标记 `removed = true`、splice 移除、删除空桶）。由于 `this.ctx` 是被追踪的使用点上下文，该效应（effect）归*监听器的*纤程所有（见[服务与可追溯性](/docs/reference-services)）。
+
+`once` 在调用监听器之前先释放自身，因此递归 emit 与并发的串行分发都只会运行它一次。
+
+### 分发模式 [#dispatch]
+
+`events.ts:110-163`：
+
+| 模式 | 语义 |
+|---|---|
+| `emit` | 同步，所有监听器，忽略返回值 |
+| `parallel` | `Promise.allSettled`；失败汇总为 `AggregateError` |
+| `serial` | 顺序 `await`；在第一个“bail”结果（非 `null/undefined/false`）处停止 |
+| `bail` | `serial` 的同步版本 |
+| `waterfall` | 中间件链：每个监听器得到 `(...args, next)`；`next()` 只能调用一次（否则报 `next() called multiple times`）；最后一个 `next` 调用内层函数 |
+
+- 分发时对监听器列表做快照。分发期间被移除的监听器会被跳过（`hook.removed`）；waterfall 期间新增的监听器从下一次分发开始运行。
+- 可选的第一个参数 `thisArg`（一个对象）是监听器的 `this`。若它带有 `[Context.filter]`，非 `global` 的钩子会按 `filter(hook.ctx)` 过滤。领域（realm）作用域的事件正是这样实现的：`internal/service` 只送达同一领域中的监听器（`isolate.spec.ts: 'isolated event'`）。
+- 有人监听时，每次非内部分发都会发出 `internal/dispatch`（用于追踪、开发工具）。
+
+### 内部事件 [#internal-events]
+
+`events.ts:211-224`：
+
+| 事件 | 发出方 | 用途 |
+|---|---|---|
+| `internal/plugin(fiber)` | 纤程创建 / 移除 | 注册表变化 |
+| `internal/replace(fiber)` | `registry.replace` | 实现被替换 |
+| `internal/status(fiber, old)` | `_updateState` | 生命周期状态变化 |
+| `internal/service(name, value)` | `reflect.notify` | 绑定变化（按领域过滤） |
+| `internal/update(this: fiber, config, next)` | `fiber.update` | 每个纤程的钩子可吸收配置变化 |
+| `internal/commit(fiber, config)` | `fiber.update` | 加载器把配置写回条目 |
+| `internal/config(fiber, next)` | 配置解析 | waterfall；默认用插件的 `Config` schema 校验 |
+| `internal/get` / `internal/set` | 代理陷阱 | 拦截属性访问（供 loader/isolate 工具使用） |
+| `internal/listener` | `on()` | 拦截监听器注册 |
+| `internal/dispatch` | 每次公开分发 | 观察 |
+
+构造函数安装：
+
+- `internal/listener` 处理器，它把 `ctx.on('internal/update', …)` 变成每个纤程的钩子列表（`fiber._hooks['internal/update']`，本身也是被追踪的效应）；
+- 串联这些钩子的全局 `internal/update` 分发器；
+- `internal/config` 校验器。
+
+## 日志器 [#logger]
+
+`logger.ts`：
+
+- `LoggerService` 是一个可调用的 `noShadow` 服务：`ctx.logger(name?)` 返回一个 `Logger`；`ctx.logger.info(...)` 是 `ctx.logger().info(...)` 的简写。
+- **名称解析：** 显式参数 → 拦截元数据 `{ name }` → *调用方*纤程的连字符化名称（`fiber.name` 向上找到第一个有名称的 runtime，否则为 `root`）。在服务方法内部，调用方是该服务的定义点，因此日志行归属于该服务（`logger.spec.ts` 回归测试）。
+- **级别：** `exporter.levels[name] ?? exporter.levels.default ?? logger.level ?? INFO`；级别为 `ERROR=0, WARN=1, INFO=2, DEBUG=3`。
+- **消息：** `{ sn, ts, name, type, level, args, fiber?: WeakRef<Fiber> }`。带 `cause` 的错误会记录其 cause；非空的 `AggregateError` 会被展平。
+- **导出器**通过 `logger.exporter(exp)` 以被追踪的效应注册，因此控制台导出器插件在卸载时会自行注销。一个内置导出器维护最近 1000 条消息的环形缓冲区（供后接入的控制台使用）。
+- `Logger.format` 实现 printf 风格的 `%s %d %i %f %o %O %c %C`，格式化器可由导出器覆盖，支持颜色代码（由日志器名称哈希得到的 16/256 色调色板）与逐行截断（`maxLength`，默认 10240）。
+
+## 对移植的观察 [#port]
+
+- 事件只是一个建立在 `ctx.effect` 之上的服务。生命周期中除内部钩子（status、service、commit、update、config）之外，没有任何东西依赖它们。移植可以实现类型化的事件通道，并保留一小组内部钩子点。
+- `waterfall` 兼作核心行为的扩展机制（`internal/get`、`internal/config`、`internal/update`）。在 Rust 中，这些更适合表达为显式的钩子 trait 或注册表，而不是以字符串标识的事件。
+- 日志器可以自然地映射到 `tracing`（每个纤程一个 span，日志器名称作为 target），但如果控制台会在运行时接入，就必须保留*导出器即效应*与缓冲区的语义。
+
+kardia 的做法见 [API 设计](/docs/development-design)。

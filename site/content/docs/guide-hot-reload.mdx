@@ -1,0 +1,189 @@
+---
+title: "热重载"
+description: "用 hmr 插件原地重载访客模块：配置监视模式，搭建模块图，运行 reconcile 事务，并了解失败如何处理。"
+---
+
+编译进二进制的插件可以在运行时重新配置，但修改其代码需要重启。**访客插件**（guest plugin）是独立的模块，`hmr` 插件（`kardia-hmr`）可以原地重载它们：模块变化时，它导出的插件会在其运行中的纤程（fiber）背后被替换，应用的其余部分随之跟进。
+
+Rust 没有模块注册表（registry），因此由宿主（host）自己维护一个：`ModuleGraph` 从 `ModuleSource` 加载模块代码。`Hmr` 服务重载发生变化的模块，并通过 [`registry.replace`](/docs/guide-effects#replace) 原地替换它们导出的插件；开启 `watch.enabled`（并有 `fs` 服务）时，它会随文件变化自动这样做。如何编写模块本身见[访客插件](/docs/guide-guests)；调和过程如何实现见[加载器内部实现](/docs/development-loader)，TypeScript 原版见 [HMR](/docs/reference-hmr)。
+
+## 监视访客模块 [#config]
+
+要在访客模块变化时重载它们，在配置文件中加入一个开启监视模式的 `hmr` 条目：
+
+```yaml
+- id: hmr
+  name: hmr
+  config:
+    base: .                  # relative to this file; the default
+    watch:
+      enabled: true
+      files: [plugins]       # patterns relative to base; `!` excludes
+      debounce: 100          # ms; changes in one window reload together
+- id: hello
+  name: ./plugins/hello.wasm
+```
+
+`HmrConfig`：
+
+| 选项 | 默认值 | 含义 |
+|---|---|---|
+| `base` | `.` | 基准目录。相对的 `base` 相对于加载 `hmr` 条目的那个配置文件所在目录解析（与 TypeScript 代码使用 `ctx.baseUrl` 的方式相同），否则相对于工作目录。`watch.files` 和日志中的路径都相对于它。 |
+| `watch.enabled` | `false` | 文件变化时重载。需要 `fs` 服务。 |
+| `watch.files` | `[".", "!**/.*", "!**/target"]` | 要监视的文件：相对于 `base` 的模式，与 `fs` 监视过滤器的写法相同。前导 `!` 表示排除，匹配某路径或其某个祖先的最后一个模式起决定作用。 |
+| `watch.debounce` | `100` | 在这么多毫秒内发生的变化一起重载。 |
+
+开启 `watch.enabled` 且 `files` 列表非空时，`hmr` 记录 `watching [..] in <base>`，并在自身之下启动一个等待 `fs` 的监视。若 `fs` 已存在，监视会在 `hmr` 稳定之前建立好；建立失败会被记录。
+
+`kardia` 二进制注册了 `hmr`（也以 `@cordisjs/plugin-hmr` 注册），并把任何不是内置插件的条目名解析为相对于配置文件的访客模块，所以 `examples/kardia.yml` 会热重载 `plugins/hello.wat`：
+
+```sh
+cargo run -p kardia -- examples/kardia.yml
+# edit the greeting in examples/plugins/hello.wat: the old instance logs its
+# goodbye, then the new one logs your greeting
+```
+
+## 在应用中启用热重载 [#setup]
+
+`ModuleGraph` 同时也是一个 `Resolver`，因此加载器（loader）可以通过它解析条目名；`Hmr::plugin(graph)` 是基于同一个图的 `hmr` 插件：
+
+```rust
+use kardia::hmr::{Hmr, ModuleGraph, WasmSource};
+use kardia::prelude::*;
+
+let root = Context::new();
+let graph = ModuleGraph::new(WasmSource::new());
+root.plugin_def(&Loader::plugin(graph.clone()), Value::Null)?.settled().await?;
+root.plugin_def(&Hmr::plugin(graph), Value::Null)?.settled().await?;
+
+let loader = (*root.get::<Loader>()?).clone();
+loader.create(json!({ "name": "/app/plugins/greeter.wasm" }), None, None).await?;
+loader.settled().await;
+```
+
+若要同时使用内置插件和访客模块，像二进制那样先经插件目录解析、再经模块图解析即可（见[加载器](/docs/guide-loader#setup)）。若要通过加载器的配置文件重载，在目录中以 `hmr` 注册 `Hmr::plugin(graph)`，再加入一个 `hmr` 条目。
+
+## 模块与模块图 [#graph]
+
+**模块**由 `ModuleId` 标识，即一个绝对路径（`/app/plugins/foo.wasm`）。其代码来自 `ModuleSource`：
+
+```rust
+pub trait ModuleSource: Send + Sync + 'static {
+    /// Loading the same id again yields its current code.
+    fn load(&self, id: &str) -> Result<ModuleCode>;
+}
+
+pub struct ModuleCode {
+    pub deps: Vec<ModuleId>,                              // its static dependencies
+    pub evaluate: Arc<dyn Fn(&Imports) -> Result<Exports> + Send + Sync>,
+}
+
+pub enum Exports {
+    None,
+    Plugin(PluginDef),
+    Value(Value),
+}
+```
+
+模块的 `evaluate` 通过 `Imports` 拿到其依赖的导出（`imports.get(id)`；对导出值的依赖可用 `imports.value(id)`），并返回它自己导出的内容。`ModuleCode::new(deps, evaluate)` 用于构造。除自定义来源外，还有三个从文件加载访客模块的后端：`WasmSource`、`DylibSource` 和 `ProcessSource`（见[访客插件](/docs/guide-guests)）。
+
+```rust
+/// Module code by path; writing a module changes what its next load evaluates.
+#[derive(Clone, Default)]
+struct Files(Arc<Mutex<HashMap<String, ModuleCode>>>);
+
+impl ModuleSource for Files {
+    fn load(&self, id: &str) -> Result<ModuleCode> {
+        self.0.lock().get(id).cloned().ok_or_else(|| Error::msg(format!("cannot find module {id}")))
+    }
+}
+
+files.0.lock().insert("/app/greeter".into(), ModuleCode::new(vec![], |_| Ok(Exports::Plugin(greeter_v1()))));
+```
+
+`ModuleGraph` 是宿主维护的模块注册表，相当于参考实现中 Node 的模块缓存：已加载的模块、它们之间的边以及它们的导出。
+
+| 方法 | 作用 |
+|---|---|
+| `ModuleGraph::new(source)` | 基于某个来源的模块图 |
+| `graph.import(id)` | 导入一个模块及其依赖（依赖先导入）并缓存。在环中，仍在导入过程中的模块被视为 `Exports::None`。加载失败的模块不会被保留，所以下次导入会重试。 |
+| `graph.resolve(name)`（作为 `Resolver`） | 导入 `name` 并返回其插件；否则以 `module <name> does not export a plugin` 失败 |
+| `graph.mark_host(ids)`、`graph.is_host(id)` | 宿主模块（见下文） |
+| `graph.is_loaded(id)`、`graph.loaded()` | 已加载的内容 |
+| `graph.edges(id)`、`graph.exports(id)` | 某个已加载模块的依赖和导出 |
+
+### 宿主模块 [#host]
+
+静态链接的插件天然就是**宿主模块**：程序本身只能通过重启来改变，而这些插件的运行时*重新*配置仍完全由加载器支持。如果你把宿主的某些部分建模为图中的模块，请用 `graph.mark_host(ids)` 标记它们。对宿主模块的修改不会被应用；它会在 `ReconcileResult::skipped_host_modules` 中报告，监视模式会给出警告：
+
+```text
+skipped host modules:
+- src/app.rs
+```
+
+宿主模块发出的边不会让它们随所导入的模块一起重载。
+
+## reconcile 事务 [#reconcile]
+
+`HmrExt::reconcile` 在 `Hmr` 服务上运行一次**事务**。其回调报告发生变化的文件或目录（绝对路径）；位于其中某个路径或其下方的每个已加载模块（按完整路径段比较）都会被重载：
+
+```rust
+use kardia::hmr::{Hmr, HmrExt};
+
+let hmr = root.get::<Hmr>()?;
+let changed = vec![PathBuf::from("/app/plugins/greeter.wasm")];
+let result = hmr.reconcile(move || async move { Ok(changed) }).await?;
+for failure in &result.import_failures {
+    eprintln!("not reloaded: {:?}: {}", failure.modules, failure.error);
+}
+loader.settled().await;
+```
+
+- 不是绝对路径的根会使事务失败：`invalid root <path>, expected an absolute path`。
+- 事务一次只运行一个。
+- 在另一个事务内部（在其回调中，或在正被运行中的事务重载的插件中）启动事务，会以 `cannot start a transaction inside another transaction` 失败。
+
+事务遵循参考代码（而不是论文的算法 10）：
+
+<Mermaid chart={"flowchart TD\n  A[\"match loaded modules below the changed roots\"] --> B[\"accept: changed modules and their importers\"]\n  B --> C[\"stale plugins: registered plugins whose modules reach an accepted module\"]\n  C --> D[\"evict their modules from the cache\"]\n  D --> E[\"stage 1: import every stale plugin again (the only fallible step)\"]\n  E --> F[\"units: plugins sharing an evicted module commit or abort together\"]\n  F --> G[\"aborted units: restore their cache entries\"]\n  F --> H[\"stage 2: registry.replace each committed plugin in place\"]\n  H --> I[\"stage 3: settle the replaced fibers concurrently\"]"} />
+
+1. **匹配。** 发生变化的模块是位于所报告的根或其下方的已加载模块；其中的宿主模块只做报告。
+2. **接受。** 发生变化的模块，以及导入了某个已接受模块的每个模块（宿主模块除外），都被接受。
+3. **过期插件。** 模块闭包触及某个已接受模块的每个已注册插件都是过期的。由多个模块导出的插件（例如某个模块重新导出了它）从最外层的导出者取得替换，即没有被其他导出者导入的那个。
+4. **阶段 1：导入。** 驱逐过期插件的模块，并重新导入每个过期插件。这是唯一可能失败的步骤；有效性在这里检查，此时只有模块缓存发生了变化，所以后续阶段无需回滚。在所有插件都导入完之前不恢复任何内容，因此没有新模块会链接到被驱逐的旧模块。导入错误会被记录。
+5. **单元。** 闭包（在旧图或新图中）共享某个被驱逐模块的插件组成一个**单元**，一起提交或一起放弃。含导入失败的单元被放弃：其中任何内容都不会应用，其模块的缓存条目会被恢复；其他单元不受影响。
+6. **阶段 2：替换。** 每个已提交的插件都通过 `registry.replace` 原地替换，并记录为 `reload plugin at <module>`。
+7. **阶段 3：稳定。** 被替换的纤程并发地稳定下来。不做回滚：应用失败的插件保持失败，与冷启动时一样。
+
+### `ReconcileResult` [#result]
+
+| 字段 | 内容 |
+|---|---|
+| `settled_fibers: Vec<Fiber>` | 被替换且已稳定的纤程（位于另一个被重载纤程之下的纤程可能已被它释放，不包含在内） |
+| `import_failures: Vec<ImportFailure>` | 每个被放弃的单元一项 |
+| `skipped_host_modules: Vec<ModuleId>` | 发生变化的宿主模块，只有重启才能应用它们；其他变化都已应用 |
+
+`ImportFailure` 包含 `modules`（该单元中被驱逐的模块，已排序，其缓存条目已恢复）和 `error`（该单元中某个模块导入失败的原因；若它不再导出插件，则为 `invalid plugin at <module>, expect a plugin export`）。
+
+## 重载如何替换插件 [#replacing]
+
+替换经由 `registry.replace` 进行，因此插件的每个纤程都保留其标识、父纤程、配置和加载器条目；只有背后的实现改变。纤程先卸载（其效应，包括旧的访客实例，都被释放），然后加载新实现。对 `hello.wat` 而言，旧实例先记录道别，然后新实例记录新的问候语。访客会得到一个状态全新的新实例。
+
+可能出错的情况及其结果：
+
+| 失败 | 结果 |
+|---|---|
+| 变化后的模块无法加载，或不再导出插件 | 其单元被放弃：其中任何内容都不重载，旧模块仍留在缓存中，运行中的插件继续使用旧代码。其他单元照常重载。在监视模式下，它的文件会在下一批中重试。 |
+| 新实现在 `apply` 中失败 | 纤程变为 `Failed`，与冷启动时一样；不做回滚。之后再次重载该模块（或 `update` 该条目）可以恢复它。 |
+| 事务本身失败（错误的根、嵌套事务、回调失败） | 什么都不重载；返回该错误（在监视模式下记录为警告，并重试所有文件）。 |
+
+## 监视模式 [#watch]
+
+在监视模式下，`hmr` 通过 `fs` 服务监视 `base`，把文件变化转化为事务：
+- 每次变化都以调试级别记录（`change detected at <path>`，路径相对于 `base`）。
+- 变化会被收集，直到连续 `debounce` 毫秒没有新的变化；该窗口内的变化作为一批一起重载（`reconcile N changed files`）。
+- 各批次一次运行一个，每一批都会接手上一批保留下来的文件：
+  - 导入失败的文件在下一批中重试（其导入失败已由事务记录）；
+  - 若事务本身失败，它的所有文件都会重试，错误记录为警告；
+  - 对宿主模块的修改只做报告（`skipped host modules: …`），因为是否重启由宿主决定。
+- 监视是 `hmr` 纤程之下的一个效应（effect），随它一起结束。

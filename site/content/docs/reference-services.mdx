@@ -1,0 +1,82 @@
+---
+title: "服务与可追溯性"
+description: "Cordis 如何借助 Service 基类、tracker 与可追溯代理，把服务方法内部创建的效应归属到调用方纤程。"
+---
+
+本页介绍 `cordis/packages/core/src/service.ts` 与 `utils.ts:113-238`。对应的论文内容是 §5.1.4（上下文访问，见[实现](/docs/concepts-implementation)）与 §6.3（能力，见[讨论与相关工作](/docs/concepts-related-work)）。这一机制在论文中大多是*隐含*的，但在实践中对时间可组合性（temporal composability）至关重要。
+
+## 它解决的问题 [#problem]
+
+一个服务（service）由一个纤程（fiber，即提供者（provider））提供，被许多其他纤程（消费者（consumer））调用。当消费者调用例如 `ctx.timer.setTimeout(cb, 100)` 时，它创建的定时器是一个效应（effect），必须**归消费者的纤程所有**。否则，卸载消费者会泄漏该定时器，而卸载提供者会杀死它在概念上并不拥有的定时器。同样，`ctx.logger('x')` 应以调用方插件命名。因此，Cordis 在每次服务调用上区分两个上下文：
+
+| 位置 | 是什么 | 决定 |
+|---|---|---|
+| **使用点**（use site） | 访问服务时所在的上下文（调用方） | *效应*、*拦截*、*隔离* |
+| **定义点**（def site） | 发起访问的代码被定义时所在的上下文（当服务内部的代码运行时，即服务自己的上下文） | *服务解析*（哪些 `inject` 声明允许访问） |
+
+## `Service` 基类 [#service]
+
+`service.ts`：
+
+```ts
+abstract class Service<T = never> {
+  static init / check / invoke / metadata / extend / tracker / mergeIntercept / resolveIntercept  // well-known symbols
+  name: string
+  constructor(protected ctx: Context, name: string) {
+    // callable services: if this[symbols.invoke] exists, `self` becomes a function object
+    self.ctx = ctx; self.name = name
+    self[symbols.tracker] = { associate: name, property: 'ctx' }
+    ctx.reflect.provide(name, self, this[symbols.check])    // provision (a tracked effect)
+    return self
+  }
+}
+```
+
+- 在插件的 `apply` 中构造 `Service` 即提供它；这次提供是该纤程的一个可撤销效应。
+- `[Service.init]()` 在构造之后由纤程 runner 调用（`fiber.ts:158-165`）；其返回值被当作效应（可以是异步的或生成器）。
+- `[Service.check]()` 是一个额外的可用性谓词，供消费者的 `_checkImpl` 查询。
+- `[Service.invoke]` 使服务可被调用（`ctx.logger('name')`）。
+- `[symbols.filter](ctx)` 是该服务所发出事件的默认领域相等过滤器。
+- `[Service.extend](props)` 创建一个派生实例（原型子对象或可调用的克隆）。
+- `[Service.mergeIntercept]` / `[Service.resolveIntercept]` 处理拦截元数据（见[拦截](/docs/reference-context#interception)）。
+- `Service[Symbol.hasInstance]` 会遍历构造函数，因为实例可能是代理。
+
+## Tracker 与可追溯代理 [#traceable-proxies]
+
+任何带有 `[symbols.tracker]` 描述符 `{ property?: 'ctx', associate?: string, noShadow?: boolean }` 的对象，每当从上下文上被读取时，都会被 `getTraceable(ctx, value)` 包装。`createTraceable`（`utils.ts:164-220`）返回一个行为如下的 Proxy：
+
+| 访问 | 结果 |
+|---|---|
+| `value[tracker.property]`（即 `service.ctx`） | **使用点**上下文 |
+| `value[symbols.caller]` | 定义点（调用方的定义点） |
+| `value[symbols.original]` | 原始对象 |
+| `value.foo`，且 `"${associate}.foo"` 是已声明的上下文属性 | 关联属性（例如服务 `foo.bar` 可通过 `ctx.foo.bar` 访问；向 session 等关联类型的 mixin） |
+| getter / 方法 | 以**影子接收者**调用，其 `ctx` 为 `useSite.extend({ [symbols.shadow]: defSite })` |
+| 嵌套的可追溯值 | 以使用点再次追踪 |
+| 调用可调用服务 | 对影子接收者应用 `[symbols.invoke]` |
+
+**影子**上下文（`symbols.shadow`）是一个二元组：对象本身是使用点（其纤程接收效应），其 `shadow` 属性是定义点（代理的 `get` 陷阱在 [`locate`](/docs/reference-context#locate) 时查询它）。因此，在服务方法内部：
+
+- `this.ctx.effect(...)` 与 `this.ctx.on(...)` 被注册到**调用方**纤程中；
+- `this.ctx.otherService` 按**服务**自己的 `inject`（定义点）解析，即使从根调用也是如此（`shadow.spec.ts: 'applies the service inject when entered from root'`）；
+- `noShadow` 服务（events、logger、reflect、registry）暴露调用方，但不保留影子。
+
+`withProps` / `withProp` 构建只覆盖少数属性的轻量代理；`joinPrototype` 为可调用服务把类原型与 `Function.prototype` 合并；`createCallable` 构建函数对象。
+
+## 关联属性 [#associated-properties]
+
+由 `tests/associate.spec.ts` 覆盖。名为 `foo.bar` 的服务（或以 `foo.bar` 提供的属性）可通过 `ctx.foo.bar` 访问。由服务创建的对象（例如 tracker 为 `associate: 'session'` 的 `Session`）会暴露*其他*插件在 `session.*` 下注册的 mixin（`ctx.mixin('bar', { answer: 'session.answer' })`）。可见性遵循声明方纤程（`'associated access follows the service fiber'`）。
+
+独立的插件正是这样在运行时扩展彼此的类型：这是 TypeScript 模块增强（module augmentation）的动态对应物（论文 §6.4，见[讨论与相关工作](/docs/concepts-related-work)）。
+
+## 为何这对移植很重要 [#port]
+
+| 关注点 | JS 机制 | 必须保留为 |
+|---|---|---|
+| 效应归属于调用方 | `service.ctx` 经 Proxy 返回使用点 ctx | 服务方法必须显式接收/获得调用方的上下文 |
+| 从定义点解析服务 | `locate` 中的影子上下文 | 服务从自身纤程的已提交视图解析*自己的*依赖 |
+| 可调用服务 | 原型合并的 Function 对象 | 普通方法（`logger.named("x")`） |
+| 关联扩展 | `associate` + mixin 访问器 | 以 `(type, name)` 为键的扩展 trait / 注册表 |
+| 能力检查 | Proxy 的 `get` 陷阱 | 只能通过已声明的依赖声明（inject）获得的类型化句柄 |
+
+Cordis 的可追溯性约是 200 行 Proxy 管道代码，在 Rust 中没有直接对应物。kardia 用一个显式的类型化句柄 `Svc<T>`（服务的 `Arc` 加上调用方 `Context`）取而代之；见 [API 设计](/docs/development-design)。

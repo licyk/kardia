@@ -1,0 +1,242 @@
+---
+title: "Revertible effects and fibers"
+description: "Register inverses, write effects with setup, use effect scopes and iteration boundaries, and control a plugin's fiber."
+---
+
+Everything a plugin sets up (listeners, timers, services, child plugins) is an **effect**: a setup paired with its **inverse**, the disposer that reverts it. Effects are registered on the plugin's **fiber**, and when the fiber unloads, every inverse runs. This is what lets you reconfigure, replace or stop any plugin while the app runs without leaking what it acquired.
+
+This page shows how to register effects, how they are disposed and what a fiber's handle can do. For the theory see [Revertible effects](/docs/concepts-revertible-effects); for the design decisions (non-owning handles, inertial loads instead of dropped futures) see [API design](/docs/development-design); for the state machine underneath see [Core data structures](/docs/development-lifecycle).
+
+## Registering an inverse [#inverses]
+
+The simplest effect is a plain inverse for something you just did:
+
+```rust
+async fn apply(ctx: Context, config: Arc<DbConfig>) -> Result<()> {
+    let pool = connect(&config.url).await?;                  // acquisition…
+    ctx.on_dispose({ let pool = pool.clone(); move || pool.close() })?;   // …paired with its inverse
+    ctx.provide(Database { pool })?;
+    Ok(())
+}
+```
+
+| Method | Registers on the current fiber |
+|---|---|
+| `ctx.on_dispose(f)` | a synchronous inverse `f: FnOnce()` |
+| `ctx.defer(label, disposer)` | an arbitrary `Disposer`, under a label shown in introspection |
+
+Both return `Result<EffectHandle>`. They fail with `KardiaError::InactiveEffect` (`cannot create effect on inactive context`) on a fiber that has been retired, with one exception: a retired fiber whose own load is still in flight may still collect inverses, which the unload that follows reverts, so that nothing the load acquired leaks.
+
+A `Disposer` is the inverse of an effect. It is consumed when it runs, so it runs at most once:
+
+| Constructor | Inverse |
+|---|---|
+| `Disposer::new(f)` | a synchronous `FnOnce()` |
+| `Disposer::fallible(f)` | a synchronous `FnOnce() -> Result<()>` |
+| `Disposer::future(f)` | `f` runs synchronously when disposal starts and returns a future that finishes the work |
+| `Disposer::try_future(f)` | the same, with a fallible future |
+
+Panics in a disposer, synchronous or asynchronous, are caught and reported as errors.
+
+## Effects with a setup [#effects]
+
+When the setup itself can fail, or registers several inverses, write it as an effect body. The body gets an `EffectScope` to collect inverses into.
+
+**Synchronous:** `ctx.effect_sync(label, |scope| { … })` runs the body at once. If the body fails (or panics), whatever it collected is disposed and the error is returned.
+
+```rust
+let handle = ctx.effect_sync("watch config", |scope| {
+    let watcher = start_watcher()?;
+    scope.defer_fn(move || watcher.stop());
+    let socket = open_socket()?;            // on failure, the watcher is stopped again
+    scope.defer_fn(move || socket.close());
+    Ok(())
+})?;
+```
+
+**Asynchronous:** `ctx.effect(label, |scope| async move { … })` spawns the body. It is never dropped half-way: disposal waits for it to reach its end or an iteration boundary. A failure disposes what the body collected, is logged, and is reported by `EffectHandle::ready()`. Returning `Interrupted` (see below) is not a failure.
+
+```rust
+let handle = ctx.effect("poll", |scope| async move {
+    loop {
+        let job = fetch_job().await?;
+        let guard = job.lock();
+        scope.yield_(Disposer::new(move || drop(guard)))?;   // collect + boundary
+    }
+})?;
+handle.ready().await?;      // `await ctx.effect(...)` in Cordis
+```
+
+### `EffectScope` [#scope]
+
+| Method | Does |
+|---|---|
+| `scope.defer(disposer)` | collects an inverse, without an iteration boundary |
+| `scope.defer_fn(f)` | shorthand for deferring a synchronous inverse |
+| `scope.adopt(handle)` | moves a nested effect under this one: it is no longer disposed by its fiber directly, but together with this effect (ownership transfer) |
+| `scope.checkpoint()` | an iteration boundary: `Err(Interrupted)` once the effect has been disposed |
+| `scope.yield_(disposer)` | collects an inverse and marks an iteration boundary |
+
+`checkpoint` and `yield_` are synchronous and return `Result<(), Interrupted>`, so you propagate them with `?`.
+
+A nested effect, created inside a body with `ctx.effect(..)` or `ctx.effect_sync(..)`, is registered on the fiber like any other. `scope.adopt(handle)` takes it over, so that it is reverted when (and only when) the outer effect is. Any `Fiber` converts into the `EffectHandle` that created it, so a scope can adopt a child plugin too: `scope.adopt(&ctx.plugin::<Child>(())?)`.
+
+## Iteration boundaries and interruption [#interruption]
+
+A load that has been superseded (the plugin was reconfigured, a dependency changed, or it was disposed) is not cancelled by dropping its future: a future dropped between "acquire a resource" and "register its inverse" would leak exactly what effects promise to recover. Instead the host is **inertial**: a stale load runs to its end and is then unloaded. To stop earlier, a load checks at explicit **iteration boundaries**:
+
+| Boundary | Fails with `Interrupted` |
+|---|---|
+| `ctx.checkpoint()` | in a plugin's `apply`, once its load has been superseded or the fiber retired (the paper's L-Divert) |
+| `scope.checkpoint()` / `scope.yield_(d)` | in an effect body, once the effect has been disposed |
+
+```rust
+PluginDef::typed(move |ctx: Context, config: Arc<DbConfig>| async move {
+    let logger = ctx.logger();
+    logger.info(format_args!("connecting to {}", config.url));
+    let url = config.url.clone();
+    ctx.on_dispose(move || logger.info(format_args!("closing {url}")))?;
+    ctx.checkpoint()?;          // stop here if this load is already stale
+    ctx.provide(Database { url: config.url.clone() })?;
+    Ok(())
+})
+```
+
+Propagating `Interrupted` with `?` is not a failure: the fiber (or effect) does not become `Failed`, and what was registered so far is disposed normally. `Error::is_interrupted()` tells it apart from real errors. The loader uses this pattern for entries with `inject`: the outer fiber resolves the plugin, hits `ctx.checkpoint()?`, then starts the inner one. The reasoning is on [API design](/docs/development-design).
+
+## `EffectHandle` [#handle]
+
+Every effect registration returns an `EffectHandle`:
+
+| Method | Returns |
+|---|---|
+| `handle.label()` | the effect's label |
+| `handle.is_active()` | whether it has not been disposed yet |
+| `handle.dispose()` | reverts the effect (at most once) and returns a `Disposal` |
+| `handle.ready()` | a future that resolves when the setup has finished (immediately for synchronous effects), with the setup's failure if it failed |
+| `handle.meta()` | an `EffectMeta { label, children }`, for introspection |
+
+An `EffectHandle` is **non-owning**: dropping it does not dispose the effect. The effect's lifetime is governed by the fiber it was registered on, which is where the paper distinguishes Cordis from RAII. Lexical scoping is complementary, for resources local to one effect: inside a disposer, ordinary `Drop` types are fine.
+
+A `Disposal` is the completion of a disposal. It makes progress without being polled: the synchronous part has already run when `dispose()` returns, and any asynchronous rest runs as a spawned task, so dropping a `Disposal` does not cancel it. Await it to observe the result; `disposal.is_ready()` tells whether everything finished synchronously. Disposing an asynchronous effect whose setup is still running waits for the setup first.
+
+## Disposal order and errors [#order]
+
+**Within one effect** (an `effect_sync` body, an `effect` body, or the inverses a scope adopted), inverses run **sequentially, newest first**:
+- synchronous inverses run immediately; from the first asynchronous one on, the rest runs as a spawned task;
+- every inverse runs even if an earlier one fails, and the first error is the result;
+- an inverse deferred to an effect that is already being disposed runs immediately.
+
+**When a fiber unloads**, the runtime:
+1. waits until no consumer still depends on the services the fiber provides (each consumer finishes its own teardown first);
+2. takes the fiber's effects, newest first;
+3. disposes them all **concurrently**, logging every failure and panic;
+4. then releases the services the fiber committed to.
+
+Sibling effects of one fiber therefore clean up concurrently, as Cordis's tests require (`service-dispose.spec.ts`). When teardown steps must happen in order, put them in **one** effect:
+
+```rust
+ctx.effect_sync("server", |scope| {
+    let db = open_db()?;
+    let server = start_server(db.clone())?;
+    scope.defer_fn(move || db.close());          // runs second
+    scope.defer_fn(move || server.shutdown());   // runs first (newest first)
+    Ok(())
+})?;
+```
+
+Unloading a parent cascades to its children: each child plugin is an effect of its parent, so the parent's unload disposes them.
+
+## Fibers [#fibers]
+
+A **fiber** is one instantiation of a plugin. Instantiating a plugin registers, on the current fiber, an effect whose inverse retires the new fiber:
+
+| Method | Instantiates |
+|---|---|
+| `ctx.plugin::<P>(config)` | a typed plugin with a typed config (`P::Config: Serialize`) |
+| `ctx.plugin_value::<P>(value)` | a typed plugin from a raw JSON config |
+| `ctx.plugin_def(&def, value)` | a `PluginDef` |
+| `ctx.inject(deps, \|ctx\| async move { … })` | an anonymous closure plugin with the given dependencies |
+
+Each returns `Result<Fiber>`. Retiring a fiber and then enabling the plugin again creates a **fresh** fiber, not the old one. `ctx.fiber()` returns the fiber a context belongs to; `Context::new()` creates a root, whose fiber is always active.
+
+### States [#states]
+
+| `FiberState` | Meaning |
+|---|---|
+| `Pending` | waiting for its dependencies |
+| `Loading` | its `apply` is running |
+| `Active` | loaded, with its services and effects in place |
+| `Unloading` | its effects are being disposed |
+| `Failed` | its last load failed; only `update` or a `registry.replace` recovers it (both clear the error) |
+| `Disposed` | retired |
+
+<Mermaid chart={"stateDiagram-v2\n  [*] --> Pending: instantiated\n  Pending --> Loading: dependencies available\n  Loading --> Active: apply succeeded\n  Loading --> Unloading: apply failed, or superseded while loading\n  Active --> Unloading: dependency changed, update, restart or dispose\n  Unloading --> Loading: still wanted\n  Unloading --> Pending: dependency missing\n  Unloading --> Failed: its load failed\n  Unloading --> Disposed: retired\n  Failed --> Loading: update or replace\n  Pending --> Disposed: retired\n  Failed --> Disposed: retired\n  Disposed --> [*]"} />
+
+A transition in flight is never cut short (inertia): if the fiber's target changes while it loads, the load finishes and the fiber then unloads. A failed load also unloads what it registered before the fiber settles to `Failed`; a failure of a superseded load only cleans up and does not mark the fiber `Failed`. `StatusChanged` events report each change (see [Events](/docs/guide-services#builtin-events)). Why the state machine is built this way is described on [Core data structures](/docs/development-lifecycle) and [API design](/docs/development-design).
+
+### The `Fiber` handle [#fiber-handle]
+
+| Method | Returns |
+|---|---|
+| `fiber.id()` | its `FiberId` (never reused; `0` is the root) |
+| `fiber.state()` | its `FiberState` |
+| `fiber.context()` | the fiber's own `Context` |
+| `fiber.settled()` | `Settle`: resolves when no transition is in flight, with the fiber's error if it failed (Cordis's `await fiber`) |
+| `fiber.update(config)` | `Result<Settle>`: replaces the configuration (below) |
+| `fiber.update_with(config, no_save)` | the same; `no_save` suppresses `ConfigCommitted` |
+| `fiber.restart()` | `Settle`: unloads and loads again |
+| `fiber.dispose()` | `Disposal`: retires the fiber |
+| `fiber.config()` | the source configuration, as last given |
+| `fiber.inject()`, `fiber.def()`, `fiber.runtime()`, `fiber.name()` | its declaration, plugin definition, registry key, and plugin name (or its nearest named ancestor's) |
+| `fiber.error()` | the failure of its last load, if any |
+| `fiber.parent()`, `fiber.is_root()`, `fiber.is_removed()` | its place in the tree, and whether it has been retired |
+| `fiber.effect_handle()` | the effect on the parent that instantiated it |
+| `fiber.effects()`, `fiber.effect_count()` | the effects in its accumulator, in insertion order, as `EffectMeta` (labels and adopted children) |
+
+### Update, restart and dispose [#update]
+
+**`update(config)`**:
+1. If the fiber is loaded, the new configuration is validated first; a rejected configuration returns an error and leaves the running instance untouched.
+2. Unless `no_save` is set, `ConfigCommitted { fiber, config }` is emitted (the loader writes it back to the config file).
+3. The configuration is stored and the fiber's error cleared.
+4. The decoded configuration is offered to the fiber's update hooks (`ctx.on_update`, `ctx.on_update_with`). A hook that takes the update over decides how it completes, and the fiber is not restarted.
+5. Otherwise the fiber restarts.
+
+```rust
+// inside apply: take reconfiguration over instead of restarting
+let state = shared.clone();
+ctx.on_update::<DbConfig>(move |next| {
+    state.set_url(&next.url);
+    true
+})?;
+```
+
+**`restart()`** bumps the fiber's revision, so it unloads and loads again with the same configuration. It fails on a retired fiber, and it does not recover a `Failed` fiber: the failure stays (and `settled()` keeps returning it) until `update` or `registry.replace` clears it.
+
+**`dispose()`** retires the fiber: it is marked removed, its live provisions are unbound at once, it unloads and settles to `Disposed`. For the root fiber, `dispose()` restarts the root, reverting everything registered on it; this is how an app shuts down:
+
+```rust
+root.fiber().dispose().await?;
+```
+
+### Replacing an implementation [#replace]
+
+`ctx.registry()` gives access to the root's plugin registry:
+
+| Method | Does |
+|---|---|
+| `registry.replace(&old, &new)` | swaps the implementation behind every fiber of `old` in place and forwards future instantiations of `old` to `new`. Returns the moved fibers; each reloads with the new implementation and emits `Replaced`. |
+| `registry.size()`, `keys()`, `get(&def)`, `has(&def)`, `fibers(&def)` | inspection |
+
+The moved fibers keep their identity, parent, configuration and loader entry. This is the primitive behind [hot reload](/docs/guide-hot-reload), and it is useful on its own:
+
+```rust
+let v1 = db_plugin(1);
+let db = root.plugin_def(&v1, json!({ "url": "postgres://primary" }))?;
+db.settled().await?;
+// hot replacement: the same fiber now runs the v2 implementation
+for fiber in root.registry().replace(&v1, &db_plugin(2)) {
+    fiber.settled().await?;
+}
+```

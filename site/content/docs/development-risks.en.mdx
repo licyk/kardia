@@ -1,0 +1,153 @@
+---
+title: "Risks and worked example"
+description: "The risks and open decisions of the kardia design with their proposed answers, and a worked example of the plugin API."
+---
+
+## Risks and open decisions [#risks]
+
+| Topic | Risk / question | Proposed answer |
+|---|---|---|
+| Threading model | `Send` bounds everywhere vs. a literal JS-like `!Send` design | `Send + Sync` with the lock-plus-actions rule ([Concurrency](/docs/development-concurrency#model)); revisit only with evidence |
+| Reentrancy | user code called under the state lock deadlocks (`parking_lot` is not reentrant) | enforced by structure: critical sections return `Actions`; availability `check` closures documented as runtime-free |
+| Disposal order | paper LIFO vs. Cordis concurrent fiber-level disposal | follow Cordis (tests depend on it); LIFO within one effect |
+| Cancellation | dropping `apply` futures would leak half-registered resources | inertial host + explicit checkpoints ([Interruption](/docs/development-design#interruption)) |
+| Reference cycles | services hold their own `Context` (→ `Root`), `Root` holds services | cycles are broken when bindings are withdrawn; `Root::shutdown().await` disposes the root fiber and clears the store |
+| Expressions | no JS `eval` | decide on CEL vs. custom evaluator before Phase 4 finishes; reject expressions until then |
+| Dynamic code | Rust has no module registry; dylib unloading unsound | static catalog first; WASM backend for real hot reload/sandboxing |
+| Type-level keys | string keys can collide; `TypeId` unstable across dylibs | `TypeId` check in-process; string + version tag for dynamic modules ([paper §6.6](/docs/concepts-related-work)) |
+| Error-message parity | TS messages/columns (UTF-16) | keep message wording where cheap; no UTF-16 parity |
+
+<Callout type="info">
+How these were settled in the code:
+
+- **Reentrancy:** critical sections queue `Action`s on the state (see [Concurrency](/docs/development-concurrency#model)); values released under the lock are dropped after it.
+- **Reference cycles:** there is no `Root` type or `shutdown()`. Disposing the root fiber, `root.fiber().dispose().await`, restarts it and reverts everything registered on it, which withdraws every binding.
+- **Expressions:** decided as a side-effect-free JavaScript subset (`kardia_loader::expr`), not CEL; see [Status and deviations](/docs/development-status#deviations).
+- **Dynamic code:** the static catalog came first; the WASM, dylib and process backends followed (see [Dynamic modules](/docs/development-status#dynamic-modules)).
+- **Type-level keys:** the in-process check is the downcast at access (`AccessError::TypeMismatch`). Guest services cross the module boundary as JSON values with JSON calls (`GuestService`), so no Rust type or `TypeId` crosses it.
+</Callout>
+
+## Worked example [#worked-example]
+
+A provider and a consumer, written against the plugin API. The first tab is the example in today's API (it compiles and runs against the workspace once `connect` and its pool, placeholders for a real database client, are supplied); the second is the plan's original sketch of the then-future API.
+
+<Tabs items={["Current API", "Plan sketch"]}>
+<Tab value="Current API">
+
+```rust
+use std::sync::Arc;
+
+use kardia::Key;
+use kardia::prelude::*;
+
+#[derive(Service)]
+#[service(crate = ::kardia)]
+struct Database { url: String }
+
+struct DbPlugin;
+#[derive(Deserialize)] struct DbConfig { url: String }
+impl Plugin for DbPlugin {
+    const NAME: &'static str = "db";
+    type Config = DbConfig;
+    fn provide() -> Vec<Key> { vec![Database::NAME.into()] }
+    async fn apply(ctx: Context, cfg: Arc<DbConfig>) -> Result<()> {
+        let pool = connect(&cfg.url).await?;                 // acquisition…
+        ctx.on_dispose({ let p = pool.clone(); move || p.close() })?;   // …paired with its inverse
+        ctx.checkpoint()?;                                   // iteration boundary
+        ctx.provide(Database { url: cfg.url.clone() })?;     // tracked provision
+        Ok(())
+    }
+}
+
+struct Greeter;
+impl Plugin for Greeter {
+    const NAME: &'static str = "greeter";
+    type Config = ();
+    fn inject() -> Inject { Inject::of::<(Database,)>() }    // d = { database }
+    async fn apply(ctx: Context, _: Arc<()>) -> Result<()> {
+        let (db,) = ctx.deps::<(Database,)>()?;              // reads the committed view
+        assert!(ctx.get::<Timer>().is_err());                // undeclared → Err(Undeclared) unless inherited
+        ctx.logger_named("greeter").info(format_args!("using {}", db.url));
+        Ok(())
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let root = Context::new();
+    let greeter = root.plugin::<Greeter>(())?;               // Pending: database not provided yet
+    let db = root.plugin_value::<DbPlugin>(json!({ "url": "postgres://…" }))?;
+    db.settled().await?;
+    greeter.settled().await?;                                // Active once db is Active
+    db.update(json!({ "url": "postgres://other" }))?.await?; // greeter unloads first, db reloads, greeter reloads
+    db.dispose().await?;                                     // greeter back to Pending; all effects reverted
+    root.fiber().dispose().await?;                           // reverts everything registered on the root
+    Ok(())
+}
+```
+
+</Tab>
+<Tab value="Plan sketch">
+
+```rust
+use kardia::prelude::*;
+
+struct Database { url: String }
+impl Service for Database { const NAME: &'static str = "database"; }
+
+struct DbPlugin;
+#[derive(Deserialize)] struct DbConfig { url: String }
+impl Plugin for DbPlugin {
+    const NAME: &'static str = "db";
+    type Config = DbConfig;
+    type Inject = ();                                        // explicit: associated-type defaults are unstable
+    fn provide() -> &'static [&'static str] { &["database"] }
+    async fn apply(ctx: Context, cfg: Arc<DbConfig>) -> Result<(), PluginError> {
+        let pool = connect(&cfg.url).await?;                 // acquisition…
+        ctx.on_dispose({ let p = pool.clone(); move || p.close() });   // …paired with its inverse
+        ctx.checkpoint().await?;                             // iteration boundary
+        ctx.provide(Database { url: cfg.url.clone() })?;     // tracked provision
+        Ok(())
+    }
+}
+
+struct Greeter;
+impl Plugin for Greeter {
+    const NAME: &'static str = "greeter";
+    type Config = ();
+    type Inject = (Database,);                               // d = { database }
+    async fn apply(ctx: Context, _: Arc<()>) -> Result<(), PluginError> {
+        let (db,) = ctx.deps::<Self::Inject>()?;             // reads the committed view
+        assert!(ctx.get::<Timer>().is_err());                // undeclared → Err(Undeclared) unless inherited
+        ctx.logger("greeter").info(format_args!("using {}", db.url));
+        Ok(())
+    }
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let root = Root::new();
+    let ctx = root.context();
+    let greeter = ctx.plugin::<Greeter>(())?;                // Pending: database not provided yet
+    let db = ctx.plugin::<DbPlugin>(DbConfig { url: "postgres://…".into() })?;
+    greeter.settled().await?;                                // Active once db is Active
+    db.update(json!({ "url": "postgres://other" }), false).await?;   // greeter unloads first, db reloads, greeter reloads
+    db.dispose().await;                                      // greeter back to Pending; all effects reverted
+    root.shutdown().await;
+    Ok(())
+}
+```
+
+</Tab>
+</Tabs>
+
+What changed between the sketch and the code:
+
+- **Root:** `Context::new()` creates the root context; `root.fiber().dispose()` replaces `root.shutdown()`.
+- **Errors:** `Result<()>` (`kardia_core::Result`) replaces `Result<(), PluginError>` and `anyhow::Result`.
+- **Declarations:** `fn inject() -> Inject` (here `Inject::of::<(Database,)>()`) replaces `type Inject`, and `fn provide() -> Vec<Key>` replaces the `&'static [&'static str]` slice. `#[derive(Service)]` implements `Service` (the hand-written `impl Service for Database` also works). With the `#[plugin]` macro, a plugin is an `async fn` taking `Injected<(Database,)>`, which turns undeclared access into a compile error (see [Plugins](/docs/guide-plugins)).
+- **Boundaries:** `ctx.checkpoint()?` and `ctx.on_dispose(..)?` are synchronous and fallible.
+- **Configuration:** `ctx.plugin::<P>(config)` requires `P::Config: Serialize` (the value is serialized and decoded like any other configuration), so a `Deserialize`-only config is passed as JSON with `plugin_value`. `db.update(value)?` validates at once and returns the future to await; `update_with(value, no_save)` takes the flag.
+- **Settling:** `greeter.settled()` resolves as soon as no transition is in flight, so the example first waits for `db` to settle; the greeter's transitions start once the database is provided.
+- **Logger:** `ctx.logger_named("greeter")`, or `ctx.logger()`, which is named after the plugin.
+- **Dependencies:** `#[derive(Deserialize)]` needs `serde` with the `derive` feature among the crate's own dependencies, even though `kardia::prelude` re-exports the derive.

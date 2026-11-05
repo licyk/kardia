@@ -1,0 +1,153 @@
+---
+title: "风险与完整示例"
+description: "kardia 设计中的风险与待定决策及其建议答案，以及一个插件 API 的完整示例。"
+---
+
+## 风险与待定决策 [#risks]
+
+| 主题 | 风险 / 问题 | 建议答案 |
+|---|---|---|
+| 线程模型 | 到处都有 `Send` 约束，还是照搬 JS 的 `!Send` 设计 | `Send + Sync` 加上“锁加动作”规则（[并发](/docs/development-concurrency#model)）；只有在有证据时才重新考虑 |
+| 重入 | 在状态锁下调用的用户代码会死锁（`parking_lot` 不可重入） | 由结构保证：临界区返回 `Actions`；可用性 `check` 闭包在文档中注明不使用运行时 |
+| 释放顺序 | 论文的 LIFO 与 Cordis 纤程（fiber）级的并发释放 | 遵循 Cordis（测试依赖于此）；单个效应（effect）内部采用 LIFO |
+| 取消 | 丢弃 `apply` future 会泄漏注册了一半的资源 | 惯性（inertia）宿主 + 显式检查点（[中断](/docs/development-design#interruption)） |
+| 引用环 | 服务持有自己的 `Context`（→ `Root`），而 `Root` 持有服务 | 撤回绑定时打破环；`Root::shutdown().await` 释放根纤程并清空存储 |
+| 表达式 | 没有 JS 的 `eval` | 在第 4 阶段结束前在 CEL 与自定义求值器之间做出决定；在此之前拒绝表达式 |
+| 动态代码 | Rust 没有模块注册表；卸载 dylib 不可靠 | 先做静态目录；用 WASM 后端实现真正的热重载 / 沙箱 |
+| 类型级的键 | 字符串键可能冲突；`TypeId` 在不同 dylib 之间不稳定 | 进程内做 `TypeId` 检查；动态模块使用字符串 + 版本标记（[论文 §6.6](/docs/concepts-related-work)） |
+| 错误消息一致性 | TS 的消息 / 列号（UTF-16） | 在代价低时保留消息措辞；不追求 UTF-16 一致 |
+
+<Callout type="info">
+这些问题在代码中是如何解决的：
+
+- **重入**：临界区把 `Action` 排入状态中（见[并发](/docs/development-concurrency#model)）；在锁下释放的值在解锁之后才被丢弃。
+- **引用环**：没有 `Root` 类型，也没有 `shutdown()`。释放根纤程（`root.fiber().dispose().await`）会重启它，并撤销注册在它上面的一切，从而撤回所有绑定。
+- **表达式**：决定采用一个无副作用的 JavaScript 子集（`kardia_loader::expr`），而不是 CEL；见[状态与偏离](/docs/development-status#deviations)。
+- **动态代码**：先实现了静态目录；随后实现了 WASM、dylib 与进程后端（见[动态模块](/docs/development-status#dynamic-modules)）。
+- **类型级的键**：进程内的检查是访问时的向下转型（`AccessError::TypeMismatch`）。访客插件的服务以 JSON 值和 JSON 调用跨越模块边界（`GuestService`），因此没有任何 Rust 类型或 `TypeId` 跨越边界。
+</Callout>
+
+## 完整示例 [#worked-example]
+
+一个提供者和一个消费者，基于插件 API 编写。第一个标签页是用现行 API 写的示例（只要提供 `connect` 及其连接池——它们是真实数据库客户端的占位——它就能针对工作区编译并运行）；第二个是计划中针对当时尚未实现的 API 的原始草图。
+
+<Tabs items={["现行 API", "计划草图"]}>
+<Tab value="现行 API">
+
+```rust
+use std::sync::Arc;
+
+use kardia::Key;
+use kardia::prelude::*;
+
+#[derive(Service)]
+#[service(crate = ::kardia)]
+struct Database { url: String }
+
+struct DbPlugin;
+#[derive(Deserialize)] struct DbConfig { url: String }
+impl Plugin for DbPlugin {
+    const NAME: &'static str = "db";
+    type Config = DbConfig;
+    fn provide() -> Vec<Key> { vec![Database::NAME.into()] }
+    async fn apply(ctx: Context, cfg: Arc<DbConfig>) -> Result<()> {
+        let pool = connect(&cfg.url).await?;                 // acquisition…
+        ctx.on_dispose({ let p = pool.clone(); move || p.close() })?;   // …paired with its inverse
+        ctx.checkpoint()?;                                   // iteration boundary
+        ctx.provide(Database { url: cfg.url.clone() })?;     // tracked provision
+        Ok(())
+    }
+}
+
+struct Greeter;
+impl Plugin for Greeter {
+    const NAME: &'static str = "greeter";
+    type Config = ();
+    fn inject() -> Inject { Inject::of::<(Database,)>() }    // d = { database }
+    async fn apply(ctx: Context, _: Arc<()>) -> Result<()> {
+        let (db,) = ctx.deps::<(Database,)>()?;              // reads the committed view
+        assert!(ctx.get::<Timer>().is_err());                // undeclared → Err(Undeclared) unless inherited
+        ctx.logger_named("greeter").info(format_args!("using {}", db.url));
+        Ok(())
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let root = Context::new();
+    let greeter = root.plugin::<Greeter>(())?;               // Pending: database not provided yet
+    let db = root.plugin_value::<DbPlugin>(json!({ "url": "postgres://…" }))?;
+    db.settled().await?;
+    greeter.settled().await?;                                // Active once db is Active
+    db.update(json!({ "url": "postgres://other" }))?.await?; // greeter unloads first, db reloads, greeter reloads
+    db.dispose().await?;                                     // greeter back to Pending; all effects reverted
+    root.fiber().dispose().await?;                           // reverts everything registered on the root
+    Ok(())
+}
+```
+
+</Tab>
+<Tab value="计划草图">
+
+```rust
+use kardia::prelude::*;
+
+struct Database { url: String }
+impl Service for Database { const NAME: &'static str = "database"; }
+
+struct DbPlugin;
+#[derive(Deserialize)] struct DbConfig { url: String }
+impl Plugin for DbPlugin {
+    const NAME: &'static str = "db";
+    type Config = DbConfig;
+    type Inject = ();                                        // explicit: associated-type defaults are unstable
+    fn provide() -> &'static [&'static str] { &["database"] }
+    async fn apply(ctx: Context, cfg: Arc<DbConfig>) -> Result<(), PluginError> {
+        let pool = connect(&cfg.url).await?;                 // acquisition…
+        ctx.on_dispose({ let p = pool.clone(); move || p.close() });   // …paired with its inverse
+        ctx.checkpoint().await?;                             // iteration boundary
+        ctx.provide(Database { url: cfg.url.clone() })?;     // tracked provision
+        Ok(())
+    }
+}
+
+struct Greeter;
+impl Plugin for Greeter {
+    const NAME: &'static str = "greeter";
+    type Config = ();
+    type Inject = (Database,);                               // d = { database }
+    async fn apply(ctx: Context, _: Arc<()>) -> Result<(), PluginError> {
+        let (db,) = ctx.deps::<Self::Inject>()?;             // reads the committed view
+        assert!(ctx.get::<Timer>().is_err());                // undeclared → Err(Undeclared) unless inherited
+        ctx.logger("greeter").info(format_args!("using {}", db.url));
+        Ok(())
+    }
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let root = Root::new();
+    let ctx = root.context();
+    let greeter = ctx.plugin::<Greeter>(())?;                // Pending: database not provided yet
+    let db = ctx.plugin::<DbPlugin>(DbConfig { url: "postgres://…".into() })?;
+    greeter.settled().await?;                                // Active once db is Active
+    db.update(json!({ "url": "postgres://other" }), false).await?;   // greeter unloads first, db reloads, greeter reloads
+    db.dispose().await;                                      // greeter back to Pending; all effects reverted
+    root.shutdown().await;
+    Ok(())
+}
+```
+
+</Tab>
+</Tabs>
+
+草图与代码之间的变化：
+
+- **根**：`Context::new()` 创建根上下文；`root.fiber().dispose()` 代替 `root.shutdown()`。
+- **错误**：`Result<()>`（`kardia_core::Result`）代替 `Result<(), PluginError>` 与 `anyhow::Result`。
+- **声明**：`fn inject() -> Inject`（此处为 `Inject::of::<(Database,)>()`）代替 `type Inject`，`fn provide() -> Vec<Key>` 代替 `&'static [&'static str]` 切片。`#[derive(Service)]` 实现 `Service`（手写的 `impl Service for Database` 同样可用）。使用 `#[plugin]` 宏时，插件是一个接受 `Injected<(Database,)>` 的 `async fn`，这会把未声明的访问变成编译错误（见[插件](/docs/guide-plugins)）。
+- **边界**：`ctx.checkpoint()?` 与 `ctx.on_dispose(..)?` 是同步且可能失败的。
+- **配置**：`ctx.plugin::<P>(config)` 要求 `P::Config: Serialize`（该值会像其他任何配置一样被序列化再解码），因此只实现了 `Deserialize` 的配置要通过 `plugin_value` 以 JSON 传入。`db.update(value)?` 立即校验，并返回需要 await 的 future；`update_with(value, no_save)` 接受该标志。
+- **等待稳定**：只要没有正在进行的转换，`greeter.settled()` 就会立即完成，因此示例先等待 `db` 稳定；数据库被提供之后，greeter 的转换才会开始。
+- **日志**：`ctx.logger_named("greeter")`，或 `ctx.logger()`，后者以插件名命名。
+- **依赖**：`#[derive(Deserialize)]` 需要在 crate 自身的依赖中加入启用 `derive` 特性的 `serde`，即使 `kardia::prelude` 重新导出了该 derive。

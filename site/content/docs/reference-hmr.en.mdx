@@ -1,0 +1,114 @@
+---
+title: "HMR"
+description: "How @cordisjs/plugin-hmr replaces changed plugins in place as one transaction, with union-find commit units, and how it differs from the paper's Algorithm 10."
+---
+
+This page covers `cordis/packages/hmr/src/index.ts` and `error.ts`, plus `core/src/registry.ts:185-209` and `core/src/fiber.ts:401-416` (see [`registry.replace`](/docs/reference-fibers#replace)). The paper counterpart is §5.2.2, Algorithms 8–10; see [Implementation](/docs/concepts-implementation).
+
+<Callout type="warn">
+**The implementation differs substantially from the paper's Algorithm 10** (see [Paper vs. code](#paper-vs-code)).
+</Callout>
+
+## Integration [#integration]
+
+`class Hmr extends Service`, service name `hmr`. Config:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `base?` | `ctx.baseUrl` | base directory |
+| `watch.enabled` | `false` | reload on file changes |
+| `watch.files` | `['.', '!**/node_modules', '!**/.*']` | glob filter |
+| `watch.debounce` | 100 ms | debounce before reloading |
+
+- It requires Node's internal ESM loader (`loader-utils` → `ModuleLoader.fromInternal()`, which needs `--expose-internals` or the `node-addon-require-builtin` addon); the constructor throws otherwise (fiber FAILED, no service).
+- Watching is an optional nested plugin `ctx.inject(['fs'], ...)`, active only while an `fs` service exists.
+- `[Service.init]` records the **host modules**: the import closure of `process.argv[1]` (the main program, core, loader…), which can only change by restarting the process.
+- There is no loader-specific code: the loader imports plugins through the same internal ESM loader, so their modules are in the cache hmr inspects. hmr replaces plugins at the **registry** level, and loader entries keep their fibers.
+
+## Module graph [#module-graph]
+
+hmr keeps **no graph of its own**. It reads the live graph from Node's ESM `loadCache` (`ModuleJob.linked`) and the CJS `require.cache` each time (`_edges`, `closure`). Builtins (`node:`) are skipped; native addons (`.node`) cannot be reloaded.
+
+## `reconcile(callback)`: one transaction [#reconcile]
+
+`index.ts:309-699`. Transactions are serialized on a promise queue; re-entrant calls from inside a transaction (from the callback, or from a plugin `apply` during stage 3) are rejected using `AsyncLocalStorage`.
+
+<Steps>
+<Step>
+**Roots**: `await callback()` → absolute paths (validated).
+</Step>
+<Step>
+**Sweep**: evict *failed* ModuleJobs from the cache (Node keeps them and rethrows on every import), per type slot.
+</Step>
+<Step>
+**Match**: loaded modules whose path has a root as an ancestor (whole-segment match). Host modules and native addons → `skippedHostModules` (reported only).
+</Step>
+<Step>
+**Analyze**: reverse edges (excluding edges from host modules). `accepted` = the changed modules plus everything that transitively imports them; `declined` = host ∪ the rest. *(The paper's Algorithm 8 is a fixed point over forward imports with cycles defaulting to declined; the code is a simpler reverse-reachability worklist.)*
+</Step>
+<Step>
+**Discover**: for accepted modules, unwrap the exports and keep those that are registered plugins; **group them by runtime** (several modules can export the same plugin).
+</Step>
+<Step>
+**Stale plugins**: per runtime, the closure of its exporters through accepted modules. The module to re-import is the **outermost exporter** (which keeps the entry module's `inject`/`Config` metadata).
+</Step>
+<Step>
+**Backup and evict** every evicted URL (the whole multi-slot ESM entry + the CJS module).
+</Step>
+<Step>
+**Stage 1, import**, sequentially per stale plugin: re-import and check that the exports are a valid plugin (`registry.resolve`). *All fallible validation happens here, while only the module cache has been mutated*, so later stages need no rollback. No cache entry is restored before every plugin has been imported.
+</Step>
+<Step>
+**Partition into units** with union-find: two attempts join a unit if their **old ∪ new** closures share an evicted module (two plugins sharing a changed dependency must not end up with different instances of it).
+</Step>
+<Step>
+**Abort/commit**: units with any failed import are aborted and their modules restored. Orphaned evicted modules are restored with the aborted units they overlap (unless they reach a committed unit). Stage-1-loaded modules linked against restored modules are evicted.
+</Step>
+<Step>
+**Stage 2, replace (synchronous)**: `ctx.registry.replace(oldPlugin, newPlugin)` per committed attempt. `replace` aliases the old plugin key to the new one (later `ctx.plugin(old)` instantiates the new code) and calls `fiber._replace(newRuntime, newInject)` on each fiber: re-check injections, clear errors, bump the revision ⇒ **the same fiber object unloads and reloads in place** (identity, parent, config and loader entry preserved).
+</Step>
+<Step>
+**Stage 3, settle (concurrent)**: `await Promise.all(fibers.map(f => f.await().catch(noop)))`. There is **no rollback**: a plugin whose new `apply` throws stays FAILED (as on a cold start) and is retried on the next change.
+</Step>
+</Steps>
+
+The result is `{ settledFibers, importFailures: { urls, error }[], skippedHostModules }`.
+
+<Mermaid chart={"flowchart LR\n  roots[Roots] --> sweep[Sweep] --> match[Match] --> analyze[Analyze] --> discover[Discover] --> stale[\"Stale plugins\"] --> evict[\"Backup + evict\"] --> s1[\"Stage 1: import\"] --> units[\"Union-find units\"] --> ac[\"Abort / commit\"] --> s2[\"Stage 2: replace\"] --> s3[\"Stage 3: settle\"]"} />
+
+### State preservation [#state-preservation]
+
+| Kept | Lost |
+|---|---|
+| fiber objects and uids, parents, configs, loader entries, services of *other* fibers | all effects of the old instance (disposed by the normal unload path, which waits for dependents first, so the new instance never overlaps the old one) and the module-level state of re-imported modules |
+
+Unrelated plugins are untouched. Different fibers reload concurrently (a slow drain does not delay a fast plugin).
+
+## Watch mode [#watch]
+
+`index.ts:135-186`. `ctx.fs.watch(baseDir, { filter }).on('change', f => …)` → debounce → a serialized `flush` reconciling `retained ∪ stashed`.
+
+- Host-module changes are warned about.
+- Files of failed units are **retained** and retried together with the next change (a broken file and its dependency are retried together when only one of them is repaired).
+- Only `change` events exist; a new file matters once a changed importer imports it.
+
+## `error.ts` [#error-ts]
+
+Pretty-prints esbuild `BuildFailure`s (tsx transpile errors) with `@babel/code-frame`.
+
+## Paper vs. code [#paper-vs-code]
+
+| Aspect | Paper (Algorithms 8–10) | Code |
+|---|---|---|
+| Classification | forward fixed point; cycles default to declined | reverse-reachability from changed modules; host modules declined |
+| Stale detection | per *entry* (`entry.url`) | per *plugin runtime* (any registered plugin exported by an accepted module); loader-agnostic |
+| Swap | `entry.fiber.dispose(); entry.fiber ← ctx.use(import(url), config)` | `registry.replace` → same fiber object reloads in place |
+| Failure handling | restore caches and rebuild *every* stale entry from backup, rethrow | validation in stage 1; failing **units** (union-find) aborted and restored, others committed; failures of the new `apply` stay FAILED (no rollback) |
+| Atomicity | all-or-nothing | per dependency-connected unit |
+| Re-entrancy | not discussed | serialized queue + AsyncLocalStorage rejection |
+
+The code's design is arguably stronger: commit/abort is per unit, and the "point of no return" is placed after the only fallible step that can be cleanly reverted.
+
+## What is Node-specific [#node-specific]
+
+Everything in [Module graph](#module-graph) and steps 2, 7–8 and 10 of the transaction depend on Node's module caches and internals. The *algorithm* (match → accept → group by runtime → stage-1 validation → union-find units → replace in place → settle) is portable once a host-owned module registry exists. See [Loader, include and HMR](/docs/development-loader) for kardia's design.

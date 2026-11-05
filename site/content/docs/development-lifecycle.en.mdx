@@ -1,0 +1,145 @@
+---
+title: "Core data structures"
+description: "Identifiers, scope overlays, bindings, fibers, targets and committed views, IdTable and dependency-cycle detection in kardia-core."
+---
+
+The core data structures of `kardia-core`: the state the lifecycle runs on. Fibers live in a registry arena addressed by never-reused ids, and every cross reference (parent, dependents, committed view) is an id, never a pointer (decision **D2** of the [guiding decisions](/docs/development#decisions)). The algorithms that move a fiber through its states (refresh, reload, unload, instantiation) are on the API design page under [The lifecycle state machine](/docs/development-design#lifecycle).
+
+<Callout type="info">
+The sketches on this page are the plan's design. The code keeps their meaning but not always their shape; a note under each sketch gives the current names and fields in `crates/kardia-core/src`.
+</Callout>
+
+## Identifiers (`key.rs`) [#identifiers]
+
+```rust
+pub struct Key(Arc<str>);                 // service name, e.g. "database", "foo.bar"
+pub struct RealmId(u64);                   // realm symbol; debug label "db#entry1" / "db@shared"
+pub struct ImplId(u64);                    // provider binding identity, never reused
+pub struct FiberId(u64);                   // fiber name (paper 𝔑), never reused; 0 = root
+pub struct EffectId(u64);
+```
+
+Never-reused ids implement the paper's atomic generative names and make "replaced by an equal value" observable (Def. 53).
+
+<Callout type="info">
+In the code: `Key`, `RealmId`, `ImplId` and `FiberId` exist as sketched (`FiberId::ROOT` is `0`, `RealmId::new()` creates a fresh realm). `RealmId` prints as `realm#n`; the readable labels `svc#id` / `svc@label` belong to the loader's realms. There is no `EffectId`: effects are `EffectCell`s held in an `IdTable`, whose ids are plain `u64`.
+</Callout>
+
+## Scope overlays (`scope.rs`): derived realization and live re-parenting [#scope]
+
+```rust
+pub struct Scope {
+    parent: RwLock<Option<Arc<Scope>>>,               // re-pointable (loader moves entries)
+    isolate: RwLock<HashMap<Key, RealmId>>,           // own overrides (ρ)
+    intercept: RwLock<HashMap<Key, serde_json::Value>>,// own metadata (ι)
+    entry_marker: Option<EntryMarkerId>,              // loader: "contexts inside entry E"
+}
+impl Scope {
+    fn realm(&self, key: &Key, root_realms: &RootRealms) -> RealmId;  // nearest override, else root realm of key
+    fn has_own_isolate(&self, key: &Key) -> bool;                     // isolation boundary test (locate)
+    fn intercept_chain(&self, key: &Key) -> Vec<serde_json::Value>;   // outer → inner
+}
+```
+
+This replaces JS prototype chains (`Object.create`, `setPrototypeOf`, `swap`). Own vs. inherited is explicit.
+
+<Callout type="info">
+In the code, a `Scope` is one node of a context's derivation chain: `Scope { parent: RwLock<Option<Arc<Scope>>>, kind: ScopeKind }`, with `ScopeKind::{Fiber(FiberId), Isolate(Key, RealmId), Intercept(Key, Value), Overlay(Arc<Overlay>)}`. Every derived context (a fiber's own context, `isolate`, `intercept`, `extend`) adds a node; re-pointing a parent moves everything below it. The loader's mutable per-entry tables are public `Overlay` nodes (`set_isolations`, `set_intercepts`), and the entry marker is an `Overlay::tagged(tag)` found again with `Context::tag()`. Because scope nodes carry their fiber, the fiber chain of an access is read off the derivation chain (see [Re-pointable contexts](/docs/development-status#deviations)).
+</Callout>
+
+## Bindings (`store.rs`) [#bindings]
+
+```rust
+pub(crate) struct Impl {
+    id: ImplId,
+    key: Key,
+    realm: RealmId,                        // where it actually lives (may differ after a blocked realm move)
+    provider: FiberId,
+    value: Arc<dyn Any + Send + Sync>,
+    type_id: TypeId,                       // detects key collisions across unrelated types (paper §6.6)
+    check: Option<Arc<dyn Fn() -> bool + Send + Sync>>,  // extra availability predicate; must not touch the runtime
+    dependents: HashSet<FiberId>,          // fibers whose committed view names this impl (relied_n)
+    released: Arc<Notify>,                 // woken when `dependents` becomes empty
+}
+pub(crate) struct State {
+    fibers: HashMap<FiberId, FiberData>,
+    runtimes: HashMap<RuntimeKey, RuntimeData>,
+    aliases: HashMap<RuntimeKey, RuntimeKey>,   // registry.replace forwarding
+    store: HashMap<RealmId, Impl>,
+    root_realms: HashMap<Key, RealmId>,         // lazily assigned root realm per key
+    props: HashMap<Key, PropKind>,              // service vs accessor declarations
+    counters: Counters,
+}
+```
+
+The `type_id` check refers to [paper §6.6](/docs/concepts-related-work).
+
+<Callout type="info">
+In the code, both structs live in `state.rs`:
+
+- `Impl` has `key`, `realm`, `provider`, `provider_scope`, `value`, `check: Option<Check>`, `view: Option<View>` (a JSON reading of the value, for expressions and tooling) and `dependents`. It has no `id` (bindings are keyed by `ImplId` in `State::impls`), no `type_id` (a collision surfaces as `AccessError::TypeMismatch` when the value fails to downcast), and no `released` notifier (the unload guard waits on the root-wide notifier). `Check` is `Arc<dyn Fn(&[Value]) -> bool + Send + Sync>`: it receives the consumer's interception metadata for the key and runs under the lock, so it must not call into the runtime.
+- `State` has `fibers`, `runtimes: IndexMap<RuntimeKey, RuntimeData>` (registration order), `aliases: HashMap<RuntimeKey, PluginDef>`, `impls: HashMap<ImplId, Impl>` (every binding that still exists, live or withdrawn but still referenced), `store: HashMap<RealmId, ImplId>` (the live binding of each realm, the paper's Σ), `root_realms`, `listeners` (per event `TypeId`), `config_hooks`, id counters and the queued `actions`. There is no `props` table: accessors and mixins are not ported (see [Associated properties](/docs/development-design#mixins)).
+</Callout>
+
+## Fibers (`fiber.rs`) [#fibers]
+
+```rust
+pub enum FiberState { Pending, Loading, Active, Unloading, Failed, Disposed }
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum Target {
+    Inactive,                                   // ⊥
+    Epoch { revision: u64, providers: SmallVec<[ImplId; 4]> },   // ordered by inject declaration
+}
+
+pub(crate) struct FiberData {
+    id: FiberId,
+    parent: FiberId,                            // root's parent is itself
+    scope: Arc<Scope>,                          // the fiber's derived context scope
+    runtime: RuntimeKey,
+    inject: Arc<InjectSpec>,                    // d (+ declared interception metadata)
+    config: Arc<ConfigSlot>,                    // raw Value + typed config (validated once)
+    state: FiberState,
+    revision: u64,                              // bumped by restart / update / replace
+    resolved: HashMap<Key, ImplId>,             // live resolution per declared key (_store)
+    target: Target,                             // what it should run against (_runner.epoch)
+    committed: Option<Arc<CommittedView>>,      // ω, fixed for an episode
+    provisions: SmallVec<[ImplId; 2]>,          // σ_n
+    disposables: IdTable<EffectEntry>,          // accumulator, insertion-ordered
+    inertia: Option<Shared<BoxFuture<'static, ()>>>,
+    error: Option<Arc<PluginError>>,            // failure outcome
+    removed: bool,                              // uid === null in TS
+    unload_gate: Arc<Notify>,                   // fiber-level guard wake-up (_release)
+    status_tx: watch::Sender<FiberState>,       // for Fiber::settled().await
+}
+pub struct CommittedView { entries: SmallVec<[(Key, ImplId); 4]> }
+```
+
+<Mermaid chart={"stateDiagram-v2\n  [*] --> Pending\n  Pending --> Loading: target becomes an epoch\n  Loading --> Active: apply finished, target unchanged\n  Loading --> Unloading: target changed or apply failed\n  Active --> Unloading: target changed\n  Unloading --> Loading: target is an epoch again\n  Unloading --> Pending: target is inactive\n  Unloading --> Failed: the load failed\n  Unloading --> Disposed: fiber removed\n  Failed --> Loading: update / restart / replace\n  Disposed --> [*]"} />
+
+`FiberState` is the paper's θ. A fiber in `Failed` recovers only through `update`, `restart` or `replace`.
+
+<Callout type="info">
+In the code (`state.rs` and `fiber.rs`), `FiberState` and `Target` are as sketched, except that `Target::Epoch::providers` is a `Vec<ImplId>` (the workspace does not use `smallvec`). `FiberData` differs:
+
+- No `id` (it is the key of `State::fibers`), `runtime: Option<RuntimeKey>` (the root fiber has none), `inject: Inject`.
+- `config: Value` is the source configuration as given; it is decoded once per load attempt, not stored typed.
+- `episode: Option<Target>`: the target the current episode was loaded for, which the iteration checkpoints compare with.
+- `committed: Option<HashMap<Key, ImplId>>`; there is no `CommittedView` type.
+- `inertia: bool`: a transition is in flight. Waiting (`Fiber::settled()`, the unload guard) uses `RootInner::wait_until` on the root-wide notifier instead of a per-fiber `unload_gate` or `watch` channel.
+- `error: Option<Error>`.
+- `provisions: Vec<ImplId>`, plus `draining` and `withdrawn` (provisions withdrawn during a drain stay visible to the fiber's descendants until the drain is over).
+- `disposables: IdTable<Arc<EffectCell>>`, `update_hooks: IdTable<Arc<UpdateHook>>`, and `retire: Option<Arc<EffectCell>>` (the effect on the parent that instantiated the fiber, O-Insert).
+</Callout>
+
+## `IdTable<T>`: commutative-by-construction registry [#id-table]
+
+The `DisposableList` design (insert returns a fresh id; remove by id; `drain_rev()` returns LIFO order) is exported publicly as `kardia_core::IdTable<T>`. It is what [paper §3.4.2](/docs/concepts-context-paradigm) calls a commutative key: service authors should build their registries (routes, listeners, commands) on it.
+
+## Dependency-cycle detection (D9) [#cycle-detection]
+
+On insertion, compute whether the precedence relation ≺ (`p_n ∩ d_m ≠ ∅`, from declared `provide`/`inject`) closes a cycle among non-disposed fibers in the same realm; if so, log a warning naming the cycle and leave the fiber `Pending` (behaviour otherwise unchanged). It only reads declarations, so it can be computed eagerly ([paper §6.5](/docs/concepts-related-work)). Declared `provide` is metadata only (as in Cordis); a plugin that provides undeclared keys simply escapes the check.
+
+<Callout type="info">
+Implemented in `registry.rs` (`warn_cycle`): a depth-first search along "depends on a declared provider" edges, logging `dependency cycle: a -> b -> …` at warning level.
+</Callout>

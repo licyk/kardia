@@ -1,0 +1,35 @@
+---
+title: "Concurrency and execution model"
+description: "How kardia reproduces JavaScript's run-to-completion atomicity with one lock per root, critical sections that return actions, and spawned transitions."
+---
+
+This page is decision **D1** of the [guiding decisions](/docs/development#decisions): a `Send + Sync` core with one state lock per root, in which no user code runs while the lock is held.
+
+## Why the model matters [#why]
+
+Cordis's correctness rests on JavaScript's run-to-completion semantics: code between two `await`s is atomic. Many algorithms (inertia in `_setEpoch`, `_initTask ??=` in the loader, "assign options synchronously then commit") depend on this. A Rust port must reproduce *that atomicity*, not JS's single-threadedness per se.
+
+## Chosen model [#model]
+
+- All mutable runtime state of one root lives in `Root { state: parking_lot::Mutex<State>, … }`.
+- **Porting rule:** every synchronous segment of the TS code becomes **one critical section** on `State`. Nothing awaits while holding the lock, and **no user code is called while holding the lock** (plugin `apply`, disposers, event listeners, availability checks).
+- Critical sections are written as functions `fn step(&mut State, …) -> Actions`, where `Actions` is a small list of deferred work: `Spawn(Transition)`, `Emit(InternalEvent)`, `Wake(Notify)`, `RunDisposers(Vec<Disposer>)`. A tiny driver executes the actions after releasing the lock. This keeps the state machine **pure and unit-testable** and removes the reentrancy hazards JS hides (in TS, `_updateState` synchronously emits `internal/status` to user listeners from inside the state machine).
+- Transitions (`reload`, `unload`) are spawned tokio tasks. The paper's footnote 2 anticipates this: *"with lazy scheduling (e.g. … Rust futures) the host must spawn the task for it to progress."*
+- Handles (`Context`, `Fiber`, `Svc<S>`) are `Send + Sync`; plugin futures must be `Send`. Users can freely `tokio::spawn` inside plugins (and tie the `JoinHandle` to an effect).
+- Tests run on a `current_thread` runtime with `tokio::time::pause()` for deterministic interleavings (the analogue of vitest fake timers); production may use the multi-threaded runtime. [Testing](/docs/development-testing#port-the-suite) describes which runtime each test suite uses today.
+
+<Mermaid chart={"sequenceDiagram\n  participant Caller as caller (task)\n  participant Lock as State lock\n  participant Driver as driver\n  participant Tokio as tokio\n  Caller->>Lock: run(critical section)\n  Lock-->>Lock: mutate State, queue actions\n  Lock->>Driver: release lock, hand over actions\n  Driver->>Driver: wake waiters\n  Driver->>Tokio: spawn reload / unload\n  Driver->>Caller: emit events, log, drop released values\n  Note over Driver,Caller: user code runs only here, outside the lock"} />
+
+<Callout type="info">
+In `kardia-core` (`root.rs`), the root is the private `RootInner { state: Mutex<State>, changed: Notify, logger: Mutex<LoggerState> }`. A critical section is `RootInner::run(|st: &mut State| …)`: it pushes `Action`s onto `State::actions` instead of returning them. The actions are `Reload(FiberId)` and `Unload(FiberId)` (spawn the transition), `Emit(..)` (deliver an event to listeners), `Log { .. }` (report an error through the logger) and `Drop(..)` (values released under the lock are dropped after it, since their destructors are user code). Instead of per-action `Wake(Notify)`, every critical section wakes all waiters on the root-wide `changed` notifier after unlocking. Disposers are not run as an action: the unload transition runs them itself, outside the lock (see [Lifecycle algorithms](/docs/development-design#lifecycle)).
+</Callout>
+
+**Alternative considered:** a `!Send` design (`Rc<RefCell<..>>` on a `LocalSet`) mirrors JS most literally and was recommended by one analysis pass for the loader. It is rejected for the core because it would force every plugin and service in the ecosystem to be `!Send`-compatible (no `tokio::spawn`, awkward with most async libraries), while the lock-plus-actions discipline above preserves the same atomicity with comparable complexity. If profiling later shows lock contention on the access hot path, committed views (immutable per episode) can be published through `arc-swap` without changing semantics.
+
+## Lock ordering [#lock-ordering]
+
+`core::State` is the innermost lock. Higher layers (`loader` tree state, `include` IO state) have their own mutexes and may call into core only **after releasing** their own lock or while holding it **only if core never calls back into them under its lock** (which D1 guarantees).
+
+<Callout type="warn">
+Rule of thumb: *take at most one lock at a time*.
+</Callout>

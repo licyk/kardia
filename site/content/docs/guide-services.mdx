@@ -1,0 +1,457 @@
+---
+title: "服务、事件与日志"
+description: "提供与使用服务，把调用归属到调用者，隔离与拦截服务，派发事件，记录日志。"
+---
+
+**服务**（service）是由一个插件提供、被其他插件依赖的值。运行时（runtime）记录谁提供了什么、谁依赖什么：声明了某个服务的插件会在服务可用时启动，在服务被替换时重启，在服务消失时停止。本页介绍如何定义、提供和使用服务，调用如何归属到调用者，隔离（isolation）与拦截（interception）如何改变一个上下文（context）看到的内容，以及如何使用事件和日志器。
+
+服务背后的理论见[响应式余效应](/docs/concepts-reactive-coeffects)；Rust API 为何如此设计（字符串键、`Svc<T>`、不用 `Proxy`）见 [API 设计](/docs/development-design)；kardia 与 TypeScript 版 Cordis 行为不同的所有地方列在[状态与偏差](/docs/development-status)中。
+
+## 定义服务 [#defining]
+
+服务是任意通过 `Service` trait 绑定到某个**键**（key）的 `Send + Sync + 'static` 类型：
+
+```rust
+pub trait Service: Any + Send + Sync {
+    /// Coeffect key. A string (not a type id) because configuration names services.
+    const NAME: &'static str;
+
+    /// Merges interception metadata (paper Def. 26), outermost first.
+    /// Defaults to a right-biased shallow merge of JSON objects.
+    fn merge_intercept(values: Vec<Value>) -> Value {
+        merge_shallow(values)
+    }
+}
+```
+
+键是字符串，因为配置文件要按名字引用服务（`inject: [database]`）。运行时把每个值和它的类型一起存储，因此用错误的 Rust 类型访问某个键会得到 `AccessError::TypeMismatch`，而不会读错数据。
+
+通常用派生宏实现这个 trait：
+
+```rust
+use kardia::prelude::*;
+
+#[derive(Service)]
+#[service(crate = ::kardia)]            // needed when you depend on the `kardia` facade
+struct Database {
+    url: String,
+}
+
+#[derive(Service)]
+#[service(name = "cache.redis", crate = ::kardia)]
+struct Redis;
+```
+
+不写 `name` 时，键是连字符化的类型名：`Database` → `database`，`FooBar` → `foo-bar`。`#[service(crate = …)]` 让生成的代码指向 `::kardia`；不写时指向 `::kardia_core`。
+
+**关联服务。** Cordis 的 `foo.bar` 关联服务和 `ctx.mixin` 是 JavaScript 对象层面的便利功能。在 kardia 中，名为 `foo.bar` 的服务只是另一个键。要"扩展"另一个插件的类型，可以用扩展 trait（编译期，见 [`Svc<T>` 与调用者](#svc)），或用基于 `kardia_core::IdTable` 的注册表（registry）服务（运行期）。访问器或 mixin 层没有移植。
+
+## 提供服务 [#providing]
+
+提供服务是当前纤程（fiber）的一个**效应**（effect）：纤程卸载时它会被撤销（见[可撤销效应](/docs/guide-effects)）。下列方法都返回 `Result<EffectHandle>`。
+
+| 方法 | 提供的内容 |
+|---|---|
+| `ctx.provide(value)` | 以 `S::NAME` 为键的一个 `Service` |
+| `ctx.provide_arc(arc)` | 你已持有的 `Arc<S>` |
+| `ctx.provide_as(key, value)` | 以显式键提供任意 `Send + Sync` 值 |
+| `ctx.provide_arc_as(key, arc)` | 同上，传入 `Arc` |
+| `ctx.provide_checked(key, arc, check)` | 一个值，其可用性还取决于谓词 `check`；谓词按每个消费者求值，参数是该消费者的拦截元数据。谓词在运行时锁内执行，不得调用运行时。 |
+| `ctx.provide_serialized_as(key, value)` | 一个 `Serialize` 值，同时带有 **JSON 视图**，可由 `ctx.view(key)`、加载器表达式和访客插件读取。以键提供的 `serde_json::Value`（`provide_as`、`provide_arc_as`、`provide_checked`）本身就是自己的 JSON 视图。 |
+
+```rust
+#[derive(Deserialize)]
+struct DbConfig {
+    url: String,
+}
+
+/// Provides `database`, and logs when it is stopped.
+fn db() -> PluginDef {
+    PluginDef::typed(|ctx: Context, config: std::sync::Arc<DbConfig>| async move {
+        let logger = ctx.logger();
+        ctx.on_dispose(move || logger.info("closing"))?;
+        ctx.provide(Database { url: config.url.clone() })?;
+        Ok(())
+    })
+    .name("db")
+    .provides([Database::NAME])
+}
+```
+
+提供服务时发生的事：
+- **每个键在每个领域（realm）中只有一个绑定。** 同一领域中的第二个提供者（provider）会失败，错误为 `KardiaError::AlreadyProvided`，消息是 `service "database" has been registered at <db>`（尖括号内是提供它的插件名）。
+- **通知时机取决于提供者的状态。** 只有提供者纤程处于 `Active` 时才立即通知消费者（consumer）；否则在它进入 `Active` 时通知。提供者离开 `Active` 时，会先通知消费者，再运行它的任何逆操作。
+- **撤回会等待消费者。** 撤销提供会移除绑定并通知该领域，然后等待所有已提交到这个绑定的消费者完成各自的清理，最后才移除这项提供。
+- **退役的提供者立即让出领域。** 释放（dispose）一个提供者会立即解除它的现存绑定，所以继任者可以在旧消费者仍在清理时于同一领域提供服务（旧消费者通过各自的已提交视图（committed view）继续读取旧绑定）。
+- **过期的加载不能提供服务。** 已退役但加载仍在进行的纤程仍可登记逆操作（这样它获取的东西不会泄漏），但其 `provide` 调用会以 `KardiaError::InactiveEffect` 失败。
+- **清理期间推迟移除。** 提供者卸载期间，它撤回的提供在清理结束前仍对其后代可见，这样后代在自己的清理中仍能使用继承来的服务。
+
+`PluginDef` 上的 `.provides([..])`（或 `#[plugin]` 中的 `provide = [..]`，或 `Plugin::provide()`）只是**声明**插件提供什么。这个声明是供工具和依赖环检查使用的元数据；插件可以提供未声明的键，这些键只是不参与检查。
+
+已绑定的值不能原地覆盖。要改变消费者看到的值，请提供一个新值（撤回后重新提供，或重启、更新提供者），这样变化才会被观察到。
+
+## 声明依赖 [#declaring]
+
+插件在**依赖声明**（inject）中列出它需要的服务，即一个 `Inject`：有序的键，每个键可带可选的拦截元数据。
+
+```rust
+use kardia::prelude::*;
+
+let inject = Inject::new()
+    .with("database")
+    .with_meta("logger", json!({ "name": "db", "level": 3 }));
+let inject: Inject = ["database", "cache"].into();   // From<[K; N]> and From<Vec<K>>
+let inject = Inject::of::<(Database, Timer)>();       // from a tuple of service types
+```
+
+声明写在哪里：
+
+| 插件形式 | 声明 |
+|---|---|
+| `impl Plugin for P` | `fn inject() -> Inject` |
+| `#[plugin]` 函数 | 其上下文参数的类型 `Injected<(A, B)>` |
+| `PluginDef::new` / `PluginDef::typed` | `.inject(..)` |
+| 闭包插件 | `ctx.inject(deps, \|ctx\| async move { … })` |
+| 加载器条目 | 条目的 `inject` 字段（见[配置](/docs/guide-configuration)） |
+
+运行时让纤程始终与声明保持一致：
+- 在每个声明的服务都可用之前，纤程停留在 `Pending`，之后开始加载。
+- 声明的服务被另一个绑定替换时，纤程卸载并针对新绑定重新加载。
+- 声明的服务消失时，纤程卸载并在 `Pending` 中等待。
+
+**依赖环。** 插入纤程时，运行时检查其所在领域中各现存纤程声明的 `provide` 与 `inject` 集合是否经由它构成环。若构成环，运行时会记录一条指明该环的警告（`dependency cycle: a -> b -> a`），纤程停留在 `Pending`，而不是无声地等待。
+
+## 访问服务 [#accessing]
+
+| 方法 | 返回 | 访问方式 |
+|---|---|---|
+| `ctx.get::<S>()` | `Result<Svc<S>, AccessError>` | 受检访问，经已提交视图 |
+| `ctx.get_as::<T>(key)` | `Result<Svc<T>, AccessError>` | 受检访问，按键，适用任意类型 |
+| `ctx.view(key)` | `Result<Value, AccessError>` | 受检访问，取服务的 JSON 视图 |
+| `ctx.deps::<(A, B)>()` | `Result<(Svc<A>, Svc<B>), AccessError>` | 受检访问，至多八个服务组成的元组 |
+| `ctx.live::<S>()` | `Option<Svc<S>>` | 反射式访问：本领域的现存绑定（其提供者须处于活动状态）；对未声明的键也不会失败 |
+| `ctx.live_as::<T>(key)` | `Option<Svc<T>>` | 同上，按键 |
+
+**受检访问**（论文的算法 6）按如下方式解析一个键：
+1. 途经的某个纤程自己在同一领域中提供的绑定，直接返回。
+2. 否则沿派生出该上下文的纤程向上查找。
+3. 遇到再次隔离该键的上下文（隔离边界）时停止：该键视为未声明。
+4. 第一个声明了该键的纤程决定结果：返回该纤程加载时**提交**的绑定；声明了该键却没有已提交绑定的纤程得到 `Inactive`。
+5. 根上下文无法声明 `inject`，它对现存存储有**不受检**的访问权，与 Cordis 相同。
+
+受检访问读取的是已提交视图而不是现存存储，所以即使提供者已从存储中消失，消费者在自己拆除期间仍能读取依赖（论文定理 70）。
+
+错误：
+
+| `AccessError` | 消息 |
+|---|---|
+| `Undeclared { key }` | `cannot get property "key" without inject` |
+| `Inactive { key }` | `cannot get required service "key" in inactive context` |
+| `TypeMismatch { key, expected }` | `service "key" is not of type …` |
+
+### 编译期受检访问 [#injected]
+
+`Injected<D>` 包装一个插件上下文，其类型化访问在编译期按声明的依赖 `D` 检查。`#[plugin]` 宏从函数签名读出 `D`，同时生成依赖声明和包装：
+
+```rust
+/// Starts once `database` and `timer` are available, and stops with them.
+#[plugin(crate = ::kardia)]
+async fn greeter(ctx: Injected<(Database, Timer)>) -> Result<()> {
+    let (db, timer) = ctx.deps()?;                  // all declared services at once
+    let db_again = ctx.get::<Database, _>()?;       // one of them
+    // ctx.get::<Cache, _>() would not compile: `Cache` is not in `D`
+    ctx.logger().info(format_args!("using {}", db.url));
+    timer.interval(Duration::from_secs(1), || println!("tick"))?;
+    Ok(())
+}
+```
+
+- `Injected::get::<S, _>()`：`_` 是 `S` 在 `D` 中被推断出的位置（`kardia_core::index::I0` … `I7`），无需手写。
+- `Injected::deps()` 以 `Svc` 元组形式返回 `D` 中的全部服务。
+- `Injected::context()` 返回底层不受检的 `Context`；`Injected<D>` 也解引用为它，因此 `Context` 的其他方法都可直接使用。
+- `#[plugin(name = "…", provide = ["key"], crate = path)]` 作用于一个 `async fn`，其第一个参数为 `Context` 或 `Injected<(..)>`，可选的第二个参数为 `Arc<Config>`。它生成一个以函数名的驼峰形式命名的插件类型（`greeter` → `Greeter`），插件名默认为连字符化的函数名，可用 `name` 指定。编写插件的内容见[插件](/docs/guide-plugins)。
+
+## `Svc<T>` 与调用者 [#svc]
+
+每次访问都返回一个 `Svc<T>`：服务值加上**调用者**（caller），即发起访问的上下文。Cordis 用 JavaScript `Proxy` 归属调用；kardia 把调用者显式地放进句柄。
+
+| 方法 | 返回 |
+|---|---|
+| `*svc`（`Deref`） | 服务值 |
+| `svc.caller()` | 发起访问的 `Context` |
+| `svc.key()` | 访问时使用的键 |
+| `svc.impl_id()` | 绑定的标识（永不复用，因此"被相等的值替换"也可观察到） |
+| `svc.arc()` | `Arc<T>` |
+| `svc.provider()` | 提供它的纤程（服务的定义点） |
+| `svc.logger()` | 代表调用者工作时用的日志器：名称取调用者 `logger` 拦截元数据中的 `name`，否则取提供它的插件名 |
+| `svc.intercepts()` | 本次访问适用的拦截元数据，由外到内 |
+| `svc.meta()` | 用 `S::merge_intercept` 合并后的元数据 |
+
+**代表调用者创建效应。** 为调用者创建效应的服务方法把效应登记在 `svc.caller()` 上。这样效应属于调用者的纤程，在*调用者*卸载时撤销，这正是 Cordis 的追踪器借助 `this.ctx` 达到的效果。服务 crate 把这类方法实现为 **`Svc<S>` 上的扩展 trait**；由于 trait 是本地定义的，一致性规则允许这样做。计时器服务就是这样做的（已简化：实际的 `timeout` 在触发后还会撤销自己的效应）：
+
+```rust
+pub trait TimerExt {
+    fn timeout(&self, delay: Duration, callback: impl FnOnce() + Send + 'static) -> Result<EffectHandle>;
+    fn sleep(&self, delay: Duration) -> BoxFuture<'static, Result<()>>;
+    fn interval(&self, delay: Duration, callback: impl Fn() + Send + Sync + 'static) -> Result<EffectHandle>;
+    // also `ticks`, `throttle` and `debounce`
+}
+
+impl TimerExt for Svc<Timer> {
+    fn timeout(&self, delay: Duration, callback: impl FnOnce() + Send + 'static) -> Result<EffectHandle> {
+        self.caller().effect_sync("ctx.timeout()", |scope| {
+            let task = tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                callback();
+            });
+            scope.defer_fn(move || task.abort());
+            Ok(())
+        })
+    }
+    // …
+}
+```
+
+因此上面 `greeter` 中的 `timer.interval(..)` 在 `greeter` 卸载时停止，而不是在计时器插件卸载时停止。
+
+**服务自身的依赖。** 服务通过构造时保存的 `Context`（它的定义点）解析自己的依赖，因此不需要影子上下文。由此产生两点与 Cordis 不同的行为（在 Cordis 中两者都跟随使用点）：
+- 外层调用者的拦截元数据不会传到该服务继而调用的其他服务；它留在 `Svc::caller()` 上。
+- 服务通过其保存的上下文创建的效应属于服务自己的纤程。
+
+## 拦截元数据 [#interception]
+
+拦截沿上下文链为某个键附加元数据，使服务可以针对不同调用者表现不同（论文定义 26–27）。典型例子是日志器：`logger: { name: db, level: 3 }` 会为其下的一切重命名日志器并调整级别。
+
+```rust
+let quiet = ctx.intercept("logger", json!({ "name": "db", "level": 1 }));
+quiet.plugin::<DbPlugin>(config)?;        // DbPlugin logs as `db`, up to warnings
+```
+
+元数据的来源，由外到内：
+1. 准许本次访问的 `inject` 所声明的元数据（`Inject::with_meta`，或条目的 `inject: { key: meta }`）；
+2. 调用者派生链上的每个 `ctx.intercept(key, meta)`，由外到内（加载器条目的 `intercept` 字段会加上一层）。
+
+`Svc::intercepts()` 返回这个列表，`Svc::meta()` 用 `S::merge_intercept` 合并它；默认是 `merge_shallow`：逐键合并对象，后者覆盖前者，类似 `Object.assign`。在你的 `Service` 实现中覆盖 `merge_intercept` 即可换用其他合并方式。在上下文上，`ctx.intercepts(key)` 返回链上的元数据，`ctx.intercept_meta::<T>(key)` 合并并反序列化它（元数据格式错误时得到 `T::default()`）。
+
+元数据也会传给可用性谓词：`provide_checked` 把消费者的元数据交给谓词。加载器借此实现 `inject: { loader: { await: true } }`：只有当所有条目都已稳定，`loader` 才对该条目可用。
+
+## 隔离 [#isolation]
+
+每个键都位于某个**领域**（realm）中。默认情况下所有上下文共享该键的根领域；隔离一个键会给某个上下文及其派生的一切一个自己的领域：
+
+| 方法 | 派生出的上下文中 |
+|---|---|
+| `ctx.isolate(key)` | `key` 位于一个新的私有领域 |
+| `ctx.isolate_in(key, realm)` | `key` 位于给定领域（`RealmId::new()`），所有隔离到该领域的上下文共享它 |
+| `ctx.extend()` | 上下文拥有自己的可变隔离表和拦截表（一个 `Overlay`） |
+| `ctx.extend_with(&overlay)` | 上下文由一个已有的 `Overlay` 支撑，与其他上下文共享 |
+
+```rust
+let private = ctx.isolate("database");
+private.plugin_def(&db(), json!({ "url": "postgres://test" }))?;   // its own `database`
+ctx.plugin_def(&db(), json!({ "url": "postgres://main" }))?;       // no conflict
+```
+
+提供者绑定在其上下文为该键解析出的领域中，消费者只看到自己领域的绑定。受检访问在再次隔离该键的上下文处停止，所以被隔离的子树无法经由外层声明访问到外层绑定。相关查询有 `ctx.realm(key)`、`ctx.has_isolation(key)`、`ctx.isolated_keys()`；供工具使用的还有 `ctx.bindings(key)` 和 `ctx.binding_provider(key, realm)`。
+
+在配置文件中，隔离对应条目字段 `isolate`（`{ db: true }` 表示私有领域，`{ db: shared }` 表示按标签共享的领域）；见[加载器](/docs/guide-loader#isolation)。
+
+## 事件 [#events]
+
+事件是实现了 `Event` 的 Rust 类型。监听器按事件类型登记。
+
+```rust
+pub trait Event: Any + Send + Sync {
+    type Output: Bailable;
+
+    /// Whether a listener registered in `listener` receives this event.
+    fn filter(&self, _listener: &Context) -> bool {
+        true
+    }
+}
+```
+
+`Output` 是每个监听器的返回值。`Bailable` 决定某个结果是否中止 `bail` 或 `serial` 派发，以及它在 `parallel` 中是否算失败：
+
+| `Output` | 何时中止 | 在 `parallel` 中算失败 |
+|---|---|---|
+| `()` | 从不 | 从不 |
+| `bool` | `true` | 从不 |
+| `Option<T>` | `Some(..)` | 从不 |
+| `Result<T, Error>` | `Err(..)`，或 `Ok(v)` 且 `v` 中止 | `Err(..)` |
+
+### 监听 [#listening]
+
+每次登记都是当前纤程的一个效应，因此插件卸载时其监听器会被移除。下列方法都返回 `Result<EffectHandle>`。
+
+| 方法 | 登记 |
+|---|---|
+| `ctx.on(f)` | 同步监听器，排在已登记的之后 |
+| `ctx.on_prepend(f)` | 同步监听器，排在已登记的之前 |
+| `ctx.on_async(f)` | 异步监听器（返回 future） |
+| `ctx.once(f)` | 至多运行一次、随后自行移除的监听器 |
+
+`ctx.listener_count::<E>()` 统计当前的监听器数。
+
+### 派发 [#dispatching]
+
+| 方法 | 行为 |
+|---|---|
+| `ctx.emit(&event)` | 调用每个监听器；异步监听器只启动、不等待。监听器 panic 时会被记录，派发继续。 |
+| `ctx.bail(&event)` | 依次调用同步监听器，直到某个返回中止结果，并以 `Some(..)` 返回它；异步监听器只启动、不等待 |
+| `ctx.serial(&event).await` | 逐个调用并等待监听器，直到某个中止 |
+| `ctx.parallel(&event).await` | 并发调用所有监听器，把失败和 panic 收集到一个 `AggregateError`（`one or more listeners of event E failed`） |
+
+```rust
+struct Query(&'static str);
+
+impl Event for Query {
+    type Output = Option<Value>;
+}
+
+ctx.on(|query: &Query| (query.0 == "version").then(|| json!("1.2.0")))?;
+let answer = ctx.bail(&Query("version"));      // Some(Some("1.2.0"))
+```
+
+派发时会对监听器做快照，并跳过期间被移除的监听器。事件可以用 `filter` 限定接收者，`filter` 拿到的是每个监听器登记时所在的上下文。
+
+与 Cordis 不同，`emit` 不会让失败的监听器中止派发，也没有通用的 `waterfall`：Cordis 基于 waterfall 事件构建的扩展点在 kardia 中是类型化的钩子（见下文）。
+
+### 内置事件 [#builtin-events]
+
+运行时在每次状态变化之后从根上下文发出下列事件：
+
+| 事件 | 字段 | 何时发出 |
+|---|---|---|
+| `PluginInserted` | `fiber` | 创建纤程时（插入时的 `internal/plugin`） |
+| `PluginRemoved` | `fiber` | 纤程退役时（移除时的 `internal/plugin`） |
+| `StatusChanged` | `fiber`、`old`、`new` | 纤程状态变化时 |
+| `ServiceChanged` | `key`、`realm` | `realm` 中 `key` 的绑定出现或消失时；只送达其上下文把 `key` 解析到该领域的监听器 |
+| `ConfigCommitted` | `fiber`、`config` | 纤程的配置经 `update` 被替换时（加载器回写的时机） |
+| `Replaced` | `fiber` | 纤程被 `registry.replace` 换到另一个插件实现时 |
+
+### 钩子 [#hooks]
+
+Cordis 使用 waterfall 事件（`internal/config`、`internal/get`、`internal/update`）的地方，kardia 提供类型化的钩子。每次登记都是一个效应：
+
+| 钩子 | 用途 |
+|---|---|
+| `ctx.on_update::<C>(\|config: &C\| bool)` | 在重启当前纤程之前，把其配置更新交给钩子；返回 `true` 表示接管这次更新（不重启）。钩子看到的是解码后的配置；若 `C` 不是插件的配置类型则跳过。 |
+| `ctx.on_update_with::<C>(..)` | 同上；接管更新的钩子返回一个 future，`update` 以它的结果完成 |
+| `ctx.on_config(hook)` | 对根下每个纤程生效的配置解析钩子（`ConfigHook`）：它拿到源配置和下一阶段，最终阶段是插件自己的解码。加载器用它对表达式求值。 |
+
+`update` 如何使用这些钩子见[可撤销效应](/docs/guide-effects#update)，加载器自己的钩子见[加载器](/docs/guide-loader#patch-context)。
+
+## 日志 [#logging]
+
+日志器属于核心。`ctx.logger()` 返回一个绑定到当前纤程的 `Logger`：
+
+- **名称：** 若上下文有 `logger` 拦截元数据，取其中的 `name`；否则取该纤程（或其最近的有名祖先，都没有则为 `root`）的插件名，并连字符化（`fooBar` → `foo-bar`，`snake_case` → `snake-case`）。
+- **级别：** 取 `logger` 拦截元数据中的 `level`（如有）。`logger.with_level(level)` 在副本上设置级别。
+
+`ctx.logger_named(name)` 创建一个显式命名的日志器（级别仍取自拦截元数据）。`svc.logger()` 代表调用者记录日志（见上文）。
+
+```rust
+let logger = ctx.logger();
+logger.info(format_args!("connecting to {}", config.url));
+logger.warn("slow query");
+logger.log(Level::Debug, "details");
+logger.log_error(&error);            // an AggregateError is logged member by member
+```
+
+| 级别 | 值 |
+|---|---|
+| `Level::Error` | `0` |
+| `Level::Warn` | `1` |
+| `Level::Info` | `2` |
+| `Level::Debug` | `3` |
+
+消息接受任意 `impl Display`；用 `format_args!` 格式化。因此导出器收到的是已格式化的文本：没有 Cordis 那样的 `%` 指令或自定义格式化器。
+
+### 导出器 [#exporters]
+
+`Exporter` 接收每条消息：
+
+```rust
+pub trait Exporter: Send + Sync + 'static {
+    fn export(&self, message: &Message);
+
+    /// The most verbose level exported for logger `name`; `None` defers to
+    /// the logger's own level (default: info).
+    fn level(&self, _name: &str) -> Option<Level> {
+        None
+    }
+}
+```
+
+`ctx.add_exporter(Arc::new(exporter))` 把它登记为当前纤程的一个效应。消息的级别不高于 `exporter.level(name)`（没有则取日志器的级别，再没有则取 `Info`）时，才会送达该导出器。`Message` 包含 `sn`（序号，同一次调用送达的所有导出器共享）、`ts`（自 Unix 纪元起的毫秒数）、`name`、`level`、`text`，以及记录它的 `fiber`。
+
+根上下文用一个环形缓冲区保存最近的、级别不高于日志器级别的消息（默认 1000 条）：`ctx.log_buffer()` 按从旧到新返回它们，`ctx.set_log_buffer_size(n)` 调整容量。
+
+终端导出器在 `kardia-logger-console` 中：可以直接登记 `ConsoleExporter::new(ConsoleConfig { .. })`，也可以在配置文件中加载 `logger-console` 插件（其选项列在[配置](/docs/guide-configuration)中）。
+
+```rust
+use kardia::logger_console::{ConsoleConfig, ConsoleExporter};
+
+let root = Context::new();
+root.add_exporter(Arc::new(ConsoleExporter::new(ConsoleConfig::default())))?;
+```
+
+目前没有 `tracing` 桥接；计划把"向导出器输送消息的 `tracing_subscriber::Layer`"作为 `kardia-logger-console` 的可选扩展。
+
+## 完整示例 [#example]
+
+```rust
+use std::sync::Arc;
+use std::time::Duration;
+
+use kardia::prelude::*;
+
+#[derive(Service)]
+#[service(crate = ::kardia)]
+struct Database {
+    url: String,
+}
+
+#[derive(Deserialize)]
+struct DbConfig {
+    url: String,
+}
+
+fn db() -> PluginDef {
+    PluginDef::typed(|ctx: Context, config: Arc<DbConfig>| async move {
+        let logger = ctx.logger();
+        ctx.on_dispose(move || logger.info("closing"))?;
+        ctx.provide(Database { url: config.url.clone() })?;
+        Ok(())
+    })
+    .name("db")
+    .provides([Database::NAME])
+}
+
+#[plugin(crate = ::kardia)]
+async fn greeter(ctx: Injected<(Database, Timer)>) -> Result<()> {
+    let (db, timer) = ctx.deps()?;
+    ctx.logger().info(format_args!("using {}", db.url));
+    timer.interval(Duration::from_secs(1), || println!("tick"))?;
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let root = Context::new();
+    root.plugin::<TimerPlugin>(())?;
+    root.plugin::<Greeter>(())?; // waits for `database`
+    let db = root.plugin_def(&db(), json!({ "url": "postgres://primary" }))?;
+    db.settled().await?;
+    db.update(json!({ "url": "postgres://replica" }))?.await?; // greeter restarts with it
+    db.dispose().await?; // greeter stops again
+    Ok(())
+}
+```
+
+一个更长、可运行的版本还会热替换数据库实现：
+
+```sh
+cargo run -p kardia --example provider_consumer
+```

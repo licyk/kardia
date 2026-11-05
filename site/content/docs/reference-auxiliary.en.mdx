@@ -1,0 +1,88 @@
+---
+title: "Auxiliary packages"
+description: "timer, logger-console, fs-node, package-manager, loader-utils and create: how ordinary Cordis services are built on the core primitives."
+---
+
+These packages are not described in the paper; they show how ordinary services are built on the core primitives.
+
+<Callout type="info">
+**Common theme:** every resource is registered through `ctx.effect` on the *calling* fiber (found via the service tracker, see [Services and traceability](/docs/reference-services)), so it is released when the caller unloads. There is no per-consumer bookkeeping in the service.
+</Callout>
+
+## `@cordisjs/plugin-timer` [#timer]
+
+`timer/src/index.ts`. Service `timer`, mixed into the context as `ctx.timeout / interval / throttle / debounce / setTimeout / setInterval`.
+
+| API | Semantics |
+|---|---|
+| `timeout(cb, ms) → dispose` | effect around `setTimeout`; when it fires it first disposes itself (removes the effect from the fiber), then calls `cb` |
+| `timeout(ms) → Promise<void>` | sleep; disposing the fiber rejects it with `Error('Context has been disposed')`; the effect is removed when the promise settles |
+| `interval(cb, ms) → dispose` | effect around `setInterval` |
+| `interval(ms) → AsyncIterableIterator` | each tick resolves only the oldest pending `next()`; ticks without a waiter are dropped; `return()`/`throw()` semantics of async iterators; fiber disposal rejects pending reads |
+| `throttle(cb, ms, noTrailing?)` | leading call, trailing call with latest args unless `noTrailing`; `.dispose()` |
+| `debounce(cb, ms)` | each call restarts the timer; `.dispose()` |
+
+## `@cordisjs/plugin-logger-console` [#logger-console]
+
+`shared.ts`, `index.ts`, `browser.ts`. A class plugin (`name = 'logger-console'`) whose constructor calls `ctx.logger.exporter(this)`, so the exporter lives exactly as long as the plugin (see [Logger](/docs/reference-events#logger)).
+
+- Config: `colors` (Node default from `supports-color`), `maxLength`, per-name `levels`, `showDiff`, a `showTime` template, `label { width, margin, align }`.
+- It renders a `[E]/[W]/[I]/[D]` prefix, a hashed-colour label, aligned continuation lines and an optional `+Nms` diff; `%o` uses `util.inspect`.
+- The browser build delegates to `console.*`.
+
+## `@cordisjs/plugin-fs-node` [#fs-node]
+
+`index.ts`, `watcher.ts`. Service `fs`, currently only `watch(path, { filter }) → Watcher`.
+
+- Paths resolve relative to the **caller's** `ctx.baseUrl`; `file:` URLs are accepted; Windows drive-relative forms are rejected.
+- A single file is watched **through its parent directory** (`depth: 0`), so atomic rename-based writes do not lose the watch.
+- The `Watcher` is an async effect wrapping chokidar (`ignoreInitial`), registered after the initial scan. Only `change` events are forwarded; `ready` replays asynchronously to late listeners; dispatch uses a snapshot; listener errors go to `error` listeners (whose own errors are only logged).
+- The filter consists of gitignore-like rules: **last match wins**, tested against the entry *or any ancestor*. A directory is still traversed if a later including rule's literal base is related; patterns leaving the root are rejected.
+
+## `@cordisjs/plugin-package-manager` [#package-manager]
+
+`index.ts`, `agent.ts`, `manifest.ts`, `backup.ts`, `process.ts`, `state.ts`. Service `packageManager`: transactional dependency installs driving npm / pnpm / yarn classic / yarn berry (hoisted `node_modules` only).
+
+`install(changes, { signal })` is serialized:
+
+<Steps>
+<Step>
+Detect the agent from `package.json#packageManager` (exact version, verified by `--version`), require a lockfile, and check the layout.
+</Step>
+<Step>
+Snapshot the install state and back up the manifest, lockfiles and rc files (mode- and symlink-preserving).
+</Step>
+<Step>
+Edit `package.json` (preserving indentation, EOL and sort order).
+</Step>
+<Step>
+Run the agent with an **inactivity timeout** and abort support.
+</Step>
+<Step>
+Diff the install state (`added/removed/updated`, with real paths).
+</Step>
+</Steps>
+
+- On failure: restore the files and run a **non-cancellable recovery install**; if that fails too, throw an `AggregateError`.
+- Processes are spawned in their own process group (POSIX) and the whole tree is killed (SIGTERM → SIGKILL; `taskkill /T` on Windows). The environment is scrubbed of variables leaked by an outer `yarn run`.
+- Real paths use Node's JS `realpath` algorithm so that they match module URLs (intended to feed hmr roots; not wired up in the repository).
+
+## `@cordisjs/loader-utils` [#loader-utils]
+
+`index.ts`, `internal.ts`. `unwrapExports` (ESM/esbuild interop) and `ModuleLoader.fromInternal()`, which gives access to Node's internal cascaded ESM loader (its shape is detected by API presence across Node 22–24.12+). Pure Node glue; **no Rust counterpart**.
+
+## `create-cordis` [#create]
+
+`create/src/index.ts`, `bin.ts`. A standalone scaffolding CLI (it does not use core):
+
+1. prompt for a name and prepare the directory;
+2. fetch the template package (`@cordisjs/boilerplate`) tarball from the configured npm registry and extract it with `strip: 1`;
+3. optionally stage a pinned Yarn binary (five documented rules);
+4. rewrite `package.json`, optionally `git init`, install and start.
+
+Errors print a fixed message and `process.exit(1)` (the tests run it as a child process). The `--mirror` flag is parsed but unused.
+
+## Takeaways for a port [#port]
+
+- timer, fs and the logger exporters are thin wrappers proving that **"lifetime by effect" + caller attribution** is enough to make arbitrary resources revertible: exactly the paper's §6.1 acquisition-inside-the-boundary pattern (see [Discussion and related work](/docs/concepts-related-work)).
+- package-manager and create are Node-ecosystem tools; for a Rust framework they are optional or must be retargeted (e.g. Cargo / WASM component packages).

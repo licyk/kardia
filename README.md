@@ -5,7 +5,7 @@
 [![docs.rs](https://img.shields.io/docsrs/kardia)](https://docs.rs/kardia)
 [![License: GPL-3.0-only](https://img.shields.io/crates/l/kardia.svg)](LICENSE)
 
-A Rust implementation of [Cordis](https://github.com/cordiverse/cordis), the plugin framework built on *spatiotemporal composability* ([paper](https://arxiv.org/abs/2608.25512)).
+A Rust implementation of [Cordis](https://github.com/cordiverse/cordis), the plugin framework built on *spatiotemporal composability* ([paper](https://arxiv.org/abs/2608.25512)). Documentation: **https://licyk.github.io/kardia/**.
 
 An app is a tree of **plugins**. Each plugin runs in a **fiber**:
 - **Effects:** everything a plugin sets up (listeners, timers, services, child plugins) is tracked and reverted when the plugin stops.
@@ -112,6 +112,7 @@ Add the facade crate:
 ```toml
 [dependencies]
 kardia = "0.1"
+serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
@@ -301,7 +302,13 @@ CI runs these three on every push and pull request, with a pinned toolchain (Rus
 
 ## Documentation
 
-[`docs/`](docs/README.md) covers the paper, an analysis of the TypeScript implementation, and the [Rust implementation plan](docs/rust-implementation-plan.md). §15 of the plan lists where this implementation differs from the TypeScript one.
+The documentation site, **https://licyk.github.io/kardia/**, is in Chinese and English. It has:
+- **Guides** for every feature.
+- **The paper's concepts.**
+- **An analysis of the TypeScript Cordis code.**
+- **The Rust design:** including, under [Implementation status](https://licyk.github.io/kardia/docs/development-status), every place this implementation differs from the TypeScript one.
+
+Its source is in [`site/`](site/). [Contributing](https://licyk.github.io/kardia/docs/development-contributing) explains how to build it.
 
 ## License
 
