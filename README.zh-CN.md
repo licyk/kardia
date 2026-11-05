@@ -287,14 +287,17 @@ stdout 用于传输协议数据，因此进程客体插件不能向其打印内�
 
 | Crate | 内容 |
 |---|---|
-| `kardia` | 统一入口（`kardia::prelude`）和 `kardia` 可执行程序 |
-| `kardia-core` | 上下文、副作用、fiber、服务、事件、日志 |
-| `kardia-macros` | `#[derive(Service)]` 和 `#[plugin]` |
-| `kardia-timer`、`kardia-logger-console`、`kardia-fs` | 内置服务 |
-| `kardia-loader` | 条目、分组、隔离、表达式、插件目录 |
-| `kardia-include` | YAML/JSON 配置文件及其双向同步 |
-| `kardia-hmr` | 模块图、热重载、监听模式，以及 WASM、动态库和进程后端 |
-| `kardia-guest` | 用于编写 Rust 客体插件的 SDK |
+| [`kardia`](crates/kardia/) | 统一入口、`kardia::prelude`、内置插件目录和 `kardia` 可执行程序 |
+| [`kardia-core`](crates/kardia-core/) | 上下文、可撤销副作用、fiber 生命周期、响应式服务解析、事件和日志 |
+| [`kardia-macros`](crates/kardia-macros/) | 用于声明服务和插件依赖的 `#[derive(Service)]` 与 `#[plugin]` 宏 |
+| [`kardia-timer`](crates/kardia-timer/) | 随调用方插件生命周期清理的超时、间隔、休眠、节流和防抖操作 |
+| [`kardia-logger-console`](crates/kardia-logger-console/) | 控制台日志输出，支持格式化、颜色和日志级别配置 |
+| [`kardia-fs`](crates/kardia-fs/) | 文件监听与过滤，订阅随调用方插件停止而清理 |
+| [`kardia-loader`](crates/kardia-loader/) | 声明式插件树、条目、分组、服务隔离、表达式和插件解析 |
+| [`kardia-include`](crates/kardia-include/) | YAML/JSON 条目树、文件监听、补丁及与运行时变更的双向同步 |
+| [`kardia-hmr`](crates/kardia-hmr/) | 模块图、热替换、文件监听，以及 WebAssembly、动态库和子进程的客体服务桥接 |
+| [`kardia-guest`](crates/kardia-guest/) | Rust 客体插件 SDK，提供宿主服务访问、模块导出和进程客体服务端 |
+| [`xtask`](xtask/) | 仓库内部工具：架构检查、工作区版本更新和发布标签管理；不发布到 crates.io |
 
 ## 开发
 

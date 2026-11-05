@@ -281,14 +281,17 @@ Guests in other languages implement the JSON-based guest interface described in 
 
 | Crate | Contents |
 |---|---|
-| `kardia` | The facade (`kardia::prelude`) and the `kardia` binary |
-| `kardia-core` | Contexts, effects, fibers, services, events, logger |
-| `kardia-macros` | `#[derive(Service)]` and `#[plugin]` |
-| `kardia-timer`, `kardia-logger-console`, `kardia-fs` | Built-in services |
-| `kardia-loader` | Entries, groups, isolation, expressions, catalog |
-| `kardia-include` | YAML/JSON config files, kept in sync both ways |
-| `kardia-hmr` | Module graph, hot reload, watch mode, WASM, dylib and process backends |
-| `kardia-guest` | SDK for guest plugins in Rust |
+| [`kardia`](crates/kardia/) | The facade, `kardia::prelude`, built-in plugin catalog and the `kardia` binary |
+| [`kardia-core`](crates/kardia-core/) | Contexts, revertible effects, fiber lifecycle, reactive service resolution, events and logging |
+| [`kardia-macros`](crates/kardia-macros/) | `#[derive(Service)]` and `#[plugin]` for declaring services and plugin dependencies |
+| [`kardia-timer`](crates/kardia-timer/) | Timeouts, intervals, sleep, throttle and debounce tied to the calling plugin's lifecycle |
+| [`kardia-logger-console`](crates/kardia-logger-console/) | Console log exporter with formatting, colors and configurable log levels |
+| [`kardia-fs`](crates/kardia-fs/) | File watching and filtering, with subscriptions disposed when the calling plugin stops |
+| [`kardia-loader`](crates/kardia-loader/) | Declarative plugin trees, entries, groups, service isolation, expressions and plugin resolution |
+| [`kardia-include`](crates/kardia-include/) | YAML/JSON entry trees, file watching, patches and bidirectional synchronization with runtime changes |
+| [`kardia-hmr`](crates/kardia-hmr/) | Module graph, hot replacement, file watching and guest service bridging for WebAssembly, dynamic libraries and child processes |
+| [`kardia-guest`](crates/kardia-guest/) | Rust guest SDK: host service access, module exports and the process guest server |
+| [`xtask`](xtask/) | Internal repository tasks: architecture checks, workspace version updates and release tags; not published |
 
 ## Development
 
