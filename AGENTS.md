@@ -10,3 +10,4 @@
 - Test the real implementation. Do not duplicate business logic in tests. Minimize the use of mocks.
 - Follow the repository's existing workflows. Do not introduce tools or workflows the repository does not already use.
 - Do not prematurely extract functions that are used only once. Extract a function only when it will be reused, encapsulates truly complex logic, or represents a concept that can be clearly named.
+- Keep `lib.rs` and `mod.rs` as module entry points: they declare modules, re-export, and hold docs and attributes; implementation lives in a file of its own. `cargo xtask arch` checks this (proc-macro entry points and inline re-export-only modules are allowed).

@@ -1,6 +1,6 @@
 ---
 title: "参与开发"
-description: "如何参与 kardia 的开发：构建与测试工作区、CI、发布到 crates.io 的流程，以及文档站点。"
+description: "如何参与 kardia 的开发：构建与测试、xtask 命令、CI、发布到 crates.io，以及文档站点。"
 ---
 
 kardia 在 [github.com/licyk/kardia](https://github.com/licyk/kardia) 上开发。本页介绍 Rust 工作区、它的 CI 与发布，以及本文档站点。
@@ -15,6 +15,7 @@ kardia 在 [github.com/licyk/kardia](https://github.com/licyk/kardia) 上开发�
 cargo test --workspace          # the WASM guest test needs the wasm32-unknown-unknown target
 cargo clippy --workspace --all-targets
 cargo fmt --all
+cargo xtask arch                # lib.rs and mod.rs only declare and re-export modules
 ```
 
 - WASM 访客插件测试会把它的测试夹具构建为 WebAssembly 模块，因此请先安装该目标：`rustup target add wasm32-unknown-unknown`。
@@ -22,39 +23,70 @@ cargo fmt --all
 - 这些 crate 的最低支持 Rust 版本是 1.85（工作区 `Cargo.toml` 中的 `rust-version`）；CI 使用一个固定的、更新的工具链（见下文）。
 - 测试如何组织，以及每个测试套件使用哪个运行时，见[测试](/docs/development-testing)。
 
+## 仓库任务：`cargo xtask` [#xtask]
+
+`xtask` crate（`xtask/`，工作区成员，从不发布）承载仓库自身的任务；`.cargo/config.toml` 让它们以 `cargo xtask <命令>` 运行。
+
+| 命令 | 作用 |
+|---|---|
+| `cargo xtask arch` | 检查模块结构：每个 `lib.rs` 和 `mod.rs`（位于 `crates/*/src`、`crates/*/tests` 和 `xtask/src`）只声明模块、重新导出，并承载文档和属性。实现代码（函数、类型、trait、`impl` 块、常量、静态变量、`macro_rules!`、内联测试模块）放在各自的文件里，再由入口文件重新导出。只做重新导出的内联模块（如 `kardia::prelude`）以及 Rust 要求放在 crate 根部的过程宏入口函数是允许的。它会列出每处违规的文件、行号和种类，只要有违规就失败。CI 会运行它。 |
+| `cargo xtask version <patch\|minor\|major> [--dry-run]` | 递增工作区版本（`0.1.3` → `0.1.4` / `0.2.0` / `1.0.0`），更新 `[workspace.package]`、`[workspace.dependencies]` 中的 `kardia-*` 条目以及 `Cargo.lock`。当用户填写的版本要求发生变化时（1.0 之前的 minor 或 major 递增、1.0 之后的 major 递增），还会更新 README 和本文档中的 `kardia = "0.x"` 依赖片段。它不会提交。 |
+| `cargo xtask tag [--version X.Y.Z \| --name NAME] [--message TEXT] [--push] [--remote NAME] [--dry-run]` | 在 `HEAD` 上创建一个附注标签：默认是 `v<工作区版本>`。`--version` 必须等于工作区版本（`v*` 标签会发布它），`--name` 用来创建其他任意标签。工作区有未提交的修改，或标签已经存在（在本地，或使用 `--push` 时在远端）时，它会拒绝执行。`--push` 会推送标签（到 `origin`，或 `--remote` 指定的远端）。 |
+
 ## CI [#ci]
 
-`.github/workflows/ci.yml` 在每次推送到 `main` 以及每个拉取请求上运行：
+仓库有三个工作流，各管一部分，使每次修改只运行它所需要的检查，而一次发布只对提交测试一次。
+
+| 工作流 | 触发条件 | 内容 |
+|---|---|---|
+| `ci.yml`（Rust） | 推送到 `main` 和拉取请求，但只修改 `site/`、Markdown、`LICENSE`、`NOTICE` 和托管配置文件的除外；手动运行；被 Release 调用 | fmt、clippy、`cargo xtask arch`、测试套件 |
+| `site.yml`（文档） | 修改了 `site/` 的推送到 `main` 和拉取请求；手动运行 | 站点的类型检查、测试和构建；在拉取请求之外还会部署（见下文） |
+| `release.yml` | `v*` 标签；手动运行 | 发布到 crates.io（见下文） |
+
+CI 的步骤：
 
 1. 检出仓库。
 2. 安装 Rust **1.96.0**（`dtolnay/rust-toolchain@1.96.0`），以及 `rustfmt`、`clippy` 和 `wasm32-unknown-unknown` 目标。工具链之所以固定版本，是因为 `kardia-macros` 的编译错误快照（trybuild 测试）依赖于编译器版本。
 3. 恢复 cargo 缓存（`Swatinem/rust-cache`）。
 4. `cargo fmt --all --check`
 5. `cargo clippy --workspace --all-targets -- -D warnings`
-6. `cargo test --workspace`
+6. `cargo xtask arch`
+7. `cargo test --workspace`
+
+同一分支或拉取请求的较新推送会取消较早的 CI 运行。标签从不触发 CI。
+
+| 修改的内容 | 运行 |
+|---|---|
+| 文档页面（`site/`） | 只有 `site.yml` |
+| README、`AGENTS.md`、许可证 | 什么都不运行 |
+| Rust 代码、测试、`Cargo.*`、`xtask/`、除 `site.yml` 以外的工作流 | `ci.yml` |
+| 版本递增，然后打标签 | `ci.yml` 运行一次；`release.yml` 复用那次运行 |
 
 ## 发布 [#releases]
 
-所有 crate 共用一个版本号，即根 `Cargo.toml` 中 `[workspace.package]` 下的 `version`（kardia 各 crate 在 `[workspace.dependencies]` 中的条目也带有该版本号）。
+所有 crate 共用一个版本，即根目录 `Cargo.toml` 中 `[workspace.package]` 下的 `version`（kardia 各 crate 在 `[workspace.dependencies]` 中的条目也带有这个版本）。
 
 <Steps>
 <Step>
-在工作区 `Cargo.toml` 中提升版本号并提交。
+运行 `cargo xtask version patch`（或 `minor`、`major`），然后提交并推送：`git commit -am "chore(release): kardia 0.1.1"`、`git push`。这次推送会运行 CI。
 </Step>
 <Step>
-推送一个 `v*` 标签（例如 `v0.1.1`）。该标签会运行 `.github/workflows/publish.yml`。
+`cargo xtask tag --push` 把该提交标记为 `v0.1.1` 并推送标签，从而启动 `.github/workflows/release.yml`。
 </Step>
 <Step>
-该工作流运行与 CI 相同的检查（fmt、clippy、测试，使用 Rust 1.96.0），然后按依赖顺序发布每个新版本尚未出现在 crates.io 上的 crate（`cargo publish --workspace`）。
+Release 先检查标签是否对应工作区版本，然后找到 CI 对这个提交的运行，如果它还在进行就等待：通过的运行被直接复用，失败的运行会终止发布。只有在没有可用运行时（CI 从未运行过的提交，或被较新推送取消的运行），Release 才会自己调用 `ci.yml` 作为检查。每个被发布的提交只测试一次。
+</Step>
+<Step>
+它按依赖顺序发布每个新版本尚未出现在 crates.io 上的 crate（`cargo publish --workspace`；`xtask` 从不发布），然后为该标签创建一个 GitHub release，说明从上一个 `v*` 标签开始生成。
 </Step>
 </Steps>
 
-发布步骤是**可续传的**：
+发布步骤是**可续跑的**：
 
-- 每次尝试之前，它会向 crates.io API 查询哪些 `name@version` 组合已经存在，并排除这些 crate，因此同一个 crate 永远不会被发布两次。
-- crates.io 只允许一个账号一次创建少量新 crate，之后每十分钟一个。当 `cargo publish` 以 `429 Too Many Requests` 失败时，工作流会等待 610 秒后重试，最多尝试八次；其他任何失败都会使该步骤失败。新 crate 的首次发布会等过这一限制。
-- 该工作流也可以手动启动（`workflow_dispatch`），以续传中途停止的发布。
-- 它使用仓库密钥 `CARGO_REGISTRY_TOKEN` 进行发布。
+- 每次尝试之前，它会向 crates.io API 查询哪些 `name@version` 组合已经存在，并排除这些 crate，因此一个 crate 不会被发布两次。
+- crates.io 只允许一个账户一次创建少量新 crate，之后每十分钟一个。当 `cargo publish` 因 `429 Too Many Requests` 失败时，工作流等待 610 秒后重试，最多尝试八次；其他任何失败都会使该步骤失败。新增 crate 的发布会等过这个限制。
+- 也可以在某个分支上手动启动这个工作流（`workflow_dispatch`），续跑一次中途停下的发布。
+- 它使用仓库密钥 `CARGO_REGISTRY_TOKEN` 发布。
 
 ## 文档站点 [#site]
 
@@ -81,6 +113,6 @@ bun run build     # static output in site/.output/public
 
 ### 部署 [#deployment]
 
-`.github/workflows/site.yml` 把站点部署到 GitHub Pages。在推送到 `main` 且涉及 `site/` 时，它以 `VITE_BASE_PATH=/kardia/` 构建站点，并把输出发布到 `gh-pages` 分支，由 GitHub Pages 在 **[https://licyk.github.io/kardia/](https://licyk.github.io/kardia/)** 提供服务。
+`.github/workflows/site.yml` 负责检查和部署站点；只修改文档时不会运行 Rust 的检查。涉及 `site/` 的拉取请求会执行类型检查、测试和构建。涉及 `site/` 的推送到 `main` 还会以 `VITE_BASE_PATH=/kardia/` 构建站点，并把输出发布到 `gh-pages` 分支（使用部署密钥 `GITEE_RSA_PRIVATE_KEY`），由 GitHub Pages 在 **[https://licyk.github.io/kardia/](https://licyk.github.io/kardia/)** 提供服务。部署每次只运行一个。
 
 基础路径仅用于 GitHub Pages，因为它在 `/kardia/` 下提供站点；不设置 `VITE_BASE_PATH` 时，构建产物从 `/` 提供服务。

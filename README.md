@@ -294,11 +294,30 @@ Guests in other languages implement the JSON-based guest interface described in 
 cargo test --workspace          # the WASM guest test needs the wasm32-unknown-unknown target
 cargo clippy --workspace --all-targets
 cargo fmt --all
+cargo xtask arch                # lib.rs and mod.rs only declare and re-export modules
 ```
 
 Some tests build fixture crates with cargo while they run, so the first run takes a little longer.
 
-CI runs these three on every push and pull request, with a pinned toolchain (Rust 1.96.0), because the compile-error snapshots of `kardia-macros` depend on the compiler version. To release, bump `version` in the workspace `Cargo.toml` and push a `v*` tag: the publish workflow runs the same checks, then publishes every crate whose new version is not on crates.io yet. The workflow can also be started by hand to resume a release that stopped part-way.
+**Repository tasks** run as `cargo xtask <command>`:
+- **`arch`:** checks the module structure.
+- **`version <patch|minor|major>`:** bumps the workspace version everywhere it appears.
+- **`tag [--push]`:** creates (and pushes) the release tag `v<version>`.
+
+**CI** is split by what a change touches:
+- **`ci.yml`:** the Rust checks, on a pinned Rust 1.96.0, since the compile-error snapshots of `kardia-macros` depend on the compiler version. It skips changes only to the docs site or Markdown.
+- **`site.yml`:** checks and deploys the docs site.
+
+**To release:**
+
+```sh
+cargo xtask version patch
+git commit -am "chore(release): kardia 0.1.1"
+git push
+cargo xtask tag --push
+```
+
+The tag starts `release.yml`. It reuses CI's run of the tagged commit rather than testing it again, publishes every crate whose new version is not on crates.io yet, and creates a GitHub release. It can also be started by hand to resume a release that stopped part-way. [Contributing](https://licyk.github.io/kardia/docs/development-contributing) has the details.
 
 ## Documentation
 
