@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
-use cordis_core::{Context, Disposer, Error, Inject, Plugin, Result};
+use cordis_core::{Context, Disposer, Error, Inject, Plugin, PluginDef, Result};
 use cordis_fs::{Fs, FsExt, WatchOptions};
 use cordis_loader::{EntryChange, Loader, TreeBackend, TreeHandle};
 use futures::FutureExt;
@@ -46,7 +46,20 @@ impl Plugin for IncludePlugin {
     }
 
     async fn apply(ctx: Context, config: Arc<IncludeConfig>) -> Result<()> {
-        Include::run(ctx, (*config).clone()).await
+        Include::run(ctx, (*config).clone(), Arc::new(|from, to| std::fs::rename(from, to))).await
+    }
+}
+
+/// How the write-back replaces the file with its temp copy.
+type Rename = Arc<dyn Fn(&Path, &Path) -> std::io::Result<()> + Send + Sync>;
+
+impl IncludePlugin {
+    /// The plugin with `rename` in place of [`std::fs::rename`] (fault injection).
+    pub fn with_rename(rename: impl Fn(&Path, &Path) -> std::io::Result<()> + Send + Sync + 'static) -> PluginDef {
+        let rename: Rename = Arc::new(rename);
+        PluginDef::typed(move |ctx, config: Arc<IncludeConfig>| Include::run(ctx, (*config).clone(), rename.clone()))
+            .name(Self::NAME)
+            .inject(Self::inject())
     }
 }
 
@@ -146,13 +159,14 @@ struct Inner {
     watch: bool,
     state: Mutex<State>,
     seq: AtomicU64,
+    rename: Rename,
 }
 
 const RENAME_RETRIES: u32 = 10;
 const RENAME_BACKOFF: Duration = Duration::from_millis(20);
 
 impl Include {
-    async fn run(ctx: Context, config: IncludeConfig) -> Result<()> {
+    async fn run(ctx: Context, config: IncludeConfig, rename: Rename) -> Result<()> {
         let loader = (*ctx.get::<Loader>()?).clone();
         let base = loader.entry_of(&ctx).map(|entry| entry.parent().tree().base_dir()).unwrap_or_default();
         let filename = std::path::absolute(base.join(&config.path))?;
@@ -172,6 +186,7 @@ impl Include {
             watch: config.watch,
             state: Mutex::new(State { patches, ..Default::default() }),
             seq: AtomicU64::new(0),
+            rename,
         }));
         let tree = loader.create_tree(&ctx, Arc::new(Backend(Arc::downgrade(&include.0))));
         let _ = include.0.tree.set(tree);
@@ -367,10 +382,11 @@ impl Include {
             return Ok(());
         }
         let mut data = self.parse(&content)?;
-        let mut state = self.0.state.lock();
-        self.assign_ids(&mut state, &mut data);
+        let mut guard = self.0.state.lock();
+        let state = &mut *guard;
+        self.assign_ids(state, &mut data);
         if let Some(cache) = &state.cache {
-            let index = apply_patches(&data, &state.patches, &|_| {}).index;
+            let index = apply_patches(&data, &mut state.patches, &|_| {}).index;
             let (base, theirs) = (flatten(&cache.data), flatten(&data));
             let conflicts = reconcile(&mut state.journal, &base, &theirs, |id, key| index.file_owned(id, key));
             for conflict in conflicts {
@@ -382,7 +398,7 @@ impl Include {
             }
         }
         state.cache = Some(Snapshot { content, data });
-        self.schedule_apply(&mut state);
+        self.schedule_apply(state);
         // the file changed while tree-side changes were pending: write the merge
         if !state.journal.is_empty() {
             state.dirty_write = true;
@@ -571,7 +587,7 @@ impl Include {
                         return Err(Error::new(StaleWrite));
                     }
                 }
-                match std::fs::rename(&tmp, &self.0.filename) {
+                match (self.0.rename)(&tmp, &self.0.filename) {
                     Ok(()) => return Ok(()),
                     Err(error) if attempt < RENAME_RETRIES && is_transient(&error) => {}
                     Err(error) => return Err(error.into()),
@@ -603,7 +619,7 @@ impl Include {
         }
         let Some(cache) = &state.cache else { return };
         let warn = |message: String| self.warn(message);
-        let Patched { data, index } = apply_patches(&cache.data, &state.patches, &warn);
+        let Patched { data, index } = apply_patches(&cache.data, &mut state.patches, &warn);
         state.pending = Some(apply_journal(data, &state.journal, |_, _| true, &warn));
         state.index = index;
         if state.applying.is_some() {

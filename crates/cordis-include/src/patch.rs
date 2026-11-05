@@ -90,16 +90,18 @@ pub struct Patched {
 }
 
 /// Overlays `patches` onto a copy of `data`, building the ownership index
-/// in the same pass (a patch that does not apply owns nothing).
-pub fn apply_patches(data: &[Value], patches: &[Value], warn: &dyn Fn(String)) -> Patched {
+/// in the same pass (a patch that does not apply owns nothing). Anonymous
+/// entries of a group config a patch supplies get their ids on the patch
+/// itself, so that they keep them on the next application.
+pub fn apply_patches(data: &[Value], patches: &mut [Value], warn: &dyn Fn(String)) -> Patched {
     let mut data = data.to_vec();
     let mut index = PatchIndex::default();
     // where each mounted entry lives in `data`
     let mut paths: HashMap<String, Vec<usize>> = HashMap::new();
     mount(&data, &[], Owner::File, &mut index, &mut paths);
 
-    for (position, patch) in patches.iter().enumerate() {
-        let Some(patch) = patch.as_object() else { continue };
+    for (position, raw) in patches.iter_mut().enumerate() {
+        let Some(patch) = raw.as_object() else { continue };
         let id = patch.get("id").and_then(Value::as_str);
         let target = id.and_then(|id| paths.get(id).cloned());
 
@@ -149,7 +151,7 @@ pub fn apply_patches(data: &[Value], patches: &[Value], warn: &dyn Fn(String)) -
             continue;
         }
 
-        let Some(id) = id else {
+        let Some(id) = id.map(String::from) else {
             warn("patch: id is required for non-insert patches".into());
             continue;
         };
@@ -173,8 +175,12 @@ pub fn apply_patches(data: &[Value], patches: &[Value], warn: &dyn Fn(String)) -
                 index.keys.remove(member);
                 paths.remove(member);
             }
+            if let Some(Value::Array(list)) = raw.get_mut("config") {
+                ensure_ids(list, &mut |id| paths.contains_key(id));
+            }
         }
-        let overridden = index.keys.entry(id.to_string()).or_default();
+        let patch = raw.as_object().expect("checked above");
+        let overridden = index.keys.entry(id).or_default();
         let map = options.as_object_mut().expect("object");
         for (key, value) in patch.iter().filter(|(key, _)| *key != "id" && *key != "name" && *key != "insert") {
             map.insert(key.clone(), value.clone());
@@ -361,7 +367,7 @@ mod tests {
             json!({ "id": "a", "name": "foo" }),
             json!({ "id": "g", "name": "group", "group": true, "config": [] }),
         ];
-        let patches = vec![
+        let mut patches = vec![
             json!({ "insert": [{ "id": "x", "name": "bar" }] }),
             json!({ "id": "g", "insert": [{ "id": "y", "name": "baz" }] }),
             json!({ "id": "a", "config": { "k": 1 } }),
@@ -369,7 +375,7 @@ mod tests {
             json!({ "id": "a", "name": "wrong", "config": 2 }),
         ];
         let warnings = std::sync::Mutex::new(Vec::new());
-        let Patched { data, index } = apply_patches(&data, &patches, &|w| warnings.lock().unwrap().push(w));
+        let Patched { data, index } = apply_patches(&data, &mut patches, &|w| warnings.lock().unwrap().push(w));
         assert_eq!(
             data,
             vec![
