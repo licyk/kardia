@@ -1,5 +1,10 @@
 # kardia
 
+[![CI](https://github.com/licyk/kardia/actions/workflows/ci.yml/badge.svg)](https://github.com/licyk/kardia/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/kardia.svg)](https://crates.io/crates/kardia)
+[![docs.rs](https://img.shields.io/docsrs/kardia)](https://docs.rs/kardia)
+[![License: GPL-3.0-only](https://img.shields.io/crates/l/kardia.svg)](LICENSE)
+
 A Rust implementation of [Cordis](https://github.com/cordiverse/cordis), the plugin framework built on *spatiotemporal composability* ([paper](https://arxiv.org/abs/2608.25512)).
 
 An app is a tree of **plugins**. Each plugin runs in a **fiber**:
@@ -30,10 +35,17 @@ An app is a tree of **plugins**. Each plugin runs in a **fiber**:
 
 ## Quick start
 
-The `kardia` binary loads an app from a YAML (or JSON) config file and keeps it in step with the file:
+The `kardia` binary loads an app from a YAML (or JSON) config file and keeps it in step with the file. From a clone of this repository:
 
 ```sh
 cargo run -p kardia -- examples/kardia.yml
+```
+
+Or install the binary from crates.io and point it at your own config file:
+
+```sh
+cargo install kardia
+kardia path/to/kardia.yml
 ```
 
 While it runs, try these:
@@ -99,7 +111,7 @@ Add the facade crate:
 
 ```toml
 [dependencies]
-kardia = { git = "https://github.com/licyk/cordis-rs" }
+kardia = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
@@ -201,7 +213,7 @@ Create a `cdylib` crate that depends on `kardia-guest`:
 crate-type = ["cdylib"]
 
 [dependencies]
-kardia-guest = { git = "https://github.com/licyk/cordis-rs" }
+kardia-guest = "0.1"
 ```
 
 ```rust
@@ -284,6 +296,8 @@ cargo fmt --all
 ```
 
 Some tests build fixture crates with cargo while they run, so the first run takes a little longer.
+
+CI runs these three on every push and pull request, with a pinned toolchain (Rust 1.96.0), because the compile-error snapshots of `kardia-macros` depend on the compiler version. To release, bump `version` in the workspace `Cargo.toml` and push a `v*` tag: the publish workflow runs the same checks, then publishes every crate whose new version is not on crates.io yet. The workflow can also be started by hand to resume a release that stopped part-way.
 
 ## Documentation
 
