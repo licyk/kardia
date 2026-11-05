@@ -9,7 +9,8 @@
 //! [`WasmSource`] (WebAssembly on wasmtime, sandboxed) and [`DylibSource`]
 //! (dynamic libraries, for development). Both speak the guest ABI below and
 //! run each guest plugin through a bridge plugin that instantiates the guest
-//! once per fiber and drops the instance when the fiber is disposed.
+//! once per fiber and drops the instance when the fiber is disposed. The
+//! `cordis-guest` crate writes such guests in Rust, for either backend.
 //!
 //! # Guest ABI
 //!

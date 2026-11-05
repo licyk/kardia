@@ -1,0 +1,18 @@
+# A guest plugin written with cordis-guest, built by `tests/rust_guest.rs`
+# as a dynamic library or (for wasm32) a WASM module.
+[package]
+name = "rust-guest"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+cordis-guest = { path = "../../../../cordis-guest" }
+
+[features]
+v2 = []
+
+[workspace]

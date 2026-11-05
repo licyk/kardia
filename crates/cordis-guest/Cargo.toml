@@ -1,0 +1,16 @@
+[package]
+name = "cordis-guest"
+description = "Write guest plugins for cordis-hmr's WASM and dylib backends in Rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+# the exports and host calls are FFI; only `ffi.rs` uses `unsafe`
+[lints.rust]
+unsafe_code = "deny"
