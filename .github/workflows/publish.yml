@@ -28,6 +28,7 @@ jobs:
           # dependency order. crates.io lets an account create only a few new
           # crates at once and then one every ten minutes, so a first release
           # waits out that limit.
+          set -o pipefail
           for attempt in 1 2 3 4 5 6 7 8; do
             exclude=()
             pending=0
