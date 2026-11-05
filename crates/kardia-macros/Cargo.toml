@@ -1,5 +1,6 @@
 [package]
 name = "kardia-macros"
+description = "#[derive(Service)] and #[plugin] macros for kardia"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

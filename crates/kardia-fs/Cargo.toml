@@ -1,5 +1,6 @@
 [package]
 name = "kardia-fs"
+description = "File-watching service for kardia"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,5 +1,6 @@
 [package]
 name = "kardia-include"
+description = "YAML/JSON config files for kardia's loader, kept in sync both ways"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

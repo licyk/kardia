@@ -1,5 +1,6 @@
 [package]
 name = "kardia-core"
+description = "Contexts, revertible effects, fibers and reactive service resolution for kardia"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

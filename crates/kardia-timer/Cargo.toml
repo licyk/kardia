@@ -1,5 +1,6 @@
 [package]
 name = "kardia-timer"
+description = "Timer service for kardia: timeouts, intervals, throttle and debounce that end with their plugin"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

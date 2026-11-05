@@ -1,5 +1,6 @@
 [package]
 name = "kardia-hmr"
+description = "Hot module replacement for kardia, with WASM, dylib and process guest backends"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

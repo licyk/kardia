@@ -1,6 +1,6 @@
 [package]
 name = "kardia-guest"
-description = "Write guest plugins for kardia-hmr's WASM and dylib backends in Rust"
+description = "Write guest plugins for kardia-hmr's WASM, dylib and process backends in Rust"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

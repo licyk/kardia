@@ -1,5 +1,6 @@
 [package]
 name = "kardia-logger-console"
+description = "Console log exporter for kardia"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

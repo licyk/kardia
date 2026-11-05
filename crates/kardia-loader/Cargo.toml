@@ -1,5 +1,6 @@
 [package]
 name = "kardia-loader"
+description = "Declarative plugin trees for kardia: entries, groups, isolation and expressions"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
