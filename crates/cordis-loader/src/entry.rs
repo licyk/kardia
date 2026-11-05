@@ -339,10 +339,20 @@ impl Loader {
             drop(self.dispose_fiber(entry, &inner));
             return Ok(());
         }
-        if diff.iter().any(|key| key == "config") || options.group {
-            inner.update_with(options.config, true)?.await?;
+        if !diff.iter().any(|key| key == "config") && !options.group {
+            return Ok(());
         }
-        Ok(())
+        let mut config = options.config;
+        loop {
+            let settle = inner.update_with(config.clone(), true)?;
+            // a concurrent update may have changed the options since they were
+            // read; whichever update applies last applies the latest config
+            let latest = self.with(|st| st.entries.get(&entry).map(|data| data.read().config));
+            match latest {
+                Some(latest) if latest != config => config = latest,
+                _ => return settle.await,
+            }
+        }
     }
 
     pub(crate) fn partial_dispose(&self, entry: EntryId, legacy: &Value, active: bool) {

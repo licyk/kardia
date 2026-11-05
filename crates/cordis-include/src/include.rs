@@ -138,6 +138,10 @@ struct State {
     patches: Vec<Value>,
     cache: Option<Snapshot>,
     journal: Journal,
+    /// The batch being written: out of the journal, not yet in the cache.
+    /// Trees applied meanwhile include it, so that it does not vanish from
+    /// the running tree while the write is in flight.
+    writing: Journal,
     index: PatchIndex,
     anonymous: Vec<Anonymous>,
     dirty_read: bool,
@@ -479,24 +483,24 @@ impl Include {
         // snapshot and swap: changes reported meanwhile belong to the next round
         let (batch, mut data, mut patches) = {
             let mut state = self.0.state.lock();
-            let batch = std::mem::take(&mut state.journal);
+            state.writing = std::mem::take(&mut state.journal);
             let cache = state.cache.as_ref().expect("checked above");
-            (batch, cache.data.clone(), state.patches.clone())
+            (state.writing.clone(), cache.data.clone(), state.patches.clone())
         };
         let warn = |message: String| self.warn(message);
-        if route_journal(&batch, &mut data, &mut patches, &warn) {
-            self.persist_patches(patches);
-        }
+        // the routed patches take effect together with the written file: the
+        // batch's records are diffs against the old file and the old patches
+        let patched = route_journal(&batch, &mut data, &mut patches, &warn).then_some(patches);
         let unchanged = self.0.state.lock().cache.as_ref().is_some_and(|cache| cache.data == data);
         if unchanged {
             // patch-only changes, or ids assigned to anonymous entries
-            self.schedule_apply(&mut self.0.state.lock());
+            self.commit_batch(None, patched);
             return Ok(());
         }
         let text = self.dump(&data);
         let read_only = std::fs::metadata(&self.0.filename).map(|m| m.permissions().readonly()).unwrap_or(false);
         if read_only {
-            let pending = self.restore(batch);
+            let pending = self.restore();
             let file = self.0.filename.display();
             self.0
                 .ctx
@@ -505,7 +509,7 @@ impl Include {
             return Ok(());
         }
         if let Err(error) = self.write_text(&text, Some(&expected)).await {
-            let pending = self.restore(batch);
+            let pending = self.restore();
             if error.is::<StaleWrite>() {
                 let mut state = self.0.state.lock();
                 state.dirty_read = true;
@@ -520,15 +524,33 @@ impl Include {
             return Err(error);
         }
         let syntax = json_syntax(&text);
-        let mut state = self.0.state.lock();
-        state.cache = Some(Snapshot { content: text, data, syntax });
-        self.schedule_apply(&mut state);
+        self.commit_batch(Some(Snapshot { content: text, data, syntax }), patched);
         Ok(())
     }
 
-    /// Puts an unwritten batch back in front of the changes reported since.
-    fn restore(&self, mut batch: Journal) -> usize {
+    /// Takes in the written batch: the new file content and patches replace
+    /// the batch at once, so no tree sees one without the other.
+    fn commit_batch(&self, cache: Option<Snapshot>, patches: Option<Vec<Value>>) {
+        {
+            let mut state = self.0.state.lock();
+            if let Some(cache) = cache {
+                state.cache = Some(cache);
+            }
+            if let Some(patches) = &patches {
+                state.patches = patches.clone();
+            }
+            state.writing.clear();
+            self.schedule_apply(&mut state);
+        }
+        if let Some(patches) = patches {
+            self.persist_patches(patches);
+        }
+    }
+
+    /// Puts the unwritten batch back in front of the changes reported since.
+    fn restore(&self) -> usize {
         let mut state = self.0.state.lock();
+        let mut batch = std::mem::take(&mut state.writing);
         for (id, record) in std::mem::take(&mut state.journal) {
             merge(&mut batch, &id, record);
         }
@@ -540,15 +562,10 @@ impl Include {
     /// configuration, i.e. into the parent tree (not awaited: that is the
     /// tree reconciliation, which the drain loop must not block on).
     fn persist_patches(&self, patches: Vec<Value>) {
-        let config = {
-            let mut state = self.0.state.lock();
-            state.patches = patches.clone();
-            let mut config = self.0.ctx.fiber().config();
-            if let Some(map) = config.as_object_mut() {
-                map.insert("patches".into(), Value::Array(patches));
-            }
-            config
-        };
+        let mut config = self.0.ctx.fiber().config();
+        if let Some(map) = config.as_object_mut() {
+            map.insert("patches".into(), Value::Array(patches));
+        }
         if self.0.loader.entry_of(&self.0.ctx).is_none() {
             let file = self.0.filename.display();
             return self.warn(format!("patches of {file} changed at runtime but cannot be persisted"));
@@ -610,7 +627,7 @@ impl Include {
         }
     }
 
-    /// Applies `patches` and the unwritten journal to the cached file data,
+    /// Applies `patches` and the unwritten changes to the cached file data,
     /// and reconciles the tree with the result (latest wins).
     fn schedule_apply(&self, state: &mut State) {
         if state.disposed {
@@ -619,6 +636,7 @@ impl Include {
         let Some(cache) = &state.cache else { return };
         let warn = |message: String| self.warn(message);
         let Patched { data, index } = apply_patches(&cache.data, &mut state.patches, &warn);
+        let data = apply_journal(data, &state.writing, |_, _| true, &warn);
         state.pending = Some(apply_journal(data, &state.journal, |_, _| true, &warn));
         state.index = index;
         if state.applying.is_some() {
