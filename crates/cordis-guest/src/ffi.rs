@@ -287,3 +287,162 @@ mod dylib {
 
 #[cfg(not(target_family = "wasm"))]
 pub use dylib::*;
+
+#[cfg(not(target_family = "wasm"))]
+mod process {
+    use std::ffi::c_void;
+    use std::io::{BufRead, Lines, StdinLock, Write};
+
+    use serde_json::json;
+
+    use super::*;
+
+    /// Serves `G` as a process guest: answers the exports the host sends as
+    /// JSON lines on stdin, until it disposes the instance or stdin closes.
+    /// stdout carries the protocol, so the guest must not print to it; log
+    /// through [`Host::log`] or stderr.
+    pub fn serve<G: Guest>() {
+        let mut channel = Channel { lines: std::io::stdin().lock().lines(), message: Vec::new() };
+        let mut slot: Option<G> = None;
+        while let Some(request) = channel.receive() {
+            let export = request["export"].as_str().unwrap_or_default().to_string();
+            channel.message = match &request["input"] {
+                Value::Null => Vec::new(),
+                input => serde_json::to_vec(input).expect("a JSON value"),
+            };
+            let len = channel.message.len();
+            let api = channel.api();
+            let host = Host { api: &api };
+            let status = match export.as_str() {
+                "meta" => meta::<G>(host),
+                "apply" => apply::<G>(host, len, &mut slot),
+                "call" => call::<G>(host, len, &mut slot),
+                "dispose" => {
+                    dispose::<G>(host, slot.take());
+                    send(&json!({ "done": 0 }));
+                    return;
+                }
+                _ => 1,
+            };
+            send(&json!({ "done": status }));
+        }
+    }
+
+    /// The host side of the pipe, behind the `HostApi` the glue calls.
+    struct Channel {
+        lines: Lines<StdinLock<'static>>,
+        /// The input of the current export, then the result of the last host call.
+        message: Vec<u8>,
+    }
+
+    impl Channel {
+        fn receive(&mut self) -> Option<Value> {
+            serde_json::from_str(&self.lines.next()?.ok()?).ok()
+        }
+
+        fn api(&mut self) -> HostApi {
+            HostApi {
+                host: std::ptr::from_mut(self).cast(),
+                read: channel_read,
+                write: channel_write,
+                log: channel_log,
+                provide: channel_provide,
+                view: channel_view,
+                invoke: channel_invoke,
+            }
+        }
+
+        /// A host call: stores its result (or error) as the message and
+        /// returns the length, or `-1 - len` for an error.
+        fn request(&mut self, request: Value) -> i32 {
+            send(&request);
+            // the host is gone, and with it everything this guest serves
+            let reply = self.receive().unwrap_or_else(|| std::process::exit(1));
+            match reply.get("error") {
+                Some(error) => {
+                    self.message = error.as_str().unwrap_or_default().as_bytes().to_vec();
+                    -1 - self.message.len() as i32
+                }
+                None => {
+                    self.message = match reply.get("result") {
+                        None | Some(Value::Null) => Vec::new(),
+                        Some(result) => serde_json::to_vec(result).expect("a JSON value"),
+                    };
+                    self.message.len() as i32
+                }
+            }
+        }
+    }
+
+    fn send(message: &Value) {
+        let mut stdout = std::io::stdout().lock();
+        if writeln!(stdout, "{message}").and_then(|()| stdout.flush()).is_err() {
+            std::process::exit(1);
+        }
+    }
+
+    // SAFETY (all of them): `host` is the `Channel` of the running export,
+    // and the glue passes slices that are valid for their lengths.
+
+    unsafe fn channel<'a>(host: *mut c_void) -> &'a mut Channel {
+        unsafe { &mut *host.cast::<Channel>() }
+    }
+
+    unsafe fn text<'a>(ptr: *const u8, len: usize) -> &'a str {
+        let bytes = if len == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(ptr, len) } };
+        std::str::from_utf8(bytes).unwrap_or_default()
+    }
+
+    unsafe fn value(ptr: *const u8, len: usize) -> Value {
+        serde_json::from_str(unsafe { text(ptr, len) }).unwrap_or(Value::Null)
+    }
+
+    unsafe extern "C" fn channel_read(host: *mut c_void, ptr: *mut u8) {
+        let message = &unsafe { channel(host) }.message;
+        unsafe { std::ptr::copy_nonoverlapping(message.as_ptr(), ptr, message.len()) };
+    }
+
+    unsafe extern "C" fn channel_write(_: *mut c_void, ptr: *const u8, len: usize) {
+        send(&json!({ "output": unsafe { text(ptr, len) } }));
+    }
+
+    unsafe extern "C" fn channel_log(_: *mut c_void, level: i32, ptr: *const u8, len: usize) {
+        send(&json!({ "call": "log", "level": level, "text": unsafe { text(ptr, len) } }));
+    }
+
+    unsafe extern "C" fn channel_provide(
+        host: *mut c_void,
+        key: *const u8,
+        key_len: usize,
+        value_ptr: *const u8,
+        value_len: usize,
+    ) -> i32 {
+        let request = json!({ "call": "provide", "key": unsafe { text(key, key_len) }, "value": unsafe { value(value_ptr, value_len) } });
+        unsafe { channel(host) }.request(request)
+    }
+
+    unsafe extern "C" fn channel_view(host: *mut c_void, key: *const u8, key_len: usize) -> i32 {
+        unsafe { channel(host) }.request(json!({ "call": "view", "key": unsafe { text(key, key_len) } }))
+    }
+
+    unsafe extern "C" fn channel_invoke(
+        host: *mut c_void,
+        key: *const u8,
+        key_len: usize,
+        method: *const u8,
+        method_len: usize,
+        args: *const u8,
+        args_len: usize,
+    ) -> i32 {
+        let request = json!({
+            "call": "invoke",
+            "key": unsafe { text(key, key_len) },
+            "method": unsafe { text(method, method_len) },
+            "args": unsafe { value(args, args_len) },
+        });
+        unsafe { channel(host) }.request(request)
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub use process::serve;

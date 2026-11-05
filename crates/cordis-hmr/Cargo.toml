@@ -7,9 +7,10 @@ repository.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["wasm", "dylib"]
+default = ["wasm", "dylib", "process"]
 wasm = ["dep:wasmtime"]
 dylib = ["dep:libloading"]
+process = []
 
 [dependencies]
 cordis-core.workspace = true

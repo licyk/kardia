@@ -1,11 +1,12 @@
 //! Provides `greeter`, whose view is `{ version, input }` and whose calls
-//! answer `{ version, calls, request }`; `fail` fails and `panic` panics.
+//! answer `{ version, calls, request }`; `fail` fails, `panic` panics and
+//! `exit` ends the process.
 
 use cordis_guest::{Error, Guest, Host, Level, Map, Meta, Request, Result, Value, json};
 
 const VERSION: &str = if cfg!(feature = "v2") { "v2" } else { "v1" };
 
-struct Greeter {
+pub struct Greeter {
     calls: u64,
 }
 
@@ -28,6 +29,8 @@ impl Guest for Greeter {
         match request.method.as_str() {
             "fail" => Err(Error::msg("greeter refuses")),
             "panic" => panic!("greeter panics"),
+            "exit" => std::process::exit(3),
+            "pid" => Ok(json!(std::process::id())),
             _ => Ok(json!({ "version": VERSION, "calls": self.calls, "request": request })),
         }
     }

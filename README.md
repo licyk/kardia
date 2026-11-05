@@ -167,9 +167,15 @@ To load your own plugins from a config file, register them in a `cordis::loader:
 
 Plugins compiled into the binary can be reconfigured live, but changing their code needs a restart.
 
-**Guest plugins** are separate modules that `hmr` can reload in place. Any entry name that is not a built-in is a guest module path, relative to the config file. There are two kinds:
+**Guest plugins** are separate modules that `hmr` can reload in place. Any entry name that is not a built-in is a guest module path, relative to the config file. The `cordis` binary loads two kinds:
 - **WebAssembly modules** (`.wasm`, or `.wat` text): run on wasmtime, sandboxed, one instance per plugin.
 - **Dynamic libraries** (`.so` / `.dylib` / `.dll`): for development. They run in the host process without a sandbox, so a crash in the library brings down the app. Each version stays loaded until the process exits.
+
+A third kind, **child processes**, is available to apps built on the library (`cordis::hmr::ProcessSource`), but not yet to the `cordis` binary, which picks a backend by file extension:
+- Each plugin instance is its own process, speaking the guest interface as JSON lines over stdin and stdout.
+- A crashing guest fails only its own calls.
+- Reloading a module respawns its processes.
+- Replace an executable by renaming a new file over it, since a running executable can't be written to.
 
 To reload guest modules as they change, add an `hmr` entry with watch mode:
 
@@ -232,17 +238,27 @@ impl Guest for Counter {
 cordis_guest::export!(Counter);
 ```
 
-The same source builds either kind of guest:
+The same source builds a WebAssembly or a dynamic-library guest:
 
 ```sh
 cargo build --release --target wasm32-unknown-unknown   # target/wasm32-unknown-unknown/release/<crate>.wasm
 cargo build --release                                   # target/release/lib<crate>.so (or .dylib / .dll)
 ```
 
+For a process guest, add a binary to the crate (with `crate-type = ["cdylib", "rlib"]`, so it can use the library) whose `main` serves the guest:
+
+```rust
+fn main() {
+    cordis_guest::serve::<my_guest::Counter>();
+}
+```
+
+stdout carries the protocol, so a process guest must not print to it; it logs through `Host::log` or to stderr.
+
 What a guest can do:
 - **Use services.** `Host` can `log`, `provide` services, `view` the JSON value of services the guest declared with `Meta::inject`, and `invoke` services provided by other guests.
 - **Be called from Rust.** Host-side code calls a guest's services through `cordis::hmr::GuestService` (`.value()` and `.call(method, args)`).
-- **Fail safely.** An error or panic in a guest fails only that plugin or call. In a dylib, the SDK catches the panic and returns it as an error. WebAssembly aborts on a panic, and the host reports the abort as a failed call.
+- **Fail safely.** An error or panic in a guest fails only that plugin or call. In a dylib or a process, the SDK catches the panic and returns it as an error. WebAssembly aborts on a panic, and the host reports the abort as a failed call. A process that exits fails its later calls with "the guest process exited".
 
 Guests in other languages implement the JSON-based guest interface described in the `cordis-hmr` crate docs (`cargo doc -p cordis-hmr --open`). `examples/plugins/hello.wat` is a guest written by hand in WebAssembly text.
 
@@ -256,7 +272,7 @@ Guests in other languages implement the JSON-based guest interface described in 
 | `cordis-timer`, `cordis-logger-console`, `cordis-fs` | Built-in services |
 | `cordis-loader` | Entries, groups, isolation, expressions, catalog |
 | `cordis-include` | YAML/JSON config files, kept in sync both ways |
-| `cordis-hmr` | Module graph, hot reload, watch mode, WASM and dylib backends |
+| `cordis-hmr` | Module graph, hot reload, watch mode, WASM, dylib and process backends |
 | `cordis-guest` | SDK for guest plugins in Rust |
 
 ## Development

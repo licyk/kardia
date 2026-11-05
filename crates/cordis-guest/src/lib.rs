@@ -2,7 +2,9 @@
 //!
 //! Implement [`Guest`] and [`export!`] it from a `cdylib` crate. The same
 //! source builds as a WASM module (`--target wasm32-unknown-unknown`) or as
-//! a dynamic library for the host platform.
+//! a dynamic library for the host platform. For the process backend, a
+//! binary's `main` calls [`serve::<G>()`](serve) instead; its stdout carries
+//! the protocol, so it logs through [`Host::log`] or stderr.
 //!
 //! ```no_run
 //! use cordis_guest::{Guest, Host, Level, Map, Meta, Request, Result, Value, json};
@@ -47,6 +49,8 @@ use serde::{Deserialize, Serialize};
 pub use serde_json::{Map, Value, json};
 
 pub use ffi::Host;
+#[cfg(not(target_family = "wasm"))]
+pub use ffi::serve;
 
 /// A guest plugin (or a module exporting a value, see [`Meta::value`]).
 /// Each fiber running the plugin gets its own instance.

@@ -5,10 +5,11 @@
 //! changed modules and replaces the plugins they export in place; with
 //! `watch.enabled` (and the `fs` service) it does so as files change.
 //!
-//! Besides custom sources, two backends load guest modules from files:
-//! [`WasmSource`] (WebAssembly on wasmtime, sandboxed) and [`DylibSource`]
-//! (dynamic libraries, for development). Both speak the guest ABI below and
-//! run each guest plugin through a bridge plugin that instantiates the guest
+//! Besides custom sources, three backends load guest modules from files:
+//! [`WasmSource`] (WebAssembly on wasmtime, sandboxed), [`DylibSource`]
+//! (dynamic libraries, for development) and [`ProcessSource`] (executables,
+//! one child process per instance). All speak the guest ABI below and run
+//! each guest plugin through a bridge plugin that instantiates the guest
 //! once per fiber and drops the instance when the fiber is disposed. The
 //! `cordis-guest` crate writes such guests in Rust, for either backend.
 //!
@@ -50,24 +51,41 @@
 //!
 //! Host functions returning `i32` set the message to their result and return
 //! its length, or set it to an error message and return `-1 - len`.
+//!
+//! ## Process transport
+//!
+//! A process guest exchanges one JSON object per line over its stdin and
+//! stdout (stdout is reserved for this; a guest logs through `log` or
+//! stderr). Each export arrives as `{ export, input }`, with `export` one of
+//! `meta`, `apply`, `call`, `dispose` and `input` the message (`null` if
+//! empty). While it runs, the guest may send `{ call: "log", level, text }`
+//! (no reply), or `{ call: "provide", key, value }`, `{ call: "view", key }`,
+//! `{ call: "invoke", key, method, args }`, each answered with `{ result }`
+//! or `{ error }`; `{ output }` sets the result text of the export, and
+//! `{ done: status }` ends it. After `dispose` the process is killed; a
+//! guest exits when its stdin closes.
 
 mod graph;
-#[cfg(any(feature = "wasm", feature = "dylib"))]
+#[cfg(any(feature = "wasm", feature = "dylib", feature = "process"))]
 mod guest;
 mod hmr;
 mod watch;
 
 #[cfg(feature = "dylib")]
 mod dylib;
+#[cfg(feature = "process")]
+mod process;
 #[cfg(feature = "wasm")]
 mod wasm;
 
 #[cfg(feature = "dylib")]
 pub use dylib::DylibSource;
 pub use graph::{Exports, Imports, ModuleCode, ModuleGraph, ModuleId, ModuleSource};
-#[cfg(any(feature = "wasm", feature = "dylib"))]
+#[cfg(any(feature = "wasm", feature = "dylib", feature = "process"))]
 pub use guest::GuestService;
 pub use hmr::{Hmr, HmrConfig, HmrExt, ImportFailure, ReconcileResult};
+#[cfg(feature = "process")]
+pub use process::ProcessSource;
 #[cfg(feature = "wasm")]
 pub use wasm::WasmSource;
 pub use watch::WatchConfig;
