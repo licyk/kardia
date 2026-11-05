@@ -1,0 +1,62 @@
+name: Documentation site
+
+# Builds the site (site/: the home page and the docs) and publishes it to the gh-pages branch.
+# Netlify (netlify.toml), Cloudflare Pages (wrangler.toml) and Vercel (site/vercel.json) build the
+# same site at the root path; GitHub Pages serves it under /kardia/.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/site.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Dependencies
+        run: bun install --frozen-lockfile
+        working-directory: site
+
+      - name: Test and Build
+        env:
+          VITE_BASE_PATH: /kardia/
+        run: |
+          bun run check
+          bun run test
+          bun run build
+        working-directory: site
+
+      - name: Configure Git
+        env:
+          DEPLOY_PRI: ${{ secrets.GITEE_RSA_PRIVATE_KEY }}
+          GIT_USERNAME: ${{ github.repository_owner }}
+          GIT_EMAIL: ${{ github.repository_owner }}@user.github.com
+        run: |
+          mkdir -p ~/.ssh/
+          echo "${DEPLOY_PRI}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          git config --global user.name "${GIT_USERNAME}"
+          git config --global user.email "${GIT_EMAIL}"
+
+      - name: Commit the Site
+        env:
+          GIT_URL: 'git@github.com:licyk/kardia.git'
+        run: |
+          git -C "${{ github.workspace }}/site/.output/public" init
+          git -C "${{ github.workspace }}/site/.output/public" remote add origin "${GIT_URL}"
+          git -C "${{ github.workspace }}/site/.output/public" add -A
+          git -C "${{ github.workspace }}/site/.output/public" commit -m "Site auto generated. Time: $(date +'%Y-%m-%d %H:%M:%S')"
+
+      - name: Push the Site
+        run: |
+          git -C "${{ github.workspace }}/site/.output/public" push origin HEAD:gh-pages --force

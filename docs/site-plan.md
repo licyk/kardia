@@ -147,7 +147,7 @@ This doubles the pages to about 80 MDX files.
 
 ## 6. Giscus
 
-The configuration is replaced with the one given:
+Decided: the given repository and category, with rvc-next's comment behaviour.
 
 | Attribute | Value |
 |---|---|
@@ -155,24 +155,18 @@ The configuration is replaced with the one given:
 | `data-repo-id` | `R_kgDOVjB9NA` |
 | `data-category` | `Comment` |
 | `data-category-id` | `DIC_kwDOVjB9NM4DKbXu` |
-| `data-mapping` | `pathname` |
 | `data-strict` | `1` |
 | `data-reactions-enabled` | `1` |
 | `data-emit-metadata` | `0` |
 | `data-input-position` | `top` |
-| `data-theme` | `preferred_color_scheme` |
-| `data-lang` | `zh-CN` |
 | `data-loading` | `lazy` |
 | Script | `https://giscus.app/client.js`, `crossorigin="anonymous"`, `async` |
 
-All of these live in `GISCUS_ATTRIBUTES` in `src/lib/giscus.ts`, the single place the script is configured. `docs-comments.tsx` mounts the script per page with exactly those attributes.
+Kept from rvc-next:
+- **One thread per page:** `data-mapping="specific"` with a `data-term` per page instead of `pathname`. The term drops the `/kardia/` base path, the `/en` language prefix and surrounding slashes, so the Chinese and English versions of a page share one thread, on every host.
+- **Theme and language follow the site:** `data-theme` and `data-lang` follow the theme toggle and language switch, and changes are posted to the loaded frame.
 
-This configuration differs from rvc-next's, and it changes three behaviours:
-- **One thread per URL path:** with `pathname`, Giscus keys each thread on the page's URL path. The English page (`/kardia/en/docs/x`) gets its own thread, separate from the Chinese one. A copy served from another host at the root path (`/docs/x`) would also get its own threads, and a trailing slash can split a thread too.
-- **Theme:** the frame follows the operating system's colour scheme, not the site's theme toggle.
-- **Language:** the frame is always in Chinese.
-
-The plan applies the given values as they are. So rvc-next's normalized terms (`giscusTerm`), and the code that posts theme and language changes to the frame, are removed together with their tests. The test for `giscus.ts` instead checks that the attributes match the configuration above.
+All fixed attributes live in `GISCUS_ATTRIBUTES` in `src/lib/giscus.ts`; tests cover the attributes and the terms.
 
 ## 7. Umami
 
@@ -232,7 +226,8 @@ Each step is a commit.
 5. **Cleanup:** remove `docs/`, and update the README, the test comments, and CI's site job.
 6. **The release workflow:** deploy, enable GitHub Pages, verify the live site.
 
-## 11. Decisions for the user
+## 11. Decisions
 
-1. **Languages** (§5): bilingual with Chinese as the default (recommended), or English only.
-2. **Giscus behaviour** (§6): the given configuration as is (planned), or keep rvc-next's per-page terms and theme sync with the new repository and category.
+Both decided:
+1. **Languages** (§5): bilingual, Chinese by default, English alongside.
+2. **Giscus** (§6): the given repository and category, with rvc-next's per-page terms and theme and language sync.

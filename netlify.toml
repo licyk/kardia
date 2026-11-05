@@ -1,0 +1,5 @@
+[build]
+base = "site"
+command = "bun run build"
+publish = ".output/public"
+# Cloudflare Pages dashboard build command (not a Wrangler field): bun run --cwd site build

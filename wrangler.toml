@@ -1,0 +1,3 @@
+name = "kardia"
+pages_build_output_dir = "site/.output/public"
+compatibility_date = "2026-11-05"

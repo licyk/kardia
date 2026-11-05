@@ -1,0 +1,541 @@
+/*
+ * Workspace preview.
+ *
+ * All hover timing comes from the interaction channel (`.page-interactive` /
+ * `.page-interactive-part` in the component); this file only describes
+ * appearance and how the preview compacts on short viewports.
+ */
+
+.product-preview {
+  position: relative;
+  min-width: 0;
+  margin: 0;
+  filter: drop-shadow(0 36px 48px rgb(15 22 35 / 28%));
+  transform: perspective(1200px) rotateY(-2deg) rotateX(1deg);
+  transform-origin: center left;
+}
+
+.product-preview::before {
+  position: absolute;
+  z-index: -1;
+  inset: 10% -5% -8% 18%;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--page-accent) 34%, transparent);
+  content: "";
+  filter: blur(54px);
+}
+
+/* Stacked under the copy, the perspective tilt reads as a mistake. */
+@container page-section (max-width: 61.999rem) {
+  .product-preview {
+    width: min(44rem, 100%);
+    justify-self: center;
+    transform: none;
+  }
+}
+
+.product-preview-window {
+  animation: home-preview-enter var(--page-enter) var(--page-ease-enter) 160ms both;
+}
+
+@keyframes home-preview-enter {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.product-preview-window {
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 1.3rem;
+  background: var(--page-preview-bg);
+  /* The third shadow is present-but-transparent at rest so the hover state
+   * interpolates shadow-for-shadow rather than across differing list lengths. */
+  box-shadow:
+    inset 0 1px rgb(255 255 255 / 7%),
+    0 0 0 1px rgb(29 16 24 / 30%),
+    0 22px 60px rgb(14 20 32 / 0%);
+  color: #eef2fa;
+}
+
+@media (any-hover: hover) {
+  .product-preview:hover .product-preview-window {
+    border-color: rgb(168 200 255 / 24%);
+    box-shadow:
+      inset 0 1px rgb(255 255 255 / 8%),
+      0 0 0 1px rgb(168 200 255 / 10%),
+      0 22px 60px rgb(14 20 32 / 22%);
+  }
+}
+
+.product-preview:focus-within .product-preview-window {
+  border-color: rgb(168 200 255 / 24%);
+}
+
+.product-preview-titlebar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  min-height: 3.25rem;
+  padding: 0 1rem;
+  border-bottom: 1px solid var(--page-preview-border);
+  background: rgb(255 255 255 / 2%);
+}
+
+.product-preview-window-controls {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.product-preview-window-controls span {
+  width: 0.52rem;
+  height: 0.52rem;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 16%);
+}
+
+.product-preview-window-controls span:first-child {
+  background: #4d6fa3;
+}
+
+.product-preview-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+
+.product-preview-brand-mark {
+  display: inline-flex;
+  width: 1.45rem;
+  height: 1.45rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.42rem;
+  background: rgb(168 200 255 / 14%);
+  color: #a8c8ff;
+}
+
+.product-preview-brand-mark svg {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.product-preview-titlebar-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  color: rgb(255 255 255 / 52%);
+}
+
+.product-preview-titlebar-actions svg {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+.product-preview-action {
+  display: inline-flex;
+  width: 1.55rem;
+  height: 1.55rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 0.42rem;
+  color: inherit;
+  cursor: pointer;
+}
+
+@media (any-hover: hover) {
+  .product-preview-action:hover {
+    border-color: rgb(255 255 255 / 9%);
+    background: rgb(255 255 255 / 5%);
+    color: #a8c8ff;
+  }
+}
+
+.product-preview-action:focus-visible {
+  border-color: rgb(255 255 255 / 9%);
+  background: rgb(255 255 255 / 5%);
+  color: #a8c8ff;
+  outline: 2px solid #a8c8ff;
+  outline-offset: 2px;
+}
+
+.product-preview-action:active {
+  transform: scale(0.9);
+}
+
+.product-preview-body {
+  padding: clamp(0.85rem, 2vw, 1.4rem);
+}
+
+.product-preview-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.product-preview-heading > div {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.product-preview-heading span {
+  color: rgb(255 255 255 / 42%);
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.product-preview-heading strong {
+  font-size: 1rem;
+  font-weight: 650;
+}
+
+.product-preview-new-instance {
+  display: inline-flex;
+  min-height: 2.1rem;
+  align-items: center;
+  gap: 0.38rem;
+  padding: 0.45rem 0.68rem;
+  border-radius: 0.58rem;
+  background: #a8c8ff;
+  color: #0b1d36;
+  font-size: 0.7rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.product-preview-new-instance svg {
+  width: 0.8rem;
+  height: 0.8rem;
+}
+
+.product-preview-search {
+  display: flex;
+  min-height: 2.35rem;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 1rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--page-preview-border);
+  border-radius: 0.65rem;
+  background: rgb(255 255 255 / 3%);
+  color: rgb(255 255 255 / 35%);
+  font-size: 0.7rem;
+}
+
+.product-preview-search svg {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.product-preview-search kbd {
+  margin-left: auto;
+  padding: 0.15rem 0.35rem;
+  border: 1px solid rgb(255 255 255 / 9%);
+  border-radius: 0.3rem;
+  background: rgb(255 255 255 / 4%);
+  color: rgb(255 255 255 / 28%);
+  font: inherit;
+}
+
+.product-preview-instances {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.7rem;
+  margin-top: 0.75rem;
+}
+
+.product-preview-instance {
+  min-width: 0;
+  padding: 0.82rem;
+  border: 1px solid var(--page-preview-border);
+  border-radius: 0.78rem;
+  background:
+    linear-gradient(145deg, rgb(255 255 255 / 5%), transparent 72%), var(--page-preview-surface);
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.product-preview-instance.is-active {
+  border-color: rgb(168 200 255 / 30%);
+  background:
+    linear-gradient(145deg, rgb(168 200 255 / 12%), transparent 70%), var(--page-preview-surface);
+  box-shadow: 0 8px 20px rgb(0 0 0 / 12%);
+  transform: translateY(-2px);
+}
+
+@media (any-hover: hover) {
+  .product-preview-instance:hover:not(.is-active) {
+    border-color: rgb(255 255 255 / 16%);
+    transform: translateY(-1px);
+  }
+}
+
+.product-preview-instance:active {
+  transform: translateY(0) scale(0.98);
+}
+
+.product-preview-instance:focus-visible {
+  outline: 2px solid #a8c8ff;
+  outline-offset: 2px;
+}
+
+.product-preview-instance-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: clamp(0.7rem, 2vh, 1.4rem);
+}
+
+.product-preview-instance-topline > svg {
+  width: 0.78rem;
+  height: 0.78rem;
+  color: rgb(255 255 255 / 25%);
+}
+
+.product-preview-instance.is-active .product-preview-instance-topline > svg {
+  color: #a8c8ff;
+  transform: translateX(2px);
+}
+
+.product-preview-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: rgb(255 255 255 / 52%);
+  font-size: 0.58rem;
+}
+
+.product-preview-state > span {
+  width: 0.34rem;
+  height: 0.34rem;
+  border-radius: 50%;
+  background: #7d8593;
+}
+
+.product-preview-state.is-running > span {
+  background: #7dd3a5;
+  box-shadow: 0 0 0 3px rgb(125 211 165 / 10%);
+}
+
+/*
+ * Gated on the cycling flag: this animates `box-shadow`, which repaints, so it
+ * must not keep running once the preview has scrolled out of view.
+ */
+.product-preview.is-cycling
+  .product-preview-instance.is-active
+  .product-preview-state.is-running
+  > span {
+  animation: home-status-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes home-status-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px rgb(125 211 165 / 10%);
+  }
+
+  50% {
+    box-shadow: 0 0 0 6px rgb(125 211 165 / 3%);
+  }
+}
+
+.product-preview-state.is-ready > span {
+  background: #8fb5e6;
+}
+
+.product-preview-state.is-maintenance > span {
+  background: #e9b86f;
+}
+
+.product-preview-instance > strong,
+.product-preview-instance > small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.product-preview-instance > strong {
+  font-size: 0.74rem;
+  font-weight: 620;
+}
+
+.product-preview-instance > small {
+  margin-top: 0.3rem;
+  color: rgb(255 255 255 / 36%);
+  font-size: 0.6rem;
+}
+
+.product-preview-operation {
+  display: grid;
+  grid-template-columns: auto 1fr minmax(70px, 0.55fr);
+  align-items: center;
+  gap: 0.7rem;
+  margin-top: 0.75rem;
+  padding: 0.72rem;
+  border: 1px solid var(--page-preview-border);
+  border-radius: 0.72rem;
+  background: rgb(255 255 255 / 3%);
+}
+
+.product-preview-operation-icon {
+  display: inline-flex;
+  width: 2rem;
+  height: 2rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.55rem;
+  background: rgb(168 200 255 / 12%);
+  color: #a8c8ff;
+}
+
+.product-preview-operation-icon svg {
+  width: 0.82rem;
+  height: 0.82rem;
+}
+
+.product-preview-operation-copy {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+  animation: home-preview-content-in 320ms var(--page-ease-enter) both;
+}
+
+@keyframes home-preview-content-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.product-preview-operation strong {
+  font-size: 0.68rem;
+  font-weight: 620;
+}
+
+.product-preview-operation div span {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: rgb(255 255 255 / 38%);
+  font-size: 0.56rem;
+}
+
+.product-preview-operation div span svg {
+  width: 0.65rem;
+  height: 0.65rem;
+}
+
+.product-preview-progress {
+  overflow: hidden;
+  height: 0.24rem;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 7%);
+}
+
+.product-preview-progress span {
+  display: block;
+  width: 72%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #6d8fc4, #a8c8ff);
+}
+
+.product-preview-progress.is-cycling span {
+  width: 100%;
+  transform-origin: left;
+  animation: home-preview-cycle 6s linear both;
+}
+
+/*
+ * Pointer interaction pauses the cycle. The animation is held rather than
+ * removed, so the bar freezes where it is and resumes from there instead of
+ * snapping back to its resting width.
+ */
+.product-preview-progress.is-paused span {
+  animation-play-state: paused;
+}
+
+@keyframes home-preview-cycle {
+  from {
+    transform: scaleX(0);
+  }
+
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/*
+ * Short-viewport compaction: drop the rows that carry no argument so the hero
+ * still fits without shrinking the parts that do.
+ */
+@media (max-height: 780px) {
+  .product-preview-search {
+    display: none;
+  }
+}
+
+@media (max-height: 700px) {
+  .product-preview-heading span {
+    display: none;
+  }
+}
+
+/* --- narrow layout --- */
+
+@container page-section (max-width: 34rem) {
+  .product-preview-titlebar {
+    grid-template-columns: 1fr auto;
+  }
+
+  .product-preview-window-controls,
+  .product-preview-titlebar-actions > svg,
+  .product-preview-progress {
+    display: none;
+  }
+
+  .product-preview-heading {
+    align-items: flex-start;
+  }
+
+  .product-preview-new-instance {
+    font-size: 0;
+  }
+
+  .product-preview-new-instance svg {
+    width: 0.9rem;
+    height: 0.9rem;
+  }
+
+  .product-preview-instances {
+    grid-template-columns: 1fr;
+  }
+
+  .product-preview-instance-topline {
+    margin-bottom: 0.8rem;
+  }
+
+  .product-preview-operation {
+    grid-template-columns: auto 1fr;
+  }
+}
