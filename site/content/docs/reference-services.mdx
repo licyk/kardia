@@ -1,6 +1,7 @@
 ---
 title: "服务与可追溯性"
 description: "Cordis 如何借助 Service 基类、tracker 与可追溯代理，把服务方法内部创建的效应归属到调用方纤程。"
+icon: Server
 ---
 
 本页介绍 `cordis/packages/core/src/service.ts` 与 `utils.ts:113-238`。对应的论文内容是 §5.1.4（上下文访问，见[实现](/docs/concepts-implementation)）与 §6.3（能力，见[讨论与相关工作](/docs/concepts-related-work)）。这一机制在论文中大多是*隐含*的，但在实践中对时间可组合性（temporal composability）至关重要。

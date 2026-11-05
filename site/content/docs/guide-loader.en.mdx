@@ -1,6 +1,7 @@
 ---
 title: "The loader"
 description: "Run plugins from declarative entries: set up the loader and its catalog, drive trees, groups and entries from Rust, include config files with two-way sync, and locate config errors."
+icon: PackageOpen
 ---
 
 The **loader** (`kardia-loader`) keeps a tree of **entries** (a plugin name plus its configuration) in step with live fibers, in both directions: changes to the entries are reconciled into the running fibers, and a plugin that updates or disposes itself is written back to its entry. The **include** plugin (`kardia-include`) grafts the entries of a YAML or JSON file into that tree and keeps the file in sync both ways.

@@ -1,6 +1,7 @@
 ---
 title: "Hot reload"
 description: "Reload guest modules in place with the hmr plugin: configure watch mode, set up a module graph, run reconcile transactions, and understand how failures are handled."
+icon: RefreshCw
 ---
 
 Plugins compiled into the binary can be reconfigured live, but changing their code needs a restart. **Guest plugins** are separate modules that the `hmr` plugin (`kardia-hmr`) can reload in place: when a module changes, the plugins it exports are replaced behind their running fibers, and the rest of the app follows.

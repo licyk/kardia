@@ -1,6 +1,7 @@
 ---
 title: "Concurrency and execution model"
 description: "How kardia reproduces JavaScript's run-to-completion atomicity with one lock per root, critical sections that return actions, and spawned transitions."
+icon: Cpu
 ---
 
 This page is decision **D1** of the [guiding decisions](/docs/development#decisions): a `Send + Sync` core with one state lock per root, in which no user code runs while the lock is held.

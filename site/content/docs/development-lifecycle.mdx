@@ -1,6 +1,7 @@
 ---
 title: "核心数据结构"
 description: "kardia-core 中的标识符、作用域覆盖层、绑定、纤程、目标与已提交视图、IdTable 以及依赖环检测。"
+icon: Database
 ---
 
 `kardia-core` 的核心数据结构：生命周期所依托的状态。纤程（fiber）存放在注册表（registry）的 arena 中，以永不复用的 id 寻址；每一个交叉引用（父纤程、依赖者、已提交视图（committed view））都是 id，而不是指针（[指导决策](/docs/development#decisions)中的决策 **D2**）。推动纤程在各状态间转换的算法（refresh、reload、unload、实例化）位于 API 设计页的[生命周期状态机](/docs/development-design#lifecycle)一节。

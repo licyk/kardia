@@ -1,6 +1,7 @@
 ---
 title: "Revertible effects and fibers"
 description: "Register inverses, write effects with setup, use effect scopes and iteration boundaries, and control a plugin's fiber."
+icon: RotateCcw
 ---
 
 Everything a plugin sets up (listeners, timers, services, child plugins) is an **effect**: a setup paired with its **inverse**, the disposer that reverts it. Effects are registered on the plugin's **fiber**, and when the fiber unloads, every inverse runs. This is what lets you reconfigure, replace or stop any plugin while the app runs without leaking what it acquired.

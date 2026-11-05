@@ -1,6 +1,7 @@
 ---
 title: "Services, events and logging"
 description: "Provide and consume services, attribute calls to their caller, isolate and intercept services, dispatch events and log."
+icon: Network
 ---
 
 A **service** is a value that one plugin provides and other plugins depend on. The runtime tracks who provides what and who depends on what: a plugin that declares a service starts once the service is available, restarts when it is replaced, and stops when it goes away. This page shows how to define, provide and consume services, how calls are attributed to their caller, how isolation and interception change what a context sees, and how to use events and the logger.

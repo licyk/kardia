@@ -1,6 +1,7 @@
 ---
 title: "并发与执行模型"
 description: "kardia 如何用每个根一把锁、返回动作的临界区以及派生的转换任务，重现 JavaScript 的运行至完成原子性。"
+icon: Cpu
 ---
 
 本页是[指导决策](/docs/development#decisions)中的决策 **D1**：一个 `Send + Sync` 的核心，每个根一把状态锁，持锁期间不运行任何用户代码。

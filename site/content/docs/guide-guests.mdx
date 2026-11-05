@@ -1,6 +1,7 @@
 ---
 title: "访客插件"
 description: "编写无需重启应用即可热重载的插件：WASM、动态库与进程三种后端，Rust 访客 SDK，失败行为，以及基于 JSON 的访客 ABI。"
+icon: Container
 ---
 
 **访客插件**（guest plugin）是 [`hmr` 插件](/docs/guide-hot-reload)可以原地重载的独立模块；编译进二进制的插件则不同，修改其代码需要重启。在 `kardia` 二进制加载的配置文件中，任何不是内置插件的条目名都是访客模块路径，相对于配置文件：

@@ -1,6 +1,7 @@
 ---
 title: "Guest plugins"
 description: "Write plugins that hot-reload without restarting the app: the WASM, dylib and process backends, the Rust guest SDK, failure behaviour, and the JSON-based guest ABI."
+icon: Container
 ---
 
 **Guest plugins** are separate modules that the [`hmr` plugin](/docs/guide-hot-reload) can reload in place, unlike plugins compiled into the binary, whose code changes need a restart. In a config file loaded by the `kardia` binary, any entry name that is not a built-in plugin is a guest module path, relative to the config file:

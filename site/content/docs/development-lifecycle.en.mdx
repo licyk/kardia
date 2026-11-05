@@ -1,6 +1,7 @@
 ---
 title: "Core data structures"
 description: "Identifiers, scope overlays, bindings, fibers, targets and committed views, IdTable and dependency-cycle detection in kardia-core."
+icon: Database
 ---
 
 The core data structures of `kardia-core`: the state the lifecycle runs on. Fibers live in a registry arena addressed by never-reused ids, and every cross reference (parent, dependents, committed view) is an id, never a pointer (decision **D2** of the [guiding decisions](/docs/development#decisions)). The algorithms that move a fiber through its states (refresh, reload, unload, instantiation) are on the API design page under [The lifecycle state machine](/docs/development-design#lifecycle).
