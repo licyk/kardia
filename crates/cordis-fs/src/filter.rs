@@ -99,7 +99,8 @@ fn rule(entry: &str) -> Result<Rule> {
     let matcher = match pattern.as_str() {
         // `.` is the watched directory, which every path below it lies in
         "." => None,
-        _ => Some(GlobBuilder::new(&pattern).literal_separator(true).build()?.compile_matcher()),
+        // patterns are `/`-separated everywhere, so `\` escapes on Windows too
+        _ => Some(GlobBuilder::new(&pattern).literal_separator(true).backslash_escape(true).build()?.compile_matcher()),
     };
     Ok(Rule { negated, matcher, base, upward: true })
 }
@@ -165,6 +166,32 @@ mod tests {
         assert!(!filter("docs", true));
         assert!(filter("src/lib/a.rs", false));
         assert!(!filter("src/main.rs", false));
+    }
+
+    #[test]
+    fn selects_the_files_by_glob_patterns_relative_to_the_watched_directory() {
+        let filter = keep(&["lib", "src/**/*.ts", "packages/*", "!**/.*", "!src/log[!0-9].ts"]);
+        for path in ["lib/file.txt", "src/index.ts", "src/deep/index.ts", "src/log1.ts", "packages/a/deep/file.js"] {
+            assert!(admits(&filter, path, false), "{path} is selected");
+        }
+        for path in ["lib/.hidden.txt", "src/index.js", "src/logx.ts", "other.txt"] {
+            assert!(!admits(&filter, path, false), "{path} is not selected");
+        }
+    }
+
+    #[test]
+    fn descends_into_a_directory_whose_name_a_pattern_escapes() {
+        let filter = keep(&["pkg\\[one\\]/*.ts"]);
+        assert!(filter("pkg[one]", true));
+        assert!(admits(&filter, "pkg[one]/file.ts", false));
+        assert!(!admits(&filter, "pkgo/file.ts", false));
+    }
+
+    #[test]
+    fn keeps_no_entry_with_an_empty_filter() {
+        let filter = keep(&[]);
+        assert!(!filter("dir", true));
+        assert!(!admits(&filter, "file.txt", false));
     }
 
     #[test]
