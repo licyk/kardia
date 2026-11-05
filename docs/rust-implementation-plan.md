@@ -105,30 +105,29 @@ cordis-rs/
 └─ docs/
 ```
 
-Crate dependency direction mirrors the TS packages: `core ← timer, logger-console, fs ← loader ← include ← cordis (facade)`; `hmr` depends on `core` (+ `loader` only for tests).
+Crate dependency direction mirrors the TS packages: `core ← timer, logger-console, fs ← loader ← include, hmr ← cordis (facade)`; `hmr` also uses `fs` for its watch mode, and `cordis-guest` depends on none of them.
 
 ### 3.1 External dependencies
 Kept deliberately small; each line says why it is needed.
 
 | Crate | Used by | Purpose |
 |---|---|---|
-| `tokio` (`rt`, `sync`, `time`, `macros`) | core, timer, include | task spawning for transitions, `Notify`/`watch`, timers; `test-util` for paused time in tests |
-| `futures` | core | `BoxFuture`, `Shared` (inertia handles), `join_all`, `catch_unwind` |
-| `parking_lot` | core, loader | the per-root state lock (non-poisoning, small) |
-| `smallvec` | core | small inline vectors for targets / committed views |
-| `thiserror` | all | structured error enums |
-| `serde`, `serde_json` | core, loader, include | configuration values, interception metadata |
+| `tokio` (`rt`, `sync`, `time`, `macros`) | all runtime crates | task spawning for transitions, `Notify`/`watch`, timers; `rt-multi-thread` + `signal` in the binary, `test-util` for paused time in tests |
+| `futures` | core, timer, loader, include, hmr, facade | `BoxFuture`, `Shared` (inertia handles), `join_all`, `catch_unwind` |
+| `parking_lot` | core, timer, logger-console, fs, loader, include, hmr | the per-root state lock (non-poisoning, small) and other short critical sections |
+| `thiserror` | core, timer, loader, include | structured error types |
+| `serde`, `serde_json` | core, logger-console, loader, include, hmr, guest, facade | configuration values, interception metadata, the guest ABI |
 | `serde_path_to_error` | core | validation issues with paths (Standard Schema analogue) |
-| `indexmap` | loader, include | ordered entry options |
-| YAML parser with spans and tags (`saphyr` family) | include | `!!js` tags, source locations |
-| `tempfile` | include | atomic temp-file writes |
+| `indexmap` | core, include, hmr | ordered maps: entry options, the journal, loaded modules |
+| `saphyr-parser` | include | YAML with spans and tags: `!!js`, source locations |
+| `chrono` | logger-console | timestamps in the time template |
 | `notify`, `globset` | fs | file watching, glob filters |
-| `anstream` / `anstyle` | logger-console | coloured output |
+| `syn`, `quote`, `proc-macro2` | macros | the `#[derive(Service)]` / `#[plugin]` proc macros |
 | `proptest` (dev) | core | model-based tests of the metatheory |
-| `trybuild` (dev, Phase 6) | macros | compile-fail tests for undeclared access |
-| `wasmtime` / `libloading` (Phase 7, optional) | hmr backends | dynamic modules |
+| `trybuild` (dev) | macros | compile-fail tests for undeclared access |
+| `wasmtime` / `libloading` (features `wasm` / `dylib`) | hmr | the WASM and dylib module backends |
 
-Not used: `async-trait` (return-position `impl Future` in traits is stable), `anyhow` in library crates (only in examples/binaries), `inventory`/`linkme` (explicit `Catalog::register` is enough).
+Not used: `async-trait` (return-position `impl Future` in traits is stable), `anyhow` (`cordis_core::Error` also serves the binary and the examples), `inventory`/`linkme` (explicit `Catalog::register` is enough), `smallvec` (plain `Vec`s suffice), `tempfile` (the atomic write is a temp file in the same directory plus a rename, with `std`), `anstream`/`anstyle` (console colours are plain ANSI escapes).
 
 ---
 
@@ -460,7 +459,7 @@ Internal events: `PluginInserted/Removed`, `StatusChanged { fiber, old, new }`, 
 | Crate | Port of | Rust building blocks |
 |---|---|---|
 | `cordis-timer` | `plugin-timer` | `tokio::time::{sleep, interval}`, `JoinHandle::abort` as disposers; `timeout(d) -> Result<(), Disposed>` future; `interval(d) -> impl Stream`; `throttle/debounce` handles |
-| `cordis-logger-console` | `plugin-logger-console` | `anstream`/`anstyle` colours, label alignment, level map |
+| `cordis-logger-console` | `plugin-logger-console` | ANSI colours, label alignment, level map |
 | `cordis-fs` | `plugin-fs-node` | `notify` (watch parent dir for single files), `globset` + ported last-match-wins/ancestor predicate |
 
 ---

@@ -237,7 +237,6 @@ version = "0.1.0"
 dependencies = [
  "cordis-core",
  "futures",
- "indexmap",
  "parking_lot",
  "serde",
  "serde_json",
@@ -265,7 +264,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "serde",
- "serde_json",
  "syn 2.0.119",
  "tokio",
  "trybuild",

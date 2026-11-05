@@ -18,7 +18,6 @@ proc-macro2.workspace = true
 cordis-core.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 serde.workspace = true
-serde_json.workspace = true
 trybuild.workspace = true
 
 [lints]
