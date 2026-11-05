@@ -41,14 +41,14 @@ jobs:
     name: Rust
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7.0.1
       # pinned: the compile-error snapshots of kardia-macros depend on the compiler version
       - uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: rustfmt, clippy
           # the rust guest test also builds its fixture as a WASM module
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.3
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Architecture (lib.rs / mod.rs only declare and re-export modules)
