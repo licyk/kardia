@@ -1,6 +1,7 @@
 //! Provides `greeter`, whose view is `{ version, input }` and whose calls
-//! answer `{ version, calls, request }`; `fail` fails, `panic` panics and
-//! `exit` ends the process.
+//! answer `{ version, calls, request }`; `fail` fails, `panic` panics,
+//! `exit` ends the process and `print` writes to stdout; `view` and `invoke`
+//! forward their arguments to the host.
 
 use cordis_guest::{Error, Guest, Host, Level, Map, Meta, Request, Result, Value, json};
 
@@ -24,9 +25,19 @@ impl Guest for Greeter {
         Ok(Greeter { calls: 0 })
     }
 
-    fn call(&mut self, _: &Host, request: Request) -> Result<Value> {
+    fn call(&mut self, host: &Host, request: Request) -> Result<Value> {
         self.calls += 1;
+        let args = &request.args;
         match request.method.as_str() {
+            "view" => host.view(args.as_str().unwrap_or_default()),
+            "invoke" => {
+                let text = |key: &str| args[key].as_str().unwrap_or_default().to_string();
+                host.invoke(&text("key"), &text("method"), &args["args"])
+            }
+            "print" => {
+                println!("not a protocol message");
+                Ok(json!(null))
+            }
             "fail" => Err(Error::msg("greeter refuses")),
             "panic" => panic!("greeter panics"),
             "exit" => std::process::exit(3),

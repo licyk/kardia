@@ -38,7 +38,7 @@ impl Code for ProcessCode {
             .map_err(|error| Error::msg(format!("cannot start guest {}: {error}", self.0)))?;
         let stdin = child.stdin.take().expect("piped");
         let stdout = BufReader::new(child.stdout.take().expect("piped"));
-        Ok(Box::new(ProcessInstance { child, stdin, stdout, host }))
+        Ok(Box::new(ProcessInstance { child, stdin, stdout, host, broken: false }))
     }
 }
 
@@ -47,6 +47,10 @@ struct ProcessInstance {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     host: Host,
+    /// Out of step with the guest after a failed exchange: what it sent
+    /// before it was killed may still be buffered, and must not be read as
+    /// the replies of a later call.
+    broken: bool,
 }
 
 impl Instance for ProcessInstance {
@@ -55,6 +59,20 @@ impl Instance for ProcessInstance {
     }
 
     fn call(&mut self, export: Export) -> Result<i32> {
+        if self.broken {
+            return Err(exited());
+        }
+        let result = self.exchange(export);
+        if result.is_err() {
+            self.broken = true;
+            let _ = self.child.kill();
+        }
+        result
+    }
+}
+
+impl ProcessInstance {
+    fn exchange(&mut self, export: Export) -> Result<i32> {
         let input = match self.host.message.as_slice() {
             [] => Value::Null,
             message => serde_json::from_slice(message)?,
@@ -92,9 +110,7 @@ impl Instance for ProcessInstance {
             self.send(&reply)?;
         }
     }
-}
 
-impl ProcessInstance {
     fn send(&mut self, message: &Value) -> Result<()> {
         writeln!(self.stdin, "{message}").and_then(|()| self.stdin.flush()).map_err(|_| exited())
     }

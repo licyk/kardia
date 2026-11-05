@@ -177,6 +177,44 @@ async fn runs_a_process_plugin() {
     assert!(app.logs().contains(&"greeter v1 applied".to_string()));
 }
 
+/// The host calls a guest makes during a call, through either transport.
+fn check_host_calls(app: &App) {
+    let greeter = app.service("greeter");
+    assert_eq!(greeter.call("view", json!("greeter")).unwrap()["version"], "v1");
+    let error = greeter.call("view", json!("missing")).unwrap_err().to_string();
+    assert!(error.contains("missing"), "{error}");
+    let request = json!({ "key": "greeter", "method": "hello", "args": null });
+    let error = greeter.call("invoke", request).unwrap_err().to_string();
+    assert_eq!(error, "re-entrant call into a guest instance");
+}
+
+#[tokio::test]
+async fn a_process_guest_calls_the_host() {
+    let dir = scratch("process-host-calls");
+    let app = App::setup(ProcessSource).await;
+    app.load(&process(&dir, "v1"), json!({})).await;
+    check_host_calls(&app);
+}
+
+#[tokio::test]
+async fn a_dylib_guest_calls_the_host() {
+    let dir = scratch("dylib-host-calls");
+    let app = App::setup(DylibSource).await;
+    app.load(&dylib(&dir, "v1"), json!({})).await;
+    check_host_calls(&app);
+}
+
+#[tokio::test]
+async fn a_process_that_breaks_the_protocol_fails_its_later_calls() {
+    let dir = scratch("process-protocol");
+    let app = App::setup(ProcessSource).await;
+    app.load(&process(&dir, "v1"), json!({})).await;
+    let greeter = app.service("greeter");
+    let error = greeter.call("print", json!(null)).unwrap_err().to_string();
+    assert!(error.starts_with("invalid message from guest"), "{error}");
+    assert_eq!(greeter.call("hello", json!(null)).unwrap_err().to_string(), "the guest process exited");
+}
+
 #[tokio::test]
 async fn reloads_a_replaced_executable_by_respawning_it() {
     let dir = scratch("process-reload");
