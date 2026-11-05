@@ -125,7 +125,8 @@ jobs:
   github-release:
     name: GitHub release
     needs: [plan, publish]
-    if: github.ref_type == 'tag'
+    # without a status function, the skipped `checks` job upstream skips this one too
+    if: ${{ !cancelled() && github.ref_type == 'tag' && needs.publish.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
