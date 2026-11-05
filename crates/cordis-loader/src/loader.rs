@@ -4,9 +4,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use cordis_core::{
-    Check, ConfigCommitted, Context, Error, Fiber, FiberId, FiberState, Inject, Key, Overlay, PathSegment, PluginDef,
-    PluginRemoved, RealmId, Result, Service, StatusChanged, merge_shallow,
+    Check, ConfigCommitted, Context, EffectHandle, Error, Fiber, FiberId, FiberState, IdTable, Inject, Key, Overlay,
+    PathSegment, PluginDef, PluginRemoved, RealmId, Result, Service, StatusChanged, merge_shallow,
 };
+use futures::FutureExt;
 use futures::future::{BoxFuture, Shared};
 use parking_lot::Mutex;
 use serde_json::{Map, Value};
@@ -49,7 +50,14 @@ pub(crate) struct LoaderState {
     pub(crate) outer_fibers: HashMap<FiberId, EntryId>,
     /// Shared realms by label, then key.
     pub(crate) global_realms: HashMap<String, HashMap<Key, RealmId>>,
+    pub(crate) patch_hooks: IdTable<PatchHook>,
 }
+
+/// The rest of a [`Loader::on_patch_context`] chain: awaiting it patches the
+/// entry's context and reconciles its running fibers.
+pub type PatchNext = BoxFuture<'static, Result<()>>;
+
+pub(crate) type PatchHook = Arc<dyn Fn(EntryHandle, PatchNext) -> BoxFuture<'static, Result<()>> + Send + Sync>;
 
 pub(crate) struct TreeData {
     pub(crate) ctx: Context,
@@ -302,6 +310,29 @@ impl Loader {
     /// The loader's own (in-memory) tree.
     pub fn tree(&self) -> TreeHandle {
         TreeHandle { loader: self.clone(), id: self.0.root_tree }
+    }
+
+    /// Wraps patching the context of an entry (`loader/patch-context`), which
+    /// happens when an entry starts and when its options change in place. The
+    /// hook gets the entry and the rest of the chain, which it must await; it
+    /// may act before and after it. Hooks run in registration order, inside
+    /// the loader's own isolation step, and end with `ctx`'s fiber.
+    pub fn on_patch_context<F, Fut>(&self, ctx: &Context, hook: F) -> Result<EffectHandle>
+    where
+        F: Fn(EntryHandle, PatchNext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        let hook: PatchHook = Arc::new(move |entry, next| hook(entry, next).boxed());
+        let loader = Arc::downgrade(&self.0);
+        ctx.effect_sync("loader.on_patch_context()", |scope| {
+            let id = self.with(|st| st.patch_hooks.insert(hook));
+            scope.defer_fn(move || {
+                if let Some(loader) = loader.upgrade() {
+                    drop(Loader(loader).with(|st| st.patch_hooks.remove(id)));
+                }
+            });
+            Ok(())
+        })
     }
 
     pub fn root(&self) -> GroupHandle {
@@ -596,6 +627,11 @@ impl LoaderState {
 }
 
 impl EntryHandle {
+    /// Starts the entry if it is not running, or joins its pending start.
+    pub async fn init(&self) {
+        self.loader.init(self.id, None).await;
+    }
+
     /// The composite id (`include:inner`).
     pub fn id(&self) -> String {
         self.loader.with(|st| st.composite_id(self.id))

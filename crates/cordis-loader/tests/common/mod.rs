@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use cordis_core::{Context, Fiber, PluginDef};
+use cordis_core::{Context, EffectHandle, Fiber, PluginDef};
 use cordis_loader::{Catalog, EntryChange, Loader, Resolver, TreeBackend, builtins};
 use futures::FutureExt;
 use futures::future::BoxFuture;
@@ -102,6 +102,37 @@ impl Mock {
         *self.hold.lock() =
             Some(Hold { name: name.into(), entered: entered.clone(), release: release.clone(), fail, skip });
         (entered, release)
+    }
+
+    /// Holds the context patch (`loader/patch-context`) of the entries whose
+    /// options `select` picks, before or `after` the rest of the patch;
+    /// returns the `entered` and `release` gates and the hook.
+    pub fn hold_patch(
+        &self,
+        after: bool,
+        select: impl Fn(&Value) -> bool + Send + Sync + 'static,
+    ) -> (Gate, Gate, EffectHandle) {
+        let (entered, release) = (Gate::new(), Gate::new());
+        let (e, r) = (entered.clone(), release.clone());
+        let hook = self
+            .loader
+            .on_patch_context(&self.root, move |entry, next| {
+                let (entered, release, held) = (e.clone(), r.clone(), select(&entry.options()));
+                async move {
+                    if held && !after {
+                        entered.open();
+                        release.wait().await;
+                    }
+                    next.await?;
+                    if held && after {
+                        entered.open();
+                        release.wait().await;
+                    }
+                    Ok(())
+                }
+            })
+            .unwrap();
+        (entered, release, hook)
     }
 
     pub fn mock(&self, name: &str, def: PluginDef) -> PluginDef {

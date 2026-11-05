@@ -525,6 +525,84 @@ async fn does_not_rebuild_an_entry_removed_during_unload() {
 }
 
 #[tokio::test]
+async fn waits_for_a_second_re_enable_init_before_deciding_whether_to_rebuild() {
+    let (app, gate, entry) = gate_app().await;
+    let previous = entry.inner_fiber().unwrap();
+    let (entered, release) = gate.arm();
+    let module = app.files.write("plugin-disabled-hmr.rs", plugin_disabled_hmr(&gate, "second-init"));
+    let reloaded = tokio::spawn(app.reconcile(&module));
+    within(entered.notified()).await;
+
+    let (first_hold, first_held) = watch::channel(false);
+    let (second_hold, second_held) = watch::channel(false);
+    let patches = Arc::new(AtomicUsize::new(0));
+    let hook = {
+        let (patches, live) = (patches.clone(), entry.id());
+        app.loader
+            .on_patch_context(&app.root, move |patched, next| {
+                let held = match patched.id() == live {
+                    true => match patches.fetch_add(1, SeqCst) + 1 {
+                        1 => Some(first_held.clone()),
+                        2 => Some(second_held.clone()),
+                        _ => None,
+                    },
+                    false => None,
+                };
+                async move {
+                    if let Some(mut held) = held {
+                        let _ = held.wait_for(|released| *released).await;
+                    }
+                    next.await
+                }
+            })
+            .unwrap()
+    };
+    within(app.loader.update("live", json!({ "disabled": true }), None, None)).await.unwrap();
+    let loader = app.loader.clone();
+    let updating = tokio::spawn(async move { loader.update("live", json!({ "disabled": false }), None, None).await });
+    eventually(|| patches.load(SeqCst) == 1).await;
+    // Joining through `init()` observes its completion before the outer
+    // update. TS has started the plugin's apply by the time it continues and
+    // applies the disable synchronously; here the test waits for both, so
+    // that the enable is a second start.
+    let reenabled = tokio::spawn({
+        let (entry, loader) = (entry.clone(), app.loader.clone());
+        async move {
+            entry.init().await;
+            let installed = entry.inner_fiber();
+            if let Some(installed) = &installed {
+                let _ = installed.settled().await;
+            }
+            loader.update("live", json!({ "disabled": true }), None, None).await.unwrap();
+            let enabled = loader.update("live", json!({ "disabled": false }), None, None).await;
+            (installed, enabled)
+        }
+    });
+
+    release.send(true).unwrap();
+    // hmr was already waiting for this unload before the test joins it
+    let _ = within(previous.settled()).await;
+    first_hold.send(true).unwrap();
+    eventually(|| patches.load(SeqCst) == 2).await;
+    second_hold.send(true).unwrap();
+    within(updating).await.unwrap().unwrap();
+    let (installed, enabled) = within(reenabled).await.unwrap();
+    enabled.unwrap();
+    within(reloaded).await.unwrap();
+    if let Some(installed) = installed {
+        let _ = within(installed.settled()).await;
+    }
+    app.loader.settled().await;
+    hook.dispose().await.unwrap();
+
+    assert_eq!(patches.load(SeqCst), 2);
+    assert_eq!(app.query("value"), Some(json!("second-init")));
+    // one per re-enable, none from hmr
+    assert_eq!(gate.applies.load(SeqCst), 2);
+    assert_eq!(gate.live(), vec![entry.inner_fiber().unwrap()]);
+}
+
+#[tokio::test]
 async fn rebuilds_a_child_of_an_active_host_that_reused_the_plugin() {
     let (app, gate, entry) = gate_app().await;
     let previous = entry.inner_fiber().unwrap();

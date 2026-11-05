@@ -734,6 +734,51 @@ async fn drops_entries_removed_or_disabled_during_import() {
     }
 }
 
+#[tokio::test]
+async fn drops_entries_removed_or_disabled_during_patch() {
+    let fx = fixture().await;
+    fx.mock.read(json!([settings(json!({}))])).await;
+    for inject in [None, Some(json!(["settings"]))] {
+        for action in ["remove", "disable"] {
+            let label = format!("inject: {inject:?}, action: {action}");
+            let options = || match &inject {
+                Some(inject) => worker(json!({ "inject": inject })),
+                None => worker(json!({})),
+            };
+            let (entered, release, hook) = fx.mock.hold_patch(false, |options| options["id"] == "worker");
+            let loader = fx.mock.loader.clone();
+            let creating = tokio::spawn({
+                let options = options();
+                async move { loader.create(options, None, None).await }
+            });
+            entered.wait().await;
+            let entry = fx.mock.loader.resolve("worker").unwrap();
+            match action {
+                "remove" => fx.mock.loader.remove("worker").unwrap(),
+                _ => fx.mock.loader.update("worker", json!({ "disabled": true }), None, None).await.unwrap(),
+            }
+            release.open();
+            creating.await.unwrap().unwrap();
+            hook.dispose().await.unwrap();
+            fx.mock.loader.settled().await;
+            assert!(entry.outer_fiber().is_none() && entry.inner_fiber().is_none(), "{label}");
+            assert_eq!(calls(&fx.worker), 0, "{label}");
+
+            // a dropped init does not block a later create or re-enable
+            match action {
+                "remove" => drop(fx.mock.loader.create(options(), None, None).await.unwrap()),
+                _ => fx.mock.loader.update("worker", json!({ "disabled": false }), None, None).await.unwrap(),
+            }
+            fx.mock.loader.settled().await;
+            assert_eq!(fx.mock.fiber("worker").state(), FiberState::Active, "{label}");
+            assert_eq!(calls(&fx.worker), 1, "{label}");
+            fx.mock.loader.remove("worker").unwrap();
+            fx.mock.loader.settled().await;
+            fx.worker.calls.store(0, Ordering::SeqCst);
+        }
+    }
+}
+
 // --- entry evaluation boundaries ---
 
 #[tokio::test]

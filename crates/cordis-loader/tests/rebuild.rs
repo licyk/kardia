@@ -111,6 +111,26 @@ async fn uses_the_new_name_when_it_changes_during_the_import() {
 }
 
 #[tokio::test]
+async fn uses_the_new_name_when_it_changes_during_the_patch() {
+    let fx = fixture().await;
+    let (entered, release, _hook) = fx.mock.hold_patch(false, |options| options["name"] == "a");
+    let root = fx.mock.loader.root();
+    let creating = tokio::spawn({
+        let root = root.clone();
+        async move { root.update(vec![json!({ "id": "x", "name": "a" })]).await }
+    });
+    entered.wait().await;
+    let updating = tokio::spawn({
+        let root = root.clone();
+        async move { root.update(vec![json!({ "id": "x", "name": "b" })]).await }
+    });
+    release.open();
+    let _ = tokio::join!(creating, updating);
+    fx.mock.loader.settled().await;
+    assert_eq!((fx.a.take().0, fx.b.take().0), (0, 1));
+}
+
+#[tokio::test]
 async fn joins_a_second_rename_while_the_first_disposal_is_pending() {
     for inject in [None, Some(&["settings"][..])] {
         let fx = fixture().await;
@@ -342,6 +362,37 @@ async fn uses_the_latest_name_during_a_pending_import() {
         assert_eq!((b.take().0, c.take().0), (0, 1), "fail: {fail}");
         assert_eq!(entry.inner_fiber().unwrap().runtime(), Some(c_def.key()));
     }
+}
+
+#[tokio::test]
+async fn uses_the_latest_name_during_a_context_patch() {
+    let mock = Mock::boot().await;
+    mock.mock("a", noop());
+    let (b, c) = (Counter::default(), Counter::default());
+    mock.mock("b", b.def());
+    let c_def = mock.mock("c", c.def());
+    mock.read(json!([{ "id": "x", "name": "a" }])).await;
+    let (entered, release, _hook) = mock.hold_patch(true, |options| options["name"] == "b");
+    let root = mock.loader.root();
+    let first = tokio::spawn({
+        let root = root.clone();
+        async move { root.update(vec![json!({ "id": "x", "name": "b" })]).await }
+    });
+    entered.wait().await;
+    let second = tokio::spawn({
+        let root = root.clone();
+        async move { root.update(vec![json!({ "id": "x", "name": "c" })]).await }
+    });
+    settle().await;
+    assert!(mock.loader.is_busy());
+    release.open();
+    let _ = tokio::join!(first, second);
+    mock.loader.settled().await;
+    let entry = mock.loader.resolve("x").unwrap();
+    assert_eq!(entry.options()["name"], json!("c"));
+    assert_eq!((b.take().0, c.take().0), (0, 1));
+    assert_eq!(entry.inner_fiber().unwrap().runtime(), Some(c_def.key()));
+    assert!(entry.options().get("disabled").is_none());
 }
 
 #[tokio::test]

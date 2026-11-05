@@ -17,7 +17,7 @@ mod realm;
 pub use catalog::{Catalog, ModuleNotFound, Resolver};
 pub use entry::OUTER_TAG;
 pub use group::{GROUP_TAG, group_plugin};
-pub use loader::{EntryChange, EntryHandle, GroupHandle, Loader, MemoryTree, TreeBackend, TreeHandle};
+pub use loader::{EntryChange, EntryHandle, GroupHandle, Loader, MemoryTree, PatchNext, TreeBackend, TreeHandle};
 pub use locate::{Location, value_at};
 pub use options::{
     Disabled, EXPR_KEY, EntryOptions, EntryValidationError, IsolateLabel, SEP, diff_keys, expr_source, is_expr, merge,

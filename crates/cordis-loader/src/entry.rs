@@ -2,16 +2,17 @@
 //! the reference code is one critical section on the loader state; after
 //! every `await` the entry re-checks that it is still current.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use cordis_core::{Context, Disposal, Error, Fiber, FiberState, PathSegment, PluginDef, Result};
+use cordis_core::{Context, Disposal, Error, Fiber, FiberState, Key, PathSegment, PluginDef, RealmId, Result};
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use serde_json::Value;
 
 use crate::expr::{evaluate_at, interpolate_at, truthy};
-use crate::loader::{EntryId, Loader, LoaderState};
+use crate::loader::{EntryHandle, EntryId, Loader, LoaderState, PatchHook};
 use crate::options::{Disabled, EntryOptions, diff_keys};
 
 /// Tag of the outer fibers that hold an entry's `inject`.
@@ -293,6 +294,33 @@ impl Loader {
     /// reconciles the running fibers with the changed option keys.
     pub(crate) async fn patch_context(&self, entry: EntryId, diff: Vec<String>) -> Result<()> {
         let (table, diffs) = self.isolate_prepare(entry);
+        let hooks: Vec<PatchHook> = self.with(|st| st.patch_hooks.values().cloned().collect());
+        let result = self.patch_chain(entry, &hooks, table, diff).await;
+        self.isolate_finish(diffs);
+        result
+    }
+
+    /// The `on_patch_context` hooks, outermost first, around the patch itself.
+    fn patch_chain(
+        &self,
+        entry: EntryId,
+        hooks: &[PatchHook],
+        table: HashMap<Key, RealmId>,
+        diff: Vec<String>,
+    ) -> BoxFuture<'static, Result<()>> {
+        match hooks.split_first() {
+            Some((hook, rest)) => {
+                hook(EntryHandle { loader: self.clone(), id: entry }, self.patch_chain(entry, rest, table, diff))
+            }
+            None => {
+                let this = self.clone();
+                async move { this.patch_fibers(entry, table, diff).await }.boxed()
+            }
+        }
+    }
+
+    /// Moves the entry's context under its parent's and reconciles its fibers.
+    async fn patch_fibers(&self, entry: EntryId, table: HashMap<Key, RealmId>, diff: Vec<String>) -> Result<()> {
         let Some((outer, inner_live, ctx)) = self.with(|st| {
             let parent = st.groups[&st.entries.get(&entry)?.parent].ctx.clone();
             let data = st.entries.get_mut(&entry)?;
@@ -302,16 +330,14 @@ impl Loader {
         }) else {
             return Ok(());
         };
-        let result = match outer {
+        match outer {
             Some(outer) if outer.state() == FiberState::Active => {
                 self.reconcile(entry, outer.context().clone(), &diff).await
             }
             Some(_) => Ok(()),
             None if inner_live => self.reconcile(entry, ctx, &diff).await,
             None => Ok(()),
-        };
-        self.isolate_finish(diffs);
-        result
+        }
     }
 
     async fn reconcile(&self, entry: EntryId, ctx: Context, diff: &[String]) -> Result<()> {
