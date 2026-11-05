@@ -1,9 +1,12 @@
 //! Port of `packages/hmr/tests/reconcile.spec.ts` against an in-memory module source.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::Ordering::SeqCst;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::time::{Duration, Instant};
 
 use cordis_core::{Context, Error, Event, FiberState, Inject, PluginDef, Result, Svc};
 use cordis_hmr::{Exports, Hmr, HmrExt, Imports, ModuleCode, ModuleGraph, ModuleSource};
@@ -34,10 +37,25 @@ fn path(name: &str) -> String {
 
 impl Files {
     fn write(&self, name: &str, code: ModuleCode) -> String {
-        let id = path(name);
+        self.insert(path(name), code)
+    }
+
+    fn insert(&self, id: String, code: ModuleCode) -> String {
         self.0.lock().insert(id.clone(), code);
         id
     }
+}
+
+/// A plugin answering `Query(name)` with `value`.
+fn answering(name: &'static str, value: Value) -> PluginDef {
+    PluginDef::new(move |ctx, _| {
+        let value = value.clone();
+        async move {
+            ctx.on(move |query: &Query| (query.0 == name).then(|| value.clone()))?;
+            Ok(())
+        }
+    })
+    .name(name)
 }
 
 /// A plugin answering `Query(name)` with a value computed from its imports.
@@ -48,22 +66,33 @@ fn plugin_with(
     configure: impl Fn(PluginDef) -> PluginDef + Send + Sync + 'static,
 ) -> ModuleCode {
     let deps: Vec<String> = deps.iter().map(|dep| path(dep)).collect();
-    ModuleCode::new(deps, move |imports| {
-        let value = value(imports);
-        let def = PluginDef::new(move |ctx, _| {
-            let value = value.clone();
-            async move {
-                ctx.on(move |query: &Query| (query.0 == name).then(|| value.clone()))?;
-                Ok(())
-            }
-        })
-        .name(name);
-        Ok(Exports::Plugin(configure(def)))
-    })
+    ModuleCode::new(deps, move |imports| Ok(Exports::Plugin(configure(answering(name, value(imports))))))
 }
 
 fn plugin(name: &'static str, value: &'static str) -> ModuleCode {
     plugin_with(name, &[], move |_| json!(value), |def| def)
+}
+
+/// Like [`plugin`], also running `body` when applied.
+fn plugin_then<Fut>(
+    name: &'static str,
+    value: &'static str,
+    body: impl Fn(Context) -> Fut + Clone + Send + Sync + 'static,
+) -> ModuleCode
+where
+    Fut: Future<Output = Result<()>> + Send + 'static,
+{
+    ModuleCode::new(vec![], move |_| {
+        let body = body.clone();
+        let def = PluginDef::new(move |ctx, _| {
+            let body = body.clone();
+            async move {
+                ctx.on(move |query: &Query| (query.0 == name).then(|| json!(value)))?;
+                body(ctx).await
+            }
+        });
+        Ok(Exports::Plugin(def.name(name)))
+    })
 }
 
 fn dependent(name: &'static str, dep: &'static str) -> ModuleCode {
@@ -75,8 +104,28 @@ fn value(value: Value) -> ModuleCode {
     ModuleCode::new(vec![], move |_| Ok(Exports::Value(value.clone())))
 }
 
+/// A module exporting the value of `dep`.
+fn reexport(dep: &str) -> ModuleCode {
+    let id = path(dep);
+    ModuleCode::new(vec![id.clone()], move |imports| Ok(Exports::Value(imports.value(&id).unwrap_or_default())))
+}
+
+/// A module whose every evaluation exports a new value, so that two imports
+/// see the same value only if they share one evaluation.
+fn counted(count: &Arc<AtomicUsize>) -> ModuleCode {
+    let count = count.clone();
+    ModuleCode::new(vec![], move |_| Ok(Exports::Value(json!(count.fetch_add(1, SeqCst) + 1))))
+}
+
 fn throws(deps: &[&str], message: &'static str) -> ModuleCode {
     ModuleCode::new(deps.iter().map(|dep| path(dep)).collect(), move |_| Err(Error::msg(message)))
+}
+
+fn imported(graph: &ModuleGraph, id: &str) -> Result<Value> {
+    match graph.import(id)? {
+        Exports::Value(value) => Ok(value),
+        _ => Err(Error::msg(format!("{id} does not export a value"))),
+    }
 }
 
 struct App {
@@ -121,21 +170,17 @@ impl App {
 #[tokio::test]
 async fn replaces_an_entry_plugin_in_place() {
     let app = App::setup().await;
-    let disposed = Arc::new(Mutex::new(false));
+    let disposed = Arc::new(AtomicBool::new(false));
     let d = disposed.clone();
     let id = app
         .load(
             "entry.rs",
-            ModuleCode::new(vec![], move |_| {
+            plugin_then("entry", "v1", move |ctx| {
                 let d = d.clone();
-                Ok(Exports::Plugin(PluginDef::new(move |ctx, _| {
-                    let d = d.clone();
-                    async move {
-                        ctx.on(|query: &Query| (query.0 == "entry").then(|| json!("v1")))?;
-                        ctx.on_dispose(move || *d.lock() = true)?;
-                        Ok(())
-                    }
-                })))
+                async move {
+                    ctx.on_dispose(move || d.store(true, SeqCst))?;
+                    Ok(())
+                }
             }),
         )
         .await;
@@ -148,7 +193,7 @@ async fn replaces_an_entry_plugin_in_place() {
     assert_eq!(result.settled_fibers, vec![inner.clone()]);
     assert_eq!(inner.state(), FiberState::Active);
     assert!(result.import_failures.is_empty());
-    assert!(*disposed.lock());
+    assert!(disposed.load(SeqCst));
     // the entry keeps its fiber, which now runs the new plugin
     assert_eq!(entry.inner_fiber(), Some(inner));
     assert!(!entry.is_disabled());
@@ -171,7 +216,7 @@ async fn imports_a_module_again_after_it_failed_in_an_aborted_attempt() {
 }
 
 #[tokio::test]
-async fn replaces_a_service_and_its_consumers_follow() {
+async fn replaces_a_service() {
     let app = App::setup().await;
     let service = |version: &'static str| {
         ModuleCode::new(vec![], move |_| {
@@ -242,7 +287,7 @@ async fn replaces_the_inner_fiber_of_an_entry_with_an_injection_scope_in_place()
 }
 
 #[tokio::test]
-async fn replaces_the_plugins_below_a_directory_root_only() {
+async fn replaces_the_plugins_below_a_directory_root() {
     let app = App::setup().await;
     app.files.write("root/dep.rs", value(json!("v1")));
     app.load("root-dependent.rs", dependent("root", "root/dep.rs")).await;
@@ -259,19 +304,26 @@ async fn replaces_the_plugins_below_a_directory_root_only() {
 }
 
 #[tokio::test]
-async fn rejects_relative_roots_and_the_error_of_the_callback() {
+async fn rejects_a_relative_path_as_a_root() {
     let app = App::setup().await;
-    let id = app.load("callback.rs", plugin("callback", "v1")).await;
-    app.files.write("callback.rs", plugin("callback", "v2"));
-    assert!(app.reconcile(&["./callback.rs"]).await.is_err());
-    let error = app.hmr.reconcile(|| async { Err(Error::msg("callback failed")) }).await.unwrap_err();
-    assert_eq!(error.to_string(), "callback failed");
-    assert_eq!(app.query("callback"), Some(json!("v1")));
-    let _ = id;
+    app.load("relative.rs", plugin("relative", "v1")).await;
+    app.files.write("relative.rs", plugin("relative", "v2"));
+    assert!(app.reconcile(&["./relative.rs"]).await.is_err());
+    assert_eq!(app.query("relative"), Some(json!("v1")));
 }
 
 #[tokio::test]
-async fn runs_the_callback_inside_the_transaction_and_transactions_one_at_a_time() {
+async fn rejects_with_the_error_of_the_callback() {
+    let app = App::setup().await;
+    app.load("callback.rs", plugin("callback", "v1")).await;
+    app.files.write("callback.rs", plugin("callback", "v2"));
+    let error = app.hmr.reconcile(|| async { Err(Error::msg("callback failed")) }).await.unwrap_err();
+    assert_eq!(error.to_string(), "callback failed");
+    assert_eq!(app.query("callback"), Some(json!("v1")));
+}
+
+#[tokio::test]
+async fn runs_the_callback_inside_the_transaction() {
     let app = App::setup().await;
     let order = Arc::new(Mutex::new(Vec::new()));
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
@@ -349,24 +401,39 @@ async fn refreshes_a_disabled_plugin_for_when_it_is_enabled_again() {
 async fn keeps_the_metadata_of_an_entry_that_re_exports_the_changed_plugin() {
     let app = App::setup().await;
     app.root.provide_as("reconcileGate", ()).unwrap();
-    let implementation = app.files.write("reexport-impl.rs", plugin("reexport", "v1"));
+    let reexported = |version: &'static str| {
+        ModuleCode::new(vec![], move |_| {
+            Ok(Exports::Plugin(PluginDef::new(move |ctx, config| async move {
+                ctx.on(move |query: &Query| {
+                    (query.0 == "reexport").then(|| json!({ "version": version, "config": config.clone() }))
+                })?;
+                Ok(())
+            })))
+        })
+    };
+    let implementation = app.files.write("reexport-impl.rs", reexported("v1"));
     let impl_id = implementation.clone();
     let entry = app.files.write(
         "reexport-entry.rs",
         ModuleCode::new(vec![impl_id.clone()], move |imports| {
             let Some(Exports::Plugin(def)) = imports.get(&impl_id) else { return Err(Error::msg("no plugin")) };
-            Ok(Exports::Plugin(def.inject(Inject::new().with("reconcileGate"))))
+            let def = def.inject(Inject::new().with("reconcileGate")).validate_with(|config| {
+                let mut config = config.clone();
+                config["validated"] = json!(true);
+                Ok(config)
+            });
+            Ok(Exports::Plugin(def))
         }),
     );
     let Exports::Plugin(original) = app.graph.import(&entry).unwrap() else { panic!("a plugin") };
     app.root.plugin_def(&original, json!({})).unwrap().settled().await.unwrap();
 
-    app.files.write("reexport-impl.rs", plugin("reexport", "v2"));
+    app.files.write("reexport-impl.rs", reexported("v2"));
     let result = app.reconcile(&[&implementation]).await.unwrap();
     assert_eq!(result.settled_fibers.len(), 1);
     let keys: Vec<_> = result.settled_fibers[0].inject().keys().map(ToString::to_string).collect();
     assert_eq!(keys, vec!["reconcileGate"]);
-    assert_eq!(app.query("reexport"), Some(json!("v2")));
+    assert_eq!(app.query("reexport"), Some(json!({ "version": "v2", "config": { "validated": true } })));
     // the entry module is refreshed as well
     let Exports::Plugin(refreshed) = app.graph.import(&entry).unwrap() else { panic!("a plugin") };
     assert_ne!(refreshed.key(), original.key());
@@ -386,7 +453,7 @@ async fn refreshes_a_module_that_no_plugin_depends_on_for_its_next_import() {
 }
 
 #[tokio::test]
-async fn does_not_apply_a_unit_whose_module_fails_or_exports_no_plugin() {
+async fn does_not_apply_a_unit_whose_module_fails_to_import() {
     let app = App::setup().await;
     let id = app.load("abort.rs", plugin("abort", "v1")).await;
     app.files.write("abort.rs", throws(&[], "BROKEN"));
@@ -399,11 +466,31 @@ async fn does_not_apply_a_unit_whose_module_fails_or_exports_no_plugin() {
     app.files.write("abort.rs", plugin("abort", "v2"));
     app.reconcile(&[&id]).await.unwrap();
     assert_eq!(app.query("abort"), Some(json!("v2")));
+}
 
-    app.files.write("abort.rs", value(json!("not a plugin")));
+#[tokio::test]
+async fn does_not_apply_a_unit_whose_module_does_not_export_a_plugin() {
+    let app = App::setup().await;
+    let disposed = Arc::new(AtomicBool::new(false));
+    let d = disposed.clone();
+    let id = app
+        .load(
+            "invalid.rs",
+            plugin_then("invalid", "v1", move |ctx| {
+                let d = d.clone();
+                async move {
+                    ctx.on_dispose(move || d.store(true, SeqCst))?;
+                    Ok(())
+                }
+            }),
+        )
+        .await;
+    app.files.write("invalid.rs", value(json!("not a plugin")));
     let result = app.reconcile(&[&id]).await.unwrap();
     assert_eq!(result.import_failures.len(), 1);
-    assert_eq!(app.query("abort"), Some(json!("v2")));
+    // the running instance is not disposed
+    assert!(!disposed.load(SeqCst));
+    assert_eq!(app.query("invalid"), Some(json!("v1")));
 }
 
 #[tokio::test]
@@ -525,7 +612,7 @@ async fn skips_a_changed_host_module_below_a_root_and_applies_the_other_changes(
 }
 
 #[tokio::test]
-async fn rejects_a_transaction_started_by_a_plugin_it_reloads() {
+async fn rejects_a_transaction_started_inside_another_one() {
     let app = App::setup().await;
     let outcomes = Arc::new(Mutex::new(Vec::new()));
     let nested = |version: &'static str| {
@@ -559,4 +646,185 @@ async fn rejects_a_transaction_started_by_a_plugin_it_reloads() {
     // once the transaction is over, the plugin may start one
     let hmr = result.settled_fibers[0].context().get::<Hmr>().unwrap();
     assert_eq!(hmr_nested(&hmr).await, "resolved");
+}
+
+#[tokio::test]
+async fn imports_a_module_again_after_its_evaluation_failed_for_a_reason_outside_its_file() {
+    let app = App::setup().await;
+    let ready = Arc::new(AtomicBool::new(false));
+    let r = ready.clone();
+    let transient = app.files.write(
+        "transient.rs",
+        ModuleCode::new(vec![], move |_| match r.load(SeqCst) {
+            true => Ok(Exports::Value(json!("ready"))),
+            false => Err(Error::msg("not ready")),
+        }),
+    );
+    assert_eq!(imported(&app.graph, &transient).unwrap_err().to_string(), "not ready");
+
+    ready.store(true, SeqCst);
+    app.reconcile(&[]).await.unwrap();
+    assert_eq!(imported(&app.graph, &transient).unwrap(), json!("ready"));
+}
+
+#[tokio::test]
+async fn keeps_a_module_that_is_still_being_imported() {
+    let app = App::setup().await;
+    let count = Arc::new(AtomicUsize::new(0));
+    let (entered, on_entered) = std::sync::mpsc::channel();
+    let (release, hold) = std::sync::mpsc::channel::<()>();
+    let hold = Mutex::new(hold);
+    let code = counted(&count);
+    let pending = app.files.write(
+        "pending-dep.rs",
+        ModuleCode::new(vec![], move |imports| {
+            entered.send(()).unwrap();
+            hold.lock().recv().unwrap();
+            (code.evaluate)(imports)
+        }),
+    );
+    let graph = app.graph.clone();
+    let id = pending.clone();
+    let first = std::thread::spawn(move || imported(&graph, &id).unwrap());
+    on_entered.recv().unwrap();
+    app.reconcile(&[]).await.unwrap();
+    release.send(()).unwrap();
+
+    let first = first.join().unwrap();
+    assert_eq!(imported(&app.graph, &pending).unwrap(), first);
+    assert_eq!(count.load(SeqCst), 1);
+}
+
+// Rust modules have no job types: the failing plugin is the first to load
+// the shared module, as its JSON job did in the reference.
+#[tokio::test]
+async fn keeps_the_job_of_a_module_when_its_job_of_another_type_fails() {
+    let app = App::setup().await;
+    let failing = app.load("slot-failing.rs", plugin("failing", "v1")).await;
+    let importer = app.load("slot-importer.rs", plugin("slot", "v1")).await;
+    let count = Arc::new(AtomicUsize::new(0));
+    let shared = app.files.write("slot-shared.rs", counted(&count));
+
+    app.files.write("slot-failing.rs", throws(&["slot-shared.rs"], "failing failed"));
+    app.files.write("slot-importer.rs", dependent("slot", "slot-shared.rs"));
+    let result = app.reconcile(&[&failing, &importer]).await.unwrap();
+    assert_eq!(result.settled_fibers.len(), 1);
+    assert_eq!(result.import_failures.len(), 1);
+    app.reconcile(&[]).await.unwrap();
+    assert_eq!(app.query("slot"), Some(imported(&app.graph, &shared).unwrap()));
+}
+
+// As above, the failing plugin is the first to load `edge-dep.rs`.
+#[tokio::test]
+async fn follows_the_dependencies_of_a_module_job_when_its_job_of_another_type_fails_to_link() {
+    let app = App::setup().await;
+    let core = app.files.write("edge-core.rs", value(json!("v1")));
+    let owner = app.load("edge-owner.rs", plugin_with("owner", &["edge-core.rs"], |_| json!("v1"), |d| d)).await;
+    let failing = app.load("edge-failing.rs", plugin("failing", "v1")).await;
+    let importer = app.load("edge-importer.rs", plugin("edge", "v1")).await;
+    let edge_dep = app.files.write("edge-dep.rs", reexport("edge-core.rs"));
+
+    app.files.write("edge-core.rs", value(json!("v2")));
+    app.files.write("edge-owner.rs", throws(&["edge-core.rs"], "owner failed"));
+    app.files.write("edge-failing.rs", throws(&["edge-dep.rs"], "failing failed"));
+    app.files.write("edge-importer.rs", dependent("edge", "edge-dep.rs"));
+    let result = app.reconcile(&[&core, &owner, &failing, &importer]).await.unwrap();
+    // the importer links against the changed module of the failed owner
+    assert!(result.settled_fibers.is_empty());
+    assert_eq!(app.query("edge"), Some(json!("v1")));
+    // the new module linked against it is not kept
+    assert_eq!(imported(&app.graph, &edge_dep).unwrap(), json!("v1"));
+}
+
+// The reference imports a `data:` URL; any module id that is not a path will do.
+#[tokio::test]
+async fn replaces_a_plugin_exported_from_a_data_url() {
+    let app = App::setup().await;
+    let implementation = app.files.write("data-impl.rs", plugin("data", "v1"));
+    let impl_id = implementation.clone();
+    let url = app.files.insert(
+        "data:text/rust,pub use data_impl::*".into(),
+        ModuleCode::new(vec![impl_id.clone()], move |imports| {
+            imports.get(&impl_id).ok_or_else(|| Error::msg("no plugin"))
+        }),
+    );
+    let Exports::Plugin(def) = app.graph.import(&url).unwrap() else { panic!("a plugin") };
+    app.root.plugin_def(&def, Value::Null).unwrap().settled().await.unwrap();
+    assert_eq!(app.query("data"), Some(json!("v1")));
+
+    app.files.write("data-impl.rs", plugin("data", "v2"));
+    let result = app.reconcile(&[&implementation]).await.unwrap();
+    assert_eq!(result.settled_fibers.len(), 1);
+    assert_eq!(app.query("data"), Some(json!("v2")));
+}
+
+// A module's code may import another module while it evaluates, an edge the
+// graph does not record.
+#[tokio::test]
+async fn shares_a_module_first_loaded_by_a_failed_unit_with_a_unit_that_imports_it_dynamically() {
+    let app = App::setup().await;
+    let failing = app.load("dynamic-failing.rs", plugin("failing", "v1")).await;
+    let importer = app.load("dynamic-importer.rs", plugin("importer", "v1")).await;
+    let count = Arc::new(AtomicUsize::new(0));
+    let shared = app.files.write("dynamic-shared.rs", counted(&count));
+
+    app.files.write("dynamic-failing.rs", throws(&["dynamic-shared.rs"], "failing failed"));
+    let (graph, id) = (app.graph.clone(), shared.clone());
+    app.files.write(
+        "dynamic-importer.rs",
+        ModuleCode::new(vec![], move |_| Ok(Exports::Plugin(answering("importer", imported(&graph, &id)?)))),
+    );
+    let result = app.reconcile(&[&failing, &importer]).await.unwrap();
+    assert_eq!(result.settled_fibers.len(), 1);
+    assert_eq!(result.import_failures.len(), 1);
+    assert_eq!(app.query("importer"), Some(imported(&app.graph, &shared).unwrap()));
+}
+
+#[tokio::test]
+async fn replaces_a_plugin_when_a_module_inside_a_package_changes() {
+    let app = App::setup().await;
+    let lib = app.files.write("packages/shared/lib.rs", value(json!("v1")));
+    app.files.write("packages/shared/index.rs", reexport("packages/shared/lib.rs"));
+    app.load("package-dependent.rs", dependent("package", "packages/shared/index.rs")).await;
+    assert_eq!(app.query("package"), Some(json!("v1")));
+
+    // the changed module is not imported by the plugin directly
+    app.files.write("packages/shared/lib.rs", value(json!("v2")));
+    let result = app.reconcile(&[&lib]).await.unwrap();
+    assert_eq!(result.settled_fibers.len(), 1);
+    assert_eq!(app.query("package"), Some(json!("v2")));
+}
+
+#[tokio::test]
+async fn runs_transactions_one_at_a_time() {
+    let app = App::setup().await;
+    let slow = app.load("queue-slow.rs", plugin("slow", "v1")).await;
+    let fast = app.load("queue-fast.rs", plugin("fast", "v1")).await;
+    let (slow_done, fast_applied) = (Arc::new(Mutex::new(None)), Arc::new(Mutex::new(None)));
+
+    let done = slow_done.clone();
+    app.files.write(
+        "queue-slow.rs",
+        plugin_then("slow", "v2", move |_| {
+            let done = done.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                *done.lock() = Some(Instant::now());
+                Ok(())
+            }
+        }),
+    );
+    let applied = fast_applied.clone();
+    app.files.write(
+        "queue-fast.rs",
+        plugin_then("fast", "v2", move |_| {
+            *applied.lock() = Some(Instant::now());
+            async { Ok(()) }
+        }),
+    );
+    let (slow, fast) = ([slow.as_str()], [fast.as_str()]);
+    let (first, second) = tokio::join!(app.reconcile(&slow), app.reconcile(&fast));
+    assert_eq!(first.unwrap().settled_fibers.len(), 1);
+    assert_eq!(second.unwrap().settled_fibers.len(), 1);
+    assert!(fast_applied.lock().unwrap() >= slow_done.lock().unwrap());
 }

@@ -5,6 +5,8 @@ mod common;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering::SeqCst;
 use std::time::Duration;
 
 use common::scratch;
@@ -124,13 +126,29 @@ async fn eventually(mut check: impl FnMut() -> bool) {
     panic!("timed out");
 }
 
-#[tokio::test]
-async fn resolves_a_relative_base_against_the_working_directory() {
+/// The base directory of hmr loaded without a loader entry.
+async fn base_without_entry(config: Value) -> PathBuf {
     let root = Context::new();
     let graph = ModuleGraph::new(Files::default());
-    root.plugin_def(&Hmr::plugin(graph), json!({ "base": ".." })).unwrap().settled().await.unwrap();
+    root.plugin_def(&Hmr::plugin(graph), config).unwrap().settled().await.unwrap();
+    root.get::<Hmr>().unwrap().base_dir().to_path_buf()
+}
+
+#[tokio::test]
+async fn defaults_to_the_working_directory_without_a_context_directory() {
+    assert_eq!(base_without_entry(json!({})).await, std::env::current_dir().unwrap());
+}
+
+#[tokio::test]
+async fn accepts_a_relative_path_without_a_context_directory() {
     let cwd = std::env::current_dir().unwrap();
-    assert_eq!(root.get::<Hmr>().unwrap().base_dir(), cwd.parent().unwrap());
+    assert_eq!(base_without_entry(json!({ "base": "../hmr base" })).await, cwd.parent().unwrap().join("hmr base"));
+}
+
+#[tokio::test]
+async fn accepts_an_absolute_path_without_a_context_directory() {
+    let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join("base with spaces # %");
+    assert_eq!(base_without_entry(json!({ "base": base })).await, base);
 }
 
 /// A tree read from a config file in `0`.
@@ -142,18 +160,52 @@ impl TreeBackend for FileTree {
     }
 }
 
-#[tokio::test]
-async fn resolves_a_relative_base_against_the_config_file_of_its_entry() {
-    let dir = scratch("watch-entry-base");
+/// The base directory of hmr loaded by an entry of a config file in `dir`
+/// (the context directory of the reference).
+async fn base_of_entry(dir: &Path, config: Value) -> PathBuf {
     let root = Context::new();
     let catalog = Catalog::new();
     catalog.register_def("hmr", Hmr::plugin(ModuleGraph::new(Files::default())));
-    let loader = Loader::plugin_with(Arc::new(catalog), Arc::new(FileTree(dir.clone())));
+    let loader = Loader::plugin_with(Arc::new(catalog), Arc::new(FileTree(dir.to_path_buf())));
     root.plugin_def(&loader, Value::Null).unwrap().settled().await.unwrap();
     let loader = (*root.get::<Loader>().unwrap()).clone();
-    loader.create(json!({ "name": "hmr", "config": { "base": "./plugins" } }), None, None).await.unwrap();
+    loader.create(json!({ "name": "hmr", "config": config }), None, None).await.unwrap();
     loader.settled().await;
-    assert_eq!(root.get::<Hmr>().unwrap().base_dir(), dir.join("plugins"));
+    root.get::<Hmr>().unwrap().base_dir().to_path_buf()
+}
+
+#[tokio::test]
+async fn resolves_a_relative_base_against_the_context() {
+    let dir = scratch("watch-entry-base");
+    assert_eq!(base_of_entry(&dir, json!({ "base": "./plugins" })).await, dir.join("plugins"));
+}
+
+#[tokio::test]
+async fn defaults_to_the_context_directory() {
+    let dir = scratch("watch-entry-default");
+    assert_eq!(base_of_entry(&dir, json!({})).await, dir);
+}
+
+#[tokio::test]
+async fn watches_files_in_base() {
+    let dir = scratch("watch-files");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("other")).unwrap();
+    let files = Files::default();
+    let (watched, ignored) = (dir.join("src/watched.rs"), dir.join("other/ignored.rs"));
+    files.write(&watched, plugin("watched", "v1", None));
+    files.write(&ignored, plugin("ignored", "v1", None));
+    let config = json!({ "enabled": true, "debounce": 100, "files": ["src", "!**/.*"] });
+    let app = App::setup(&files, &dir, config).await;
+    assert!(app.logs().contains(&format!("watching [\"src\", \"!**/.*\"] in {}", dir.display())));
+    app.load(&watched).await;
+    app.load(&ignored).await;
+
+    files.write(&ignored, plugin("ignored", "v2", None));
+    files.write(&watched, plugin("watched", "v2", None));
+    eventually(|| app.query("watched") == Some(json!("v2"))).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(app.query("ignored"), Some(json!("v1")));
 }
 
 #[tokio::test]
@@ -221,4 +273,39 @@ async fn only_reports_a_change_to_a_host_module() {
     eventually(|| app.logs().iter().any(|log| log == "skipped host modules:\n- host.rs")).await;
     assert_eq!(app.query("host"), Some(json!("v1")));
     assert_eq!(app.hmr.base_dir(), dir);
+}
+
+// The first batch is held inside a (synchronous) module load, which
+// `block_in_place` allows on a multi-thread runtime only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retries_the_changes_of_a_failed_batch_with_a_batch_queued_behind_it() {
+    let dir = scratch("watch-queued");
+    let files = Files::default();
+    let (dep, path) = (dir.join("queued-dep.rs"), dir.join("queued.rs"));
+    files.write(&dep, value("v1"));
+    files.write(&path, plugin("queued", "", Some(&dep)));
+    let app = App::setup(&files, &dir, watching()).await;
+    app.load(&path).await;
+
+    // the first batch holds while importing the plugin, and then fails
+    let entered = Arc::new(AtomicBool::new(false));
+    let (release, hold) = std::sync::mpsc::channel::<()>();
+    let (hold, e) = (Mutex::new(hold), entered.clone());
+    files.write(&dep, value("v2"));
+    files.write(
+        &path,
+        ModuleCode::new(vec![dep.to_str().unwrap().into()], move |_| {
+            e.store(true, SeqCst);
+            tokio::task::block_in_place(|| hold.lock().recv()).unwrap();
+            Ok(Exports::Value(json!("not a plugin")))
+        }),
+    );
+    eventually(|| entered.load(SeqCst)).await;
+
+    // the repair arrives while the first batch is still running
+    files.write(&path, plugin("queued", "", Some(&dep)));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    release.send(()).unwrap();
+    eventually(|| app.query("queued") == Some(json!("v2"))).await;
+    assert!(app.logs().iter().any(|log| log.starts_with("invalid plugin at")));
 }
