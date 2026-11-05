@@ -17,6 +17,7 @@ An app is a tree of **plugins**. Each plugin runs in a **fiber**:
 - [Crates](#crates)
 - [Development](#development)
 - [Documentation](#documentation)
+- [License](#license)
 
 ## Requirements
 
@@ -271,3 +272,9 @@ Some tests build fixture crates with cargo while they run, so the first run take
 ## Documentation
 
 [`docs/`](docs/README.md) covers the paper, an analysis of the TypeScript implementation, and the [Rust implementation plan](docs/rust-implementation-plan.md). §15 of the plan lists where this implementation differs from the TypeScript one.
+
+## License
+
+cordis-rs is licensed under the [GNU General Public License v3.0](LICENSE) (`GPL-3.0-only`).
+
+It is a port of the TypeScript [Cordis](https://github.com/cordiverse/cordis), which is MIT-licensed. [`NOTICE`](NOTICE) keeps its copyright and license notice.
