@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cordis_core::{Key, RealmId};
+use cordis_core::{Context, Key, RealmId};
 use serde_json::Value;
 
 use crate::loader::{EntryId, Loader, LoaderState};
@@ -18,8 +18,8 @@ pub(crate) struct RealmDiff {
     key: Key,
     old: Option<RealmId>,
     new: Option<RealmId>,
-    /// The binding in the old realm is provided from inside the entry.
-    inside: bool,
+    /// The provider of the binding in the old realm, if it is inside the entry.
+    inside: Option<Context>,
 }
 
 impl Loader {
@@ -49,7 +49,7 @@ impl Loader {
                     }
                     let inside = old
                         .and_then(|realm| ctx.binding_provider(&key, realm))
-                        .is_some_and(|provider| provider.is_within(&ctx));
+                        .filter(|provider| provider.is_within(&ctx));
                     Some(RealmDiff { key, old, new, inside })
                 })
                 .collect();
@@ -62,7 +62,10 @@ impl Loader {
     pub(crate) fn isolate_finish(&self, diffs: Vec<RealmDiff>) {
         let ctx = &self.0.ctx;
         for diff in diffs {
-            if let (Some(old), Some(new), true) = (diff.old, diff.new, diff.inside) {
+            // a nested entry may still isolate the key for the provider
+            if let (Some(old), Some(new), Some(provider)) = (diff.old, diff.new, &diff.inside)
+                && provider.realm(diff.key.as_str()) == Some(new)
+            {
                 ctx.migrate_binding(&diff.key, old, new);
             }
             for realm in [diff.old, diff.new].into_iter().flatten() {

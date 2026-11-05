@@ -364,6 +364,65 @@ async fn does_not_apply_a_fiber_removed_while_rebuild_is_disposing() {
     assert!(!mock.root.registry().has(&plug));
 }
 
+#[tokio::test]
+async fn keeps_a_rebuild_started_during_apply_until_its_disposer_settles() {
+    let mock = Mock::boot().await;
+    for (key, n) in [("foo", 1i32), ("bar", 2), ("qux", 3)] {
+        mock.root.provide_as(key, n).unwrap();
+    }
+    let (gate, applies, id) = (Gate::new(), Arc::new(AtomicUsize::new(0)), Arc::new(Mutex::new(String::new())));
+    let (loader, g, a, i) = (mock.loader.clone(), gate.clone(), applies.clone(), id.clone());
+    let plug = mock.mock(
+        "plug",
+        PluginDef::new(move |ctx, _| {
+            let n = a.fetch_add(1, Ordering::SeqCst) + 1;
+            if n == 2 {
+                let (loader, id) = (loader.clone(), i.lock().clone());
+                tokio::spawn(async move { loader.update(&id, json!({ "inject": ["bar"] }), None, None).await });
+            }
+            let gate = g.clone();
+            async move {
+                ctx.defer(
+                    "gated",
+                    Disposer::future(move || async move {
+                        if n == 2 {
+                            gate.wait().await;
+                        }
+                    }),
+                )?;
+                Ok(())
+            }
+        }),
+    );
+    *id.lock() = mock.loader.create(json!({ "name": "plug" }), None, None).await.unwrap();
+    let id = id.lock().clone();
+    settle().await;
+    mock.loader.update(&id, json!({ "inject": ["foo"] }), None, None).await.unwrap();
+    settle().await;
+    assert!(mock.loader.is_busy());
+    let loader = mock.loader.clone();
+    let waiting = tokio::spawn(async move { loader.settled().await });
+    settle().await;
+    assert!(!waiting.is_finished());
+    assert_eq!(applies.load(Ordering::SeqCst), 2);
+
+    let (loader, i) = (mock.loader.clone(), id.clone());
+    let third = tokio::spawn(async move { loader.update(&i, json!({ "inject": ["qux"] }), None, None).await });
+    settle().await;
+    assert_eq!(applies.load(Ordering::SeqCst), 2);
+
+    gate.open();
+    third.await.unwrap().unwrap();
+    waiting.await.unwrap();
+    settle().await;
+    assert_eq!(applies.load(Ordering::SeqCst), 3);
+    let options = mock.loader.resolve(&id).unwrap().options();
+    assert_eq!(options["inject"], json!(["qux"]));
+    let active = mock.root.registry().fibers(&plug).iter().filter(|f| f.state() == FiberState::Active).count();
+    assert_eq!(active, 1);
+    assert!(options.get("disabled").is_none());
+}
+
 // --- commit.spec.ts: cross-tree moves ---
 
 #[derive(Default)]

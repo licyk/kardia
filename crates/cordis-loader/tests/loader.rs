@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 
 use common::{Counter, Mock, settle};
 use cordis_core::{Error, FiberState, PluginDef};
-use cordis_loader::{EntryChange, EntryValidationError, TreeBackend};
+use cordis_loader::{EntryChange, EntryValidationError, TreeBackend, validate_options};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 
@@ -139,6 +139,42 @@ async fn nested_plugins_keep_their_own_config() {
     mock.read(json!([{ "id": "1", "name": "parent" }])).await;
     settle().await;
     assert_eq!(child.configs.lock().clone(), vec![json!({ "value": { "__jsExpr": "foo.value" } })]);
+}
+
+#[tokio::test]
+async fn config_interpolation() {
+    let mock = Mock::boot().await;
+    mock.mock(
+        "provider",
+        PluginDef::new(|ctx, config| async move {
+            ctx.provide_as("foo", json!({ "value": config["value"] }))?;
+            Ok(())
+        }),
+    );
+    let consumer = Counter::default();
+    mock.mock("consumer", consumer.def());
+    let entry =
+        json!({ "id": "1", "name": "consumer", "inject": ["foo"], "config": { "value": { "__jsExpr": "foo.value" } } });
+
+    // wait for dependencies
+    mock.read(json!([entry])).await;
+    let handle = mock.loader.resolve("1").unwrap();
+    assert_eq!(handle.outer_fiber().unwrap().state(), FiberState::Pending);
+    assert!(handle.inner_fiber().is_none());
+    assert_eq!(consumer.take().0, 0);
+
+    // evaluate after dependencies are ready
+    mock.read(json!([entry, { "id": "2", "name": "provider", "config": { "value": 1 } }])).await;
+    assert_eq!(mock.fiber("1").state(), FiberState::Active);
+    assert_eq!(*consumer.configs.lock(), vec![json!({ "value": 1 })]);
+
+    // re-evaluate when dependencies reload
+    mock.loader.update("2", json!({ "config": { "value": 2 } }), None, None).await.unwrap();
+    mock.loader.settled().await;
+    assert_eq!(*consumer.configs.lock(), vec![json!({ "value": 1 }), json!({ "value": 2 })]);
+
+    // keep the source config unevaluated
+    assert_eq!(mock.fiber("1").config(), json!({ "value": { "__jsExpr": "foo.value" } }));
 }
 
 #[tokio::test]
@@ -437,17 +473,70 @@ async fn keeps_an_entry_that_another_group_adopted() {
 // --- validate.spec.ts (runtime part) ---
 
 #[tokio::test]
-async fn rejects_invalid_options_before_they_are_committed() {
+async fn reject_invalid_options_at_runtime_before_they_are_committed() {
     let mock = Mock::boot().await;
     mock.mock("foo", noop());
     let error = mock.loader.create(json!({ "name": 1 }), None, None).await.unwrap_err();
     assert!(error.is::<EntryValidationError>());
     assert_eq!(error.to_string(), "invalid entry options:\n  - name must be a string (at name)");
+    assert!(mock.take_changes().is_empty() && mock.data().is_empty());
+
     let id = mock.loader.create(json!({ "name": "foo" }), None, None).await.unwrap();
     mock.take_changes();
-    let error = mock.loader.update(&id, json!({ "group": "yes" }), None, None).await.unwrap_err();
-    assert!(error.to_string().contains("group must be a boolean"));
+    let error = mock.loader.update(&id, json!({ "disabled": "yes" }), None, None).await.unwrap_err();
+    assert!(error.is::<EntryValidationError>());
     assert!(mock.take_changes().is_empty());
-    let deep = json!({ "name": "group", "group": true, "config": [{ "name": 1 }] });
-    assert!(mock.loader.create(deep, None, None).await.unwrap_err().to_string().contains("(at config.0.name)"));
+    assert_eq!(mock.loader.resolve(&id).unwrap().options(), json!({ "id": id, "name": "foo" }));
+    mock.loader.settled().await;
+    assert_eq!(mock.fiber(&id).state(), FiberState::Active);
+}
+
+#[tokio::test]
+async fn check_the_entries_of_a_group_passed_at_runtime_as_a_whole() {
+    let mock = Mock::boot().await;
+    mock.mock("foo", noop());
+    let config = json!([null, { "id": "child", "name": "foo" }, { "name": "foo", "inject": [1] }]);
+    let error = mock.loader.create(json!({ "name": "group", "group": true, "config": config }), None, None).await;
+    assert_eq!(
+        error.unwrap_err().to_string(),
+        [
+            "invalid entry options:",
+            "  - entry must be an object (at config.0)",
+            "  - inject.0 must be a string (at config.2.inject.0)",
+        ]
+        .join("\n")
+    );
+    assert!(mock.take_changes().is_empty());
+    assert!(mock.loader.resolve("child").is_err());
+
+    let id = mock.loader.create(json!({ "name": "group", "group": true, "config": [] }), None, None).await.unwrap();
+    mock.take_changes();
+    let error = mock.loader.update(&id, json!({ "config": [{ "id": "child" }] }), None, None).await.unwrap_err();
+    assert!(error.to_string().contains("name is required (at config.0.name)"));
+    assert!(mock.take_changes().is_empty());
+    assert_eq!(mock.loader.resolve(&id).unwrap().options()["config"], json!([]));
+
+    // a source hands its entries over one at a time
+    assert!(validate_options(&json!({ "name": "group", "group": true, "config": [null] }), false).is_empty());
+}
+
+#[tokio::test]
+async fn unload_an_entry_whose_options_turn_invalid_and_reload_it_once_fixed() {
+    let mock = Mock::boot().await;
+    let foo = Counter::default();
+    mock.mock("foo", foo.def());
+    mock.read(json!([{ "id": "a", "name": "foo" }, { "id": "b", "name": "foo" }])).await;
+    let fiber = mock.fiber("a");
+    mock.take_changes();
+
+    mock.read(json!([{ "id": "a", "name": "foo", "group": "no" }, { "id": "b", "name": "foo" }, "oops"])).await;
+    assert!(mock.loader.resolve("a").is_err());
+    assert_eq!(fiber.state(), FiberState::Disposed);
+    assert_eq!(mock.fiber("b").state(), FiberState::Active);
+    // the disposal is not mistaken for a self-dispose, which writes `disabled`
+    assert!(mock.take_changes().is_empty());
+
+    mock.read(json!([{ "id": "a", "name": "foo" }, { "id": "b", "name": "foo" }])).await;
+    assert_eq!(mock.fiber("a").state(), FiberState::Active);
+    assert_eq!(foo.take().0, 3);
 }

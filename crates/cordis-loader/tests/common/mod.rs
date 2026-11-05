@@ -26,12 +26,14 @@ pub struct Mock {
 
 /// Holds the resolution of `name`: `entered` opens when it starts,
 /// it continues once `release` opens, and then fails if `fail` is set.
+/// The first `skip` resolutions of `name` pass through.
 #[derive(Clone)]
 pub struct Hold {
     pub name: String,
     pub entered: Gate,
     pub release: Gate,
     pub fail: bool,
+    pub skip: Arc<AtomicUsize>,
 }
 
 struct Recorder(Arc<Mutex<Vec<EntryChange>>>);
@@ -51,7 +53,10 @@ struct Delayed {
 impl Resolver for Delayed {
     fn resolve(&self, name: &str) -> BoxFuture<'static, cordis_core::Result<PluginDef>> {
         let delay = self.delay.load(Ordering::SeqCst) as u64;
-        let hold = self.hold.lock().clone().filter(|hold| hold.name == name);
+        let hold = self.hold.lock().clone().filter(|hold| {
+            hold.name == name
+                && hold.skip.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_err()
+        });
         let resolved = self.catalog.resolve(name);
         let name = name.to_string();
         async move {
@@ -87,8 +92,15 @@ impl Mock {
 
     /// Holds the next resolutions of `name`; returns the `entered` and `release` gates.
     pub fn hold(&self, name: &str, fail: bool) -> (Gate, Gate) {
+        self.hold_after(name, 0, fail)
+    }
+
+    /// Like [`Mock::hold`], letting the first `skip` resolutions through.
+    pub fn hold_after(&self, name: &str, skip: usize, fail: bool) -> (Gate, Gate) {
         let (entered, release) = (Gate::new(), Gate::new());
-        *self.hold.lock() = Some(Hold { name: name.into(), entered: entered.clone(), release: release.clone(), fail });
+        let skip = Arc::new(AtomicUsize::new(skip));
+        *self.hold.lock() =
+            Some(Hold { name: name.into(), entered: entered.clone(), release: release.clone(), fail, skip });
         (entered, release)
     }
 

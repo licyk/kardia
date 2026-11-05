@@ -263,23 +263,18 @@ impl Loader {
 
     /// Starts the inner (plugin) fiber in `ctx`, unless the entry is disabled.
     pub(crate) fn start(&self, entry: EntryId, ctx: &Context, def: PluginDef) {
-        let prepared = self.with(|st| {
+        let (prepared, failures) = self.with(|st| {
             if !st.registered(entry) {
-                return Ok(None);
+                return (None, Vec::new());
             }
-            // a group still starts; its verdict only reaches its children
-            let failure = st.resolve_disabled(entry, ctx).or_else(|| st.apply_intercept(entry, ctx));
-            if st.is_disabled(entry) {
-                return failure.map_or(Ok(None), Err);
-            }
+            let (admitted, failures) = st.admit(entry, ctx);
             let data = &st.entries[&entry];
-            Ok(Some((data.intercept.clone(), data.read().config)))
+            (admitted.then(|| (data.intercept.clone(), data.read().config)), failures)
         });
-        let (intercept, config) = match prepared {
-            Ok(Some(prepared)) => prepared,
-            Ok(None) => return,
-            Err(error) => return self.0.ctx.logger().log_error(&error),
-        };
+        for error in &failures {
+            self.0.ctx.logger().log_error(error);
+        }
+        let Some((intercept, config)) = prepared else { return };
         self.show_log(entry, "apply");
         let inner_ctx = ctx.extend_with(&intercept);
         match inner_ctx.plugin_def(&def, config) {
@@ -332,19 +327,14 @@ impl Loader {
             }
             return Ok(());
         };
-        let outcome = self.with(|st| {
-            let mut failure = st.resolve_disabled(entry, &ctx);
-            if !st.is_disabled(entry) {
-                failure = failure.or_else(|| st.apply_intercept(entry, &ctx));
-            }
-            let options = st.entries[&entry].read();
-            (failure, st.is_disabled(entry), options)
+        let (admitted, failures, options) = self.with(|st| {
+            let (admitted, failures) = st.admit(entry, &ctx);
+            (admitted, failures, st.entries[&entry].read())
         });
-        let (failure, disabled, options) = outcome;
-        if let Some(error) = failure {
-            self.0.ctx.logger().log_error(&error);
+        for error in &failures {
+            self.0.ctx.logger().log_error(error);
         }
-        if disabled {
+        if !admitted {
             drop(self.dispose_fiber(entry, &inner));
             return Ok(());
         }
@@ -360,6 +350,21 @@ impl Loader {
 }
 
 impl LoaderState {
+    /// Evaluates `disabled`, then, unless it disables the entry, `intercept`.
+    /// Returns whether the plugin may run, and the failures to report. A
+    /// group still runs with a failing `disabled` (its verdict only reaches
+    /// its children), but not with a failing `intercept`.
+    pub(crate) fn admit(&mut self, entry: EntryId, ctx: &Context) -> (bool, Vec<Error>) {
+        let mut failures: Vec<Error> = self.resolve_disabled(entry, ctx).into_iter().collect();
+        if self.is_disabled(entry) {
+            return (false, failures);
+        }
+        let intercept = self.apply_intercept(entry, ctx);
+        let admitted = intercept.is_none();
+        failures.extend(intercept);
+        (admitted, failures)
+    }
+
     /// `disabled` evaluates to a verdict in `ctx` (the outer fiber's
     /// context, which sees the entry's `inject`); a failure disables the entry.
     pub(crate) fn resolve_disabled(&mut self, entry: EntryId, ctx: &Context) -> Option<Error> {
