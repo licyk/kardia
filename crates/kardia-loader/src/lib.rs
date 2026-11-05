@@ -14,7 +14,7 @@ mod locate;
 mod options;
 mod realm;
 
-pub use catalog::{Catalog, ModuleNotFound, Resolver};
+pub use catalog::{Catalog, ModuleNotFound, Resolver, builtins};
 pub use entry::OUTER_TAG;
 pub use group::{GROUP_TAG, group_plugin};
 pub use loader::{EntryChange, EntryHandle, GroupHandle, Loader, MemoryTree, PatchNext, TreeBackend, TreeHandle};
@@ -23,12 +23,3 @@ pub use options::{
     Disabled, EXPR_KEY, EntryOptions, EntryValidationError, IsolateLabel, SEP, diff_keys, expr_source, is_expr, merge,
     sort_keys, validate_options,
 };
-
-/// A catalog with the built-in plugins (`group`, also registered as
-/// `@cordisjs/plugin-group`).
-pub fn builtins() -> Catalog {
-    let catalog = Catalog::new();
-    catalog.register_def("group", group_plugin());
-    catalog.alias("@cordisjs/plugin-group", "group");
-    catalog
-}

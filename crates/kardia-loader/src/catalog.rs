@@ -6,6 +6,8 @@ use futures::future::BoxFuture;
 use kardia_core::{Error, Plugin, PluginDef};
 use parking_lot::RwLock;
 
+use crate::group::group_plugin;
+
 /// Turns an entry's `name` into a plugin definition (the analogue of a
 /// module import). Resolution may be asynchronous.
 pub trait Resolver: Send + Sync + 'static {
@@ -58,4 +60,13 @@ impl Resolver for Catalog {
         let result = self.get(name).ok_or_else(|| ModuleNotFound { name: name.to_string() }.into());
         futures::future::ready(result).boxed()
     }
+}
+
+/// A catalog with the built-in plugins (`group`, also registered as
+/// `@cordisjs/plugin-group`).
+pub fn builtins() -> Catalog {
+    let catalog = Catalog::new();
+    catalog.register_def("group", group_plugin());
+    catalog.alias("@cordisjs/plugin-group", "group");
+    catalog
 }
