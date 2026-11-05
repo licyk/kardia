@@ -1,0 +1,146 @@
+# Publishes the workspace's crates to crates.io. A v<version> tag (cargo xtask tag --push) releases the workspace
+# version it names; a manual run releases the chosen ref's version, resuming a release that stopped part-way (a
+# version already on crates.io is skipped).
+#
+# The released commit is tested once: CI's run of it (from the push of the version bump) is reused, waiting for it
+# if it is still running, and this workflow calls ci.yml as its checks only when no usable run exists (a commit CI
+# never ran on, or a run a newer push cancelled).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: What to release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: plan
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "kardia") | .version')
+          echo "Workspace version: $version"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not name the workspace version $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  ci-result:
+    name: CI of this commit
+    needs: plan
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      tested: ${{ steps.find.outputs.tested }}
+    steps:
+      - id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" --limit 20 \
+            --json databaseId,event,conclusion \
+            --jq '[.[] | select(.event == "push" or .event == "workflow_dispatch") | select(.conclusion != "cancelled")][0].databaseId // empty')
+          if [ -z "$run" ]; then
+            echo "No usable CI run of $GITHUB_SHA: this workflow runs the checks."
+            echo "tested=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Reusing CI run $run of $GITHUB_SHA (waiting while it runs)"
+          if gh run watch "$run" -R "$GITHUB_REPOSITORY" --exit-status --interval 30 > /dev/null; then
+            echo "tested=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          conclusion=$(gh run view "$run" -R "$GITHUB_REPOSITORY" --json conclusion --jq .conclusion)
+          if [ "$conclusion" = cancelled ]; then
+            echo "CI run $run was cancelled: this workflow runs the checks."
+            echo "tested=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::error::CI run $run of $GITHUB_SHA ended with $conclusion"
+          exit 1
+
+  checks:
+    name: Checks
+    needs: ci-result
+    if: needs.ci-result.outputs.tested == 'false'
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publish to crates.io
+    needs: [plan, ci-result, checks]
+    # the commit passed CI, either in CI's own run or in this workflow's checks
+    if: >-
+      !cancelled() && needs.ci-result.result == 'success'
+      && (needs.ci-result.outputs.tested == 'true' || needs.checks.result == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo publish --workspace
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          # Publishes every crate version that crates.io does not have yet, in dependency order (crates with
+          # publish = false, like xtask, are not released). crates.io lets an account create only a few new crates
+          # at once and then one every ten minutes, so a release with new crates waits out that limit.
+          set -o pipefail
+          for attempt in 1 2 3 4 5 6 7 8; do
+            exclude=()
+            pending=0
+            packages=$(cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.publish == null or (.publish | length) > 0) | "\(.name)@\(.version)"')
+            for package in $packages; do
+              if curl -sf -A "kardia release workflow" "https://crates.io/api/v1/crates/${package%@*}/${package#*@}" > /dev/null; then
+                exclude+=(--exclude "${package%@*}")
+              else
+                pending=$((pending + 1))
+              fi
+            done
+            if [ "$pending" -eq 0 ]; then
+              echo "Every crate of this version is on crates.io."
+              exit 0
+            fi
+            if cargo publish --workspace "${exclude[@]}" 2>&1 | tee publish.log; then
+              exit 0
+            fi
+            grep -q "429 Too Many Requests" publish.log || exit 1
+            sleep 610
+          done
+          exit 1
+
+  github-release:
+    name: GitHub release
+    needs: [plan, publish]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Create the release
+        # notes start at the previous v* tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          previous=$(git tag --list "v[0-9]*" --sort=-v:refname | awk -v t="$tag" 'found { print; exit } $0 == t { found = 1 }')
+          args=(--title "kardia $VERSION" --generate-notes --verify-tag)
+          if [ -n "$previous" ]; then args+=(--notes-start-tag "$previous"); fi
+          gh release create "$tag" "${args[@]}"

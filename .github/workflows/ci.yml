@@ -1,12 +1,44 @@
+# The Rust workspace's checks. The documentation site has its own workflow (site.yml), and a change only to files
+# no Rust check reads (the site, Markdown, licence and hosting files) runs nothing here. Tags never start this
+# workflow: a v* tag starts Release, which reuses this workflow's run of the tagged commit, or calls this file as its
+# checks when there is none.
 name: CI
 
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "site/**"
+      - ".github/workflows/site.yml"
+      - "**.md"
+      - "LICENSE"
+      - "NOTICE"
+      - "netlify.toml"
+      - "wrangler.toml"
   pull_request:
+    paths-ignore:
+      - "site/**"
+      - ".github/workflows/site.yml"
+      - "**.md"
+      - "LICENSE"
+      - "NOTICE"
+      - "netlify.toml"
+      - "wrangler.toml"
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# A newer push cancels an older run of the same ref. Inside Release, github.workflow is "Release", so Release's call
+# never shares a group with (or cancels) a CI run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
+  rust:
+    name: Rust
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -19,21 +51,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Architecture (lib.rs / mod.rs only declare and re-export modules)
+        run: cargo xtask arch
       - run: cargo test --workspace
-
-  site:
-    name: Documentation site
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-      - run: bun install --frozen-lockfile
-        working-directory: site
-      - name: Type-check, tests and build
-        run: |
-          bun run check
-          bun run test
-          bun run build
-        working-directory: site

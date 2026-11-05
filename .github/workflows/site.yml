@@ -1,18 +1,33 @@
+# The documentation site (site/: the home page and the docs), on its own: Rust's checks are in ci.yml. A pull request
+# that changes site/ is checked and built; a push to main that changes it is checked, built and published to the
+# gh-pages branch, which GitHub Pages serves under /kardia/. Netlify (netlify.toml), Cloudflare Pages
+# (wrangler.toml) and Vercel (site/vercel.json) build the same site at the root path.
 name: Documentation site
 
-# Builds the site (site/: the home page and the docs) and publishes it to the gh-pages branch.
-# Netlify (netlify.toml), Cloudflare Pages (wrangler.toml) and Vercel (site/vercel.json) build the
-# same site at the root path; GitHub Pages serves it under /kardia/.
 on:
   push:
     branches: [main]
     paths:
-      - 'site/**'
-      - '.github/workflows/site.yml'
+      - "site/**"
+      - ".github/workflows/site.yml"
+  pull_request:
+    paths:
+      - "site/**"
+      - ".github/workflows/site.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+# Deploys run one at a time, the newest last (gh-pages is force-pushed); a pull request's newer push cancels its
+# older run.
+concurrency:
+  group: site-${{ github.event_name == 'pull_request' && github.ref || 'deploy' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  deploy:
+  site:
+    name: Check, build and publish
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repo
@@ -26,7 +41,7 @@ jobs:
         run: bun install --frozen-lockfile
         working-directory: site
 
-      - name: Test and Build
+      - name: Types, tests and build
         env:
           VITE_BASE_PATH: /kardia/
         run: |
@@ -36,6 +51,7 @@ jobs:
         working-directory: site
 
       - name: Configure Git
+        if: github.event_name != 'pull_request'
         env:
           DEPLOY_PRI: ${{ secrets.GITEE_RSA_PRIVATE_KEY }}
           GIT_USERNAME: ${{ github.repository_owner }}
@@ -49,8 +65,9 @@ jobs:
           git config --global user.email "${GIT_EMAIL}"
 
       - name: Commit the Site
+        if: github.event_name != 'pull_request'
         env:
-          GIT_URL: 'git@github.com:licyk/kardia.git'
+          GIT_URL: "git@github.com:licyk/kardia.git"
         run: |
           git -C "${{ github.workspace }}/site/.output/public" init
           git -C "${{ github.workspace }}/site/.output/public" remote add origin "${GIT_URL}"
@@ -58,5 +75,6 @@ jobs:
           git -C "${{ github.workspace }}/site/.output/public" commit -m "Site auto generated. Time: $(date +'%Y-%m-%d %H:%M:%S')"
 
       - name: Push the Site
+        if: github.event_name != 'pull_request'
         run: |
           git -C "${{ github.workspace }}/site/.output/public" push origin HEAD:gh-pages --force
