@@ -43,8 +43,8 @@ impl Subscription {
 
 enum Signal {
     Change(PathBuf),
-    /// A symbolic link to a directory was added below a watched directory.
-    Link(PathBuf),
+    /// A directory symlink or a replaced file needs its own native watch.
+    Watch(PathBuf),
     Ready(u64),
     Error(Error),
 }
@@ -68,13 +68,29 @@ impl Watcher {
             let base = root.clone();
             let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
                 Err(error) => drop(tx.send(Signal::Error(Error::new(error)))),
-                Ok(event) if is_change(&event.kind) => {
+                Ok(event) => {
+                    // kqueue watches an inode, so a replacement needs a fresh watch.
+                    if cfg!(target_os = "macos")
+                        && matches!(
+                            event.kind,
+                            EventKind::Remove(_) | EventKind::Modify(notify::event::ModifyKind::Name(_))
+                        )
+                    {
+                        for changed in &event.paths {
+                            if changed.is_file() {
+                                let _ = tx.send(Signal::Watch(changed.clone()));
+                            }
+                        }
+                    }
+                    if !is_change(&event.kind) {
+                        return;
+                    }
                     for changed in event.paths {
                         // the ancestors of a file are tested as directories by `admits`
                         if changed.is_dir() {
                             // notify descends only into new entries that are directories themselves
                             if !is_file && changed.is_symlink() {
-                                let _ = tx.send(Signal::Link(changed));
+                                let _ = tx.send(Signal::Watch(changed));
                             }
                             continue;
                         }
@@ -92,21 +108,19 @@ impl Watcher {
                         }
                     }
                 }
-                Ok(_) => {}
             })?;
-            // kqueue must register the children too to observe their contents changing.
-            let mode = if is_file && !cfg!(target_os = "macos") {
-                RecursiveMode::NonRecursive
-            } else {
-                RecursiveMode::Recursive
-            };
+            let mode = if is_file { RecursiveMode::NonRecursive } else { RecursiveMode::Recursive };
             watcher.watch(&root, mode)?;
+            // A non-recursive kqueue directory watch does not observe file contents.
+            if cfg!(target_os = "macos") && is_file && path.is_file() {
+                watcher.watch(&path, RecursiveMode::NonRecursive)?;
+            }
             let task = tokio::spawn(async move {
                 while let Some(signal) = rx.recv().await {
                     match signal {
                         Signal::Change(path) => emit(&dispatch, |hooks| &hooks.change, &path),
-                        // fails only if the link is gone already
-                        Signal::Link(path) => drop(watcher.watch(&path, RecursiveMode::Recursive)),
+                        // fails only if the path is gone already
+                        Signal::Watch(path) => drop(watcher.watch(&path, RecursiveMode::Recursive)),
                         Signal::Ready(id) => {
                             let listener = dispatch.lock().ready.get(id).cloned();
                             if let Some(listener) = listener {

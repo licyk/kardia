@@ -285,15 +285,15 @@ tokio = "1.47"
 
         let (old, new, changes) = plan(&root, Level::Patch).unwrap();
         assert_eq!((old, new), (version("0.1.3"), version("0.1.4")));
-        let names = |changes: &[Change]| -> Vec<String> {
-            changes.iter().map(|c| c.path.strip_prefix(&root).unwrap().display().to_string()).collect()
+        let names = |changes: &[Change]| -> Vec<PathBuf> {
+            changes.iter().map(|c| c.path.strip_prefix(&root).unwrap().to_path_buf()).collect()
         };
         // a patch keeps the requirement users write
-        assert_eq!(names(&changes), ["Cargo.toml"]);
+        assert_eq!(names(&changes), [PathBuf::from("Cargo.toml")]);
 
         let (_, new, changes) = plan(&root, Level::Minor).unwrap();
         assert_eq!(new, version("0.2.0"));
-        assert_eq!(names(&changes), ["Cargo.toml", "README.md", "site/content/docs/a.mdx"]);
+        assert_eq!(names(&changes), ["Cargo.toml", "README.md", "site/content/docs/a.mdx"].map(PathBuf::from));
         assert_eq!(changes[1].contents, "kardia = \"0.2\"\n");
     }
 
