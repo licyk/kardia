@@ -70,22 +70,21 @@ impl Watcher {
                 Err(error) => drop(tx.send(Signal::Error(Error::new(error)))),
                 Ok(event) => {
                     // kqueue watches an inode, so a replacement needs a fresh watch.
-                    if cfg!(target_os = "macos")
+                    let replaced = cfg!(target_os = "macos")
                         && matches!(
                             event.kind,
                             EventKind::Remove(_) | EventKind::Modify(notify::event::ModifyKind::Name(_))
-                        )
-                    {
-                        for changed in &event.paths {
-                            if changed.is_file() {
-                                let _ = tx.send(Signal::Watch(changed.clone()));
-                            }
-                        }
-                    }
-                    if !is_change(&event.kind) {
+                        );
+                    let change = is_change(&event.kind);
+                    if !change && !replaced {
                         return;
                     }
                     for changed in event.paths {
+                        if replaced && changed.is_file() {
+                            let _ = tx.send(Signal::Watch(changed.clone()));
+                        } else if !change {
+                            continue;
+                        }
                         // the ancestors of a file are tested as directories by `admits`
                         if changed.is_dir() {
                             // notify descends only into new entries that are directories themselves
