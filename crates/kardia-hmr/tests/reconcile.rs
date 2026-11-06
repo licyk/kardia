@@ -32,7 +32,7 @@ impl ModuleSource for Files {
 }
 
 fn path(name: &str) -> String {
-    format!("/app/{name}")
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("app").join(name).to_string_lossy().into_owned()
 }
 
 impl Files {
@@ -297,7 +297,7 @@ async fn replaces_the_plugins_below_a_directory_root() {
 
     app.files.write("root/dep.rs", value(json!("v2")));
     app.files.write("root-sibling/dep.rs", value(json!("v2")));
-    let result = app.reconcile(&["/app/root/"]).await.unwrap();
+    let result = app.reconcile(&[&path("root/")]).await.unwrap();
     assert_eq!(result.settled_fibers.len(), 1);
     assert_eq!(app.query("root"), Some(json!("v2")));
     assert_eq!(app.query("sibling"), Some(json!("v1")));
@@ -446,7 +446,7 @@ async fn refreshes_a_module_that_no_plugin_depends_on_for_its_next_import() {
     let orphan = app.files.write("orphan.rs", value(json!(1)));
     app.graph.import(&orphan).unwrap();
     app.files.write("orphan.rs", value(json!(2)));
-    let result = app.reconcile(&[&orphan, "/app/data.txt"]).await.unwrap();
+    let result = app.reconcile(&[&orphan, &path("data.txt")]).await.unwrap();
     assert!(result.settled_fibers.is_empty());
     let Exports::Value(after) = app.graph.import(&orphan).unwrap() else { panic!("a value") };
     assert_eq!(after, json!(2));
@@ -605,7 +605,7 @@ async fn skips_a_changed_host_module_below_a_root_and_applies_the_other_changes(
     app.graph.mark_host([host.clone()]);
     app.files.write("host/host.rs", plugin("host", "v2"));
     app.files.write("host/other.rs", plugin("other", "v2"));
-    let result = app.reconcile(&["/app/host"]).await.unwrap();
+    let result = app.reconcile(&[&path("host")]).await.unwrap();
     assert_eq!(result.skipped_host_modules, vec![host]);
     assert_eq!(app.query("host"), Some(json!("v1")));
     assert_eq!(app.query("other"), Some(json!("v2")));

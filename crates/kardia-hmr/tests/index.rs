@@ -48,7 +48,7 @@ impl Files {
 }
 
 fn path(name: &str) -> String {
-    format!("/app/{name}")
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("app").join(name).to_string_lossy().into_owned()
 }
 
 fn value(value: &'static str) -> ModuleCode {

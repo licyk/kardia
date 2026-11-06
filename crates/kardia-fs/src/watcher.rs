@@ -94,7 +94,12 @@ impl Watcher {
                 }
                 Ok(_) => {}
             })?;
-            let mode = if is_file { RecursiveMode::NonRecursive } else { RecursiveMode::Recursive };
+            // kqueue must register the children too to observe their contents changing.
+            let mode = if is_file && !cfg!(target_os = "macos") {
+                RecursiveMode::NonRecursive
+            } else {
+                RecursiveMode::Recursive
+            };
             watcher.watch(&root, mode)?;
             let task = tokio::spawn(async move {
                 while let Some(signal) = rx.recv().await {
