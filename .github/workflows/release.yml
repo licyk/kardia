@@ -117,8 +117,15 @@ jobs:
             if cargo publish --workspace "${exclude[@]}" 2>&1 | tee publish.log; then
               exit 0
             fi
-            grep -q "429 Too Many Requests" publish.log || exit 1
-            sleep 610
+            if grep -q "429 Too Many Requests" publish.log; then
+              sleep 610
+            # cargo bug: when the registry confirms only some of the crates it waits on, cargo aborts instead of
+            # waiting for the rest; the next attempt resumes after the crates already published, once the index has them
+            elif grep -q "no packages ready to publish" publish.log; then
+              sleep 60
+            else
+              exit 1
+            fi
           done
           exit 1
 
