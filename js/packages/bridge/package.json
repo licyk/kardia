@@ -1,6 +1,6 @@
 {
   "name": "@kardiajs/bridge",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "The client side of the kardia bridge: mirrors the services, events and lifecycle of a Rust kardia app into @kardiajs/core",
   "type": "module",
   "sideEffects": false,
