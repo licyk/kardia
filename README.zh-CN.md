@@ -345,7 +345,7 @@ bun run build
 
 **CI** 按变更涉及的内容划分：
 
-- **`ci.yml`：** 执行 Rust 检查，固定使用 Rust 1.96.0，因为 `kardia-macros` 的编译错误快照依赖编译器版本。仅修改文档站点、`js/` 或 Markdown 时会跳过。
+- **`ci.yml`：** 执行 Rust 检查，固定使用 Rust 1.99.1，因为 `kardia-macros` 的编译错误快照依赖编译器版本。仅修改文档站点、`js/` 或 Markdown 时会跳过。
 - **`js.yml`：** npm 包的类型检查、测试和构建，以及桥的端到端测试。
 - **`site.yml`：** 检查并部署文档站点。
 

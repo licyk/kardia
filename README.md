@@ -337,7 +337,7 @@ bun run build
 - **`js-version <patch|minor|major>`** and **`js-tag [--push]`:** the same for the npm packages, which have a version of their own and `js-v<version>` tags.
 
 **CI** is split by what a change touches:
-- **`ci.yml`:** the Rust checks, on a pinned Rust 1.96.0, since the compile-error snapshots of `kardia-macros` depend on the compiler version. It skips changes only to the docs site, `js/` or Markdown.
+- **`ci.yml`:** the Rust checks, on a pinned Rust 1.99.1, since the compile-error snapshots of `kardia-macros` depend on the compiler version. It skips changes only to the docs site, `js/` or Markdown.
 - **`js.yml`:** the npm packages' types, tests and build, and the bridge's end-to-end test.
 - **`site.yml`:** checks and deploys the docs site.
 

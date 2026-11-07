@@ -53,7 +53,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       # pinned: the compile-error snapshots of kardia-macros depend on the compiler version
-      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           components: rustfmt, clippy
           # the rust guest test also builds its fixture as a WASM module

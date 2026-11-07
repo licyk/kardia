@@ -5,6 +5,7 @@ error[E0277]: the trait bound `(Database,): Has<Timer, _>` is not satisfied
    |                      ^^^ the trait `Has<Timer, _>` is not implemented for `(Database,)`
    |
    = help: the following other types implement trait `Has<S, I>`:
+             `(A,)` implements `Has<A, I0>`
              `(A, B)` implements `Has<A, I0>`
              `(A, B)` implements `Has<B, I1>`
              `(A, B, C)` implements `Has<A, I0>`
@@ -12,7 +13,6 @@ error[E0277]: the trait bound `(Database,): Has<Timer, _>` is not satisfied
              `(A, B, C)` implements `Has<C, I2>`
              `(A, B, C, D)` implements `Has<A, I0>`
              `(A, B, C, D)` implements `Has<B, I1>`
-             `(A, B, C, D)` implements `Has<C, I2>`
            and $N others
    = note: there's an inherent method on `kardia_core::Context` of the same name, which can be auto-dereferenced from `&kardia_core::Context`
 note: required by a bound in `Injected::<D>::get`

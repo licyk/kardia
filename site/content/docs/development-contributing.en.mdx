@@ -69,7 +69,7 @@ The repository has five workflows, each for one part of it, so that a change run
 CI's steps:
 
 1. Check out the repository.
-2. Install Rust **1.96.0** (`dtolnay/rust-toolchain@1.96.0`) with `rustfmt`, `clippy` and the `wasm32-unknown-unknown` target. The toolchain is pinned because the compile-error snapshots of `kardia-macros` (trybuild tests) depend on the compiler version.
+2. Install Rust **1.99.1** (`dtolnay/rust-toolchain@1.99.1`) with `rustfmt`, `clippy` and the `wasm32-unknown-unknown` target. The toolchain is pinned because the compile-error snapshots of `kardia-macros` (trybuild tests) depend on the compiler version.
 3. Restore the cargo cache (`Swatinem/rust-cache`).
 4. `cargo fmt --all --check`
 5. `cargo clippy --workspace --all-targets -- -D warnings`

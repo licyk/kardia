@@ -1,7 +1,7 @@
 # Pinned: the compile-error snapshots of kardia-macros depend on the compiler version. Keep in step with the
 # dtolnay/rust-toolchain version in .github/workflows.
 [toolchain]
-channel = "1.96.0"
+channel = "1.99.1"
 profile = "minimal"
 components = ["rustfmt", "clippy"]
 # the rust guest test also builds its fixture as a WASM module

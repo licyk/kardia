@@ -40,7 +40,7 @@ icon: ListChecks
 
 kardia 已在 crates.io 上以 [`kardia`](https://crates.io/crates/kardia) 和九个 `kardia-*` crate 的形式发布；各版本见 [Releases](https://github.com/licyk/kardia/releases)。
 
-CI（`.github/workflows/ci.yml`）在改动 Rust 代码的推送和拉取请求上，在固定的工具链（Rust 1.96.0）上运行 `cargo fmt --check`、将警告视为错误的 clippy、`cargo xtask arch` 以及测试套件，因为 `kardia-macros` 的编译错误快照会随编译器而变化。推送 `v*` 标签会运行 `release.yml`：复用 CI 对该标签所指提交的运行结果，然后对 crates.io 上尚不存在的每个 crate 版本执行 `cargo publish --workspace`，并等待 crates.io 对新 crate 的数量限制过去，最后创建 GitHub Release。该工作流也可以手动启动，以继续一次中途停止的发布。[参与开发](/docs/development-contributing#releases)逐步描述了这些工作流。
+CI（`.github/workflows/ci.yml`）在改动 Rust 代码的推送和拉取请求上，在固定的工具链（Rust 1.99.1）上运行 `cargo fmt --check`、将警告视为错误的 clippy、`cargo xtask arch` 以及测试套件，因为 `kardia-macros` 的编译错误快照会随编译器而变化。推送 `v*` 标签会运行 `release.yml`：复用 CI 对该标签所指提交的运行结果，然后对 crates.io 上尚不存在的每个 crate 版本执行 `cargo publish --workspace`，并等待 crates.io 对新 crate 的数量限制过去，最后创建 GitHub Release。该工作流也可以手动启动，以继续一次中途停止的发布。[参与开发](/docs/development-contributing#releases)逐步描述了这些工作流。
 
 ## 偏离 [#deviations]
 

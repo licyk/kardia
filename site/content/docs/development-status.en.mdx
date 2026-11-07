@@ -40,7 +40,7 @@ Every case of every TypeScript spec has been ported, found already covered, or j
 
 kardia is published on crates.io as [`kardia`](https://crates.io/crates/kardia) and the nine `kardia-*` crates; the [releases](https://github.com/licyk/kardia/releases) list each version.
 
-CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, clippy with warnings as errors, `cargo xtask arch` and the test suite on pushes and pull requests that change Rust code, on a pinned toolchain (Rust 1.96.0), because the compile-error snapshots of `kardia-macros` change with the compiler. Pushing a `v*` tag runs `release.yml`: it reuses CI's run of the tagged commit, then runs `cargo publish --workspace` for every crate version crates.io does not have yet, waiting out its limit on new crates, and creates the GitHub release. The workflow can also be started by hand to resume a release that stopped part-way. [Contributing](/docs/development-contributing#releases) describes the workflows step by step.
+CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, clippy with warnings as errors, `cargo xtask arch` and the test suite on pushes and pull requests that change Rust code, on a pinned toolchain (Rust 1.99.1), because the compile-error snapshots of `kardia-macros` change with the compiler. Pushing a `v*` tag runs `release.yml`: it reuses CI's run of the tagged commit, then runs `cargo publish --workspace` for every crate version crates.io does not have yet, waiting out its limit on new crates, and creates the GitHub release. The workflow can also be started by hand to resume a release that stopped part-way. [Contributing](/docs/development-contributing#releases) describes the workflows step by step.
 
 ## Deviations [#deviations]
 

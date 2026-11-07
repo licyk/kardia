@@ -69,7 +69,7 @@ bun run build       # 按依赖顺序生成每个包的 lib/（scripts/build.ts�
 CI 的步骤：
 
 1. 检出仓库。
-2. 安装 Rust **1.96.0**（`dtolnay/rust-toolchain@1.96.0`），以及 `rustfmt`、`clippy` 和 `wasm32-unknown-unknown` 目标。工具链之所以固定版本，是因为 `kardia-macros` 的编译错误快照（trybuild 测试）依赖于编译器版本。
+2. 安装 Rust **1.99.1**（`dtolnay/rust-toolchain@1.99.1`），以及 `rustfmt`、`clippy` 和 `wasm32-unknown-unknown` 目标。工具链之所以固定版本，是因为 `kardia-macros` 的编译错误快照（trybuild 测试）依赖于编译器版本。
 3. 恢复 cargo 缓存（`Swatinem/rust-cache`）。
 4. `cargo fmt --all --check`
 5. `cargo clippy --workspace --all-targets -- -D warnings`

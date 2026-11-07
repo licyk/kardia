@@ -50,7 +50,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       # pinned like ci.yml: rust-toolchain.toml names the same version
-      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2.9.3
       - uses: oven-sh/setup-bun@v2.2.0
         with:
