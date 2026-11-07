@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::env::consts::{DLL_PREFIX, DLL_SUFFIX, EXE_SUFFIX};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 use common::{App, fiber, scratch};
 use kardia_hmr::{DylibSource, ProcessSource, WasmSource};
@@ -23,15 +23,21 @@ enum Kind {
 
 /// Builds the fixture once per version and kind; returns a link to the
 /// artifact, so that later builds (which replace it) do not change it.
+///
+/// Each version has a target directory of its own: on Windows the linker
+/// rewrites an existing output in place, so a shared directory would let a
+/// v2 build change the file a v1 link points to, or fail to open it while a
+/// test uses it.
 fn artifact(version: &str, kind: Kind) -> PathBuf {
     static BUILT: Mutex<Option<HashMap<String, PathBuf>>> = Mutex::new(None);
-    let mut built = BUILT.lock().unwrap();
+    // a failed build fails its own test, not every later one
+    let mut built = BUILT.lock().unwrap_or_else(PoisonError::into_inner);
     let key = format!("{version}-{kind:?}");
     if let Some(path) = built.get_or_insert_default().get(&key) {
         return path.clone();
     }
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rust-guest/Cargo.toml");
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("rust-guest");
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("rust-guest-{version}"));
     let mut build = Command::new(env!("CARGO"));
     build.args(["build", "--quiet", "--manifest-path"]).arg(&manifest).arg("--target-dir").arg(&dir);
     match kind {
