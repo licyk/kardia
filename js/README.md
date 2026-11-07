@@ -8,6 +8,7 @@ The TypeScript side of [kardia](https://github.com/licyk/kardia): the same plugi
 | [`@kardiajs/timer`](packages/timer/) | Timeouts, intervals, sleep, throttle and debounce that end with their plugin |
 | [`@kardiajs/bridge`](packages/bridge/) | The client side of the bridge to a Rust app running `kardia-bridge` |
 | [`@kardiajs/tauri`](packages/tauri/) | The bridge's transport over one Tauri command and a `Channel` |
+| [`@kardiajs/vue`](packages/vue/) | Vue integration: extensions contribute components, views and routes to a Vue app, and they leave with their plugin |
 
 ## Development
 

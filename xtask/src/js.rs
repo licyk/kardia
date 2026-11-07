@@ -9,7 +9,7 @@ use crate::tag::Release;
 use crate::version::{Change, Level, Options, Version};
 
 /// The packages, in dependency order.
-pub const PACKAGES: [&str; 4] = ["core", "timer", "bridge", "tauri"];
+pub const PACKAGES: [&str; 5] = ["core", "timer", "bridge", "tauri", "vue"];
 
 pub fn run(root: &Path, options: &Options) -> Result<(), String> {
     let (old, new, changes) = plan(root, options.level)?;
@@ -152,7 +152,7 @@ mod tests {
         }
         let (old, new, changes) = plan(&root, Level::Minor).unwrap();
         assert_eq!((old, new), (version("0.1.4"), version("0.2.0")));
-        assert_eq!(changes.len(), 4);
+        assert_eq!(changes.len(), 5);
         assert_eq!(release(&root).unwrap().version, version("0.1.4"));
 
         let timer = root.join("js/packages/timer/package.json");

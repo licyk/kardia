@@ -1,4 +1,4 @@
-# Publishes the npm packages under js/ (@kardiajs/core, timer, bridge, tauri), which are versioned together and apart
+# Publishes the npm packages under js/ (@kardiajs/core, timer, bridge, tauri, vue), which are versioned together and apart
 # from the crates. A js-v<version> tag (cargo xtask js-tag --push) releases the version it names; a manual run releases
 # the chosen ref's version, resuming a release that stopped part-way (a version already on npm is skipped). The crates
 # have their own workflow, release.yml, whose v* tags js-v* tags do not match.
@@ -32,7 +32,7 @@ jobs:
         working-directory: js
         run: |
           version=$(node -p 'require("./packages/core/package.json").version')
-          for name in core timer bridge tauri; do
+          for name in core timer bridge tauri vue; do
             other=$(node -p "require('./packages/$name/package.json').version")
             if [ "$other" != "$version" ]; then
               echo "::error::@kardiajs/$name is at $other, @kardiajs/core at $version: bump them with cargo xtask js-version"
@@ -83,7 +83,7 @@ jobs:
         env:
           VERSION: ${{ needs.plan.outputs.version }}
         run: |
-          for name in core timer bridge tauri; do
+          for name in core timer bridge tauri vue; do
             if npm view "@kardiajs/$name@$VERSION" version > /dev/null 2>&1; then
               echo "@kardiajs/$name@$VERSION is on npm already"
               continue

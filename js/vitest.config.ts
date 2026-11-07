@@ -11,6 +11,7 @@ export default defineConfig({
       "@kardiajs/timer": source("timer"),
       "@kardiajs/bridge": source("bridge"),
       "@kardiajs/tauri": source("tauri"),
+      "@kardiajs/vue": source("vue"),
     },
   },
   // `#/` imports resolve to each package's sources (package.json `imports`, condition `source`);

@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const PACKAGES = ["core", "timer", "bridge", "tauri"];
+const PACKAGES = ["core", "timer", "bridge", "tauri", "vue"];
 
 const workspace = fileURLToPath(new URL("..", import.meta.url));
 const at = (path: string) => `${workspace}/${path}`;

@@ -1,0 +1,53 @@
+{
+  "name": "@kardiajs/vue",
+  "version": "0.1.1",
+  "description": "Vue integration for @kardiajs/core: extensions contribute components, views and routes to a Vue app, and they leave with their plugin",
+  "type": "module",
+  "sideEffects": false,
+  "license": "GPL-3.0-only",
+  "author": "licyk",
+  "homepage": "https://kardia-dev.netlify.app",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/licyk/kardia.git",
+    "directory": "js/packages/vue"
+  },
+  "bugs": {
+    "url": "https://github.com/licyk/kardia/issues"
+  },
+  "keywords": [
+    "kardia",
+    "cordis",
+    "vue",
+    "plugin",
+    "extensions"
+  ],
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "imports": {
+    "#/*": {
+      "source": "./src/*.ts",
+      "types": "./lib/*.d.ts",
+      "default": "./lib/*.js"
+    }
+  },
+  "files": [
+    "lib",
+    "src",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "peerDependencies": {
+    "@kardiajs/core": "^0.1",
+    "vue": "^3.3.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
