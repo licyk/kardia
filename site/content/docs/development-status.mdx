@@ -57,7 +57,7 @@ CI（`.github/workflows/ci.yml`）在改动 Rust 代码的推送和拉取请求�
 | 错误 | 配置文件错误和加载器为条目记录的错误以文本形式携带 `file:line:col` 位置。见[错误](/docs/development-status#errors)。 |
 | 加载器 API | 解析父分组时，会等待插件仍在加载中的分组条目（它的分组只有在其 `apply` 运行后才存在）。 |
 | 服务间调用 | 服务通过它保存的上下文（它的定义处）解析自己的依赖，因此外层调用者的拦截元数据不会传到它进一步调用的服务（这些元数据保留在 `Svc::caller()` 上），而服务通过其保存的上下文创建的效应属于该服务的纤程。在 TS 中，二者都跟随使用处。 |
-| 事件 | `emit` 记录发生 panic 的监听器并继续；TS 让抛出异常的监听器中止分发。没有通用的 `waterfall`；由带类型的钩子（`on_config`、`on_update`）代替。 |
+| 事件 | `emit` 和 `bail` 记录发生 panic 的监听器并继续，`serial` 把该 panic 作为错误返回，`parallel` 收集它（见[派发](/docs/guide-services#dispatching)）；TS 让抛出异常的监听器中止分发。没有通用的 `waterfall`；由带类型的钩子（`on_config`、`on_update`）代替。 |
 | 日志器 | 消息由调用者格式化（`impl Display`），因此导出器收到的是已完成格式化的文本：没有 `%` 指令，也没有自定义格式化器。 |
 | 加载器钩子 | `loader/patch-context` 即 `Loader::on_patch_context(ctx, hook)`；`EntryHandle::init`；一个没有 Rust 对应物的 hmr 用例。见[加载器钩子](/docs/development-status#loader-hooks)。 |
 | 模型测试 | [属性测试](/docs/development-testing#model-based)以带随机延迟的真实 tokio 调度驱动，而不是确定性调度器。它们在每次运行期间检查顺序性，并在静止时检查保持性、恢复精确性和合流性（活跃纤程恰好是支撑集）。 |

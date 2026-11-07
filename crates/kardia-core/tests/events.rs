@@ -6,7 +6,7 @@ mod common;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use common::{Custom, Gate, Seq};
+use common::{Custom, Gate, Seq, errors, settle};
 use kardia_core::{Context, EffectHandle, Error, Event, PluginDef};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -166,7 +166,7 @@ async fn skips_a_listener_disposed_by_an_earlier_plugin_during_dispatch() {
         .unwrap();
     child.settled().await.unwrap();
     *slot.lock() = Some(child);
-    root.serial(&Custom).await;
+    root.serial(&Custom).await.unwrap();
     assert_eq!(calls(&removed), 0);
 }
 
@@ -202,7 +202,7 @@ async fn filters_listeners_by_their_context() {
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     root.emit(&Session { flag: true });
     root.bail(&Session { flag: true });
-    root.serial(&Session { flag: true }).await;
+    root.serial(&Session { flag: true }).await.unwrap();
     root.parallel(&Session { flag: true }).await.unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 4);
 }
@@ -255,19 +255,73 @@ async fn bail_and_serial_return_the_first_bailed_result() {
     })
     .unwrap();
     assert_eq!(root.bail(&Query), Some(Some("sync")));
-    assert_eq!(root.serial(&Query).await, Some(Some("async")));
+    assert_eq!(root.serial(&Query).await.unwrap(), Some(Some("async")));
     assert_eq!(seen.get(), vec![1, 3, 1]);
 }
 
+/// Registers a listener of `E` that panics, synchronous or asynchronous.
+fn panicking<E: Event>(root: &Context, asynchronous: bool) {
+    if asynchronous {
+        root.on_async(|_: &E| async { panic!("listener failed") }).unwrap();
+    } else {
+        root.on(|_: &E| panic!("listener failed")).unwrap();
+    }
+}
+
 #[tokio::test]
-async fn listener_panics_are_logged() {
+async fn emit_logs_a_panicking_listener_and_runs_the_rest() {
+    for asynchronous in [false, true] {
+        let root = Context::new();
+        let errors = errors(&root);
+        panicking::<Custom>(&root, asynchronous);
+        let (count, listener) = counter();
+        root.on(listener).unwrap();
+        root.emit(&Custom);
+        settle().await;
+        assert_eq!(calls(&count), 1, "async: {asynchronous}");
+        assert_eq!(errors.get(), vec!["panicked: listener failed"], "async: {asynchronous}");
+    }
+}
+
+#[tokio::test]
+async fn bail_logs_a_panicking_listener_as_not_bailing() {
+    for asynchronous in [false, true] {
+        let root = Context::new();
+        let errors = errors(&root);
+        panicking::<Query>(&root, asynchronous);
+        root.on(|_: &Query| Some("answer")).unwrap();
+        assert_eq!(root.bail(&Query), Some(Some("answer")), "async: {asynchronous}");
+        settle().await;
+        assert_eq!(errors.get(), vec!["panicked: listener failed"], "async: {asynchronous}");
+    }
+}
+
+#[tokio::test]
+async fn serial_stops_at_a_panicking_listener() {
+    for asynchronous in [false, true] {
+        let root = Context::new();
+        let errors = errors(&root);
+        panicking::<Custom>(&root, asynchronous);
+        let (count, listener) = counter();
+        root.on(listener).unwrap();
+        let error = root.serial(&Custom).await.unwrap_err();
+        assert_eq!(error.to_string(), "panicked: listener failed", "async: {asynchronous}");
+        assert_eq!(calls(&count), 0, "async: {asynchronous}");
+        assert!(errors.get().is_empty(), "async: {asynchronous}");
+    }
+}
+
+#[tokio::test]
+async fn parallel_collects_panics_and_runs_the_rest() {
     let root = Context::new();
-    root.on(|_: &Custom| panic!("listener failed")).unwrap();
+    panicking::<Custom>(&root, false);
+    panicking::<Custom>(&root, true);
     let (count, listener) = counter();
     root.on(listener).unwrap();
-    root.emit(&Custom);
+    let error = root.parallel(&Custom).await.unwrap_err();
+    let messages: Vec<_> = error.errors.iter().map(ToString::to_string).collect();
+    assert_eq!(messages, vec!["panicked: listener failed"; 2]);
     assert_eq!(calls(&count), 1);
-    assert!(root.log_buffer()[0].text.contains("listener failed"));
 }
 
 #[tokio::test]
@@ -323,7 +377,7 @@ async fn supports_symbol_event_names_across_dispatch_modes() {
         .unwrap();
     root.emit(&Payload(1));
     assert_eq!(root.bail(&Payload(2)), Some(Some(2)));
-    assert_eq!(root.serial(&Payload(3)).await, Some(Some(3)));
+    assert_eq!(root.serial(&Payload(3)).await.unwrap(), Some(Some(3)));
     root.parallel(&Payload(4)).await.unwrap();
     assert_eq!(seen.get(), vec![1, 2, 3, 4]);
     handle.dispose().await.unwrap();
@@ -335,7 +389,7 @@ async fn supports_symbol_event_names_across_dispatch_modes() {
 async fn ctx_serial() {
     let root = Context::new();
     root.on(|_: &Session| Err(Error::msg("message"))).unwrap();
-    let result = root.serial(&Session { flag: true }).await;
+    let result = root.serial(&Session { flag: true }).await.unwrap();
     assert_eq!(result.unwrap().unwrap_err().to_string(), "message");
 }
 

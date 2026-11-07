@@ -298,9 +298,9 @@ Each registration is an effect of the current fiber, so a listener is removed wh
 
 | Method | Behaviour |
 |---|---|
-| `ctx.emit(&event)` | calls every listener; asynchronous ones are started, not awaited. A panicking listener is logged and the dispatch continues. |
+| `ctx.emit(&event)` | calls every listener; asynchronous ones are started, not awaited |
 | `ctx.bail(&event)` | calls synchronous listeners until one returns a bailing result, which it returns as `Some(..)`; asynchronous ones are started, not awaited |
-| `ctx.serial(&event).await` | calls listeners one after another, awaiting each, until one bails |
+| `ctx.serial(&event).await` | calls listeners one after another, awaiting each, until one bails: `Ok(Some(..))` with its result, or `Ok(None)` |
 | `ctx.parallel(&event).await` | calls all listeners concurrently and collects failures and panics into an `AggregateError` (`one or more listeners of event E failed`) |
 
 ```rust
@@ -315,6 +315,17 @@ let answer = ctx.bail(&Query("version"));      // Some(Some("1.2.0"))
 ```
 
 Dispatch takes a snapshot of the listeners and skips those removed meanwhile. An event can restrict its audience with `filter`, which gets the context each listener was registered in.
+
+A listener that panics, synchronous or asynchronous, never takes the dispatching code down with it:
+
+| Mode | A panicking listener |
+|---|---|
+| `emit` | is logged (`panicked: <message>`); the rest still run |
+| `bail` | is logged and counts as not bailing; the rest still run. An asynchronous one, which `bail` only starts, is logged when it panics |
+| `serial` | stops the dispatch: `serial` returns `Err(..)` with the panic, and later listeners do not run |
+| `parallel` | is one of the failures in the `AggregateError`; the rest still run |
+
+A listener's own `Err(..)` result is an answer, not a failure: it bails `bail` and `serial`, which return it as `Some(Err(..))`.
 
 Unlike Cordis, `emit` does not let a failing listener abort the dispatch, and there is no generic `waterfall`: extension points that Cordis builds on waterfall events are typed hooks (below).
 

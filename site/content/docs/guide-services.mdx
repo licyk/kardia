@@ -298,9 +298,9 @@ pub trait Event: Any + Send + Sync {
 
 | 方法 | 行为 |
 |---|---|
-| `ctx.emit(&event)` | 调用每个监听器；异步监听器只启动、不等待。监听器 panic 时会被记录，派发继续。 |
+| `ctx.emit(&event)` | 调用每个监听器；异步监听器只启动、不等待 |
 | `ctx.bail(&event)` | 依次调用同步监听器，直到某个返回中止结果，并以 `Some(..)` 返回它；异步监听器只启动、不等待 |
-| `ctx.serial(&event).await` | 逐个调用并等待监听器，直到某个中止 |
+| `ctx.serial(&event).await` | 逐个调用并等待监听器，直到某个中止：返回带其结果的 `Ok(Some(..))`，或 `Ok(None)` |
 | `ctx.parallel(&event).await` | 并发调用所有监听器，把失败和 panic 收集到一个 `AggregateError`（`one or more listeners of event E failed`） |
 
 ```rust
@@ -315,6 +315,17 @@ let answer = ctx.bail(&Query("version"));      // Some(Some("1.2.0"))
 ```
 
 派发时会对监听器做快照，并跳过期间被移除的监听器。事件可以用 `filter` 限定接收者，`filter` 拿到的是每个监听器登记时所在的上下文。
+
+发生 panic 的监听器，无论同步还是异步，都不会连带拖垮发起派发的代码：
+
+| 模式 | 发生 panic 的监听器 |
+|---|---|
+| `emit` | 被记录（`panicked: <message>`）；其余监听器照常运行 |
+| `bail` | 被记录，并视为未中止；其余监听器照常运行。`bail` 只启动、不等待的异步监听器在 panic 时被记录 |
+| `serial` | 中止派发：`serial` 返回带该 panic 的 `Err(..)`，后面的监听器不再运行 |
+| `parallel` | 是 `AggregateError` 中的一个失败；其余监听器照常运行 |
+
+监听器自己返回的 `Err(..)` 是一个回答，而不是失败：它会中止 `bail` 和 `serial`，二者以 `Some(Err(..))` 返回它。
 
 与 Cordis 不同，`emit` 不会让失败的监听器中止派发，也没有通用的 `waterfall`：Cordis 基于 waterfall 事件构建的扩展点在 kardia 中是类型化的钩子（见下文）。
 

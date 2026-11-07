@@ -320,7 +320,7 @@ impl Context {
 内部事件：`PluginInserted/Removed`、`StatusChanged { fiber, old, new }`、`ServiceChanged { key, realm }`、`ConfigCommitted { fiber, value }`、`Replaced { fiber }`。
 
 <Callout type="info">
-在代码中（`events.rs`）：`trait Event: Any + Send + Sync { type Output: Bailable; fn filter(&self, listener: &Context) -> bool { true } }`。`Bailable`（为 `()`、`bool`、`Option<T>` 和 `Result<T, Error>` 实现）规定哪些结果会终止一次 `bail` / `serial` 分发，以及哪些结果算作 `parallel` 分发的失败。`filter` 取代了 `E: Scoped`：`ServiceChanged` 只会到达那些其上下文把该键解析到同一领域的监听器。监听器按 `TypeId` 保存在 `Vec` 中。`on` 返回 `Result<EffectHandle>`；此外还有 `on_prepend`、`on_async`、`once` 和 `listener_count`。钩子是 `ctx.on_config(..)`（配置变换）、`ctx.on_update::<C>(..)`（每个纤程的更新钩子），以及作为提交点的 `ConfigCommitted` 事件。`ConfigCommitted` 携带 `{ fiber, config }`。`emit` 会记录发生 panic 的监听器并继续执行（见[事件](/docs/development-status#deviations)）。
+在代码中（`events.rs`）：`trait Event: Any + Send + Sync { type Output: Bailable; fn filter(&self, listener: &Context) -> bool { true } }`。`Bailable`（为 `()`、`bool`、`Option<T>` 和 `Result<T, Error>` 实现）规定哪些结果会终止一次 `bail` / `serial` 分发，以及哪些结果算作 `parallel` 分发的失败。`filter` 取代了 `E: Scoped`：`ServiceChanged` 只会到达那些其上下文把该键解析到同一领域的监听器。监听器按 `TypeId` 保存在 `Vec` 中。`on` 返回 `Result<EffectHandle>`；此外还有 `on_prepend`、`on_async`、`once` 和 `listener_count`。钩子是 `ctx.on_config(..)`（配置变换）、`ctx.on_update::<C>(..)`（每个纤程的更新钩子），以及作为提交点的 `ConfigCommitted` 事件。`ConfigCommitted` 携带 `{ fiber, config }`。`serial` 返回 `Result<Option<E::Output>>`：发生 panic 的监听器会以该 panic 作为错误中止它；而 `emit` 和 `bail` 会记录发生 panic 的监听器（无论同步还是异步）并继续执行（见[事件](/docs/development-status#deviations)）。
 </Callout>
 
 ### 日志器 [#logger]

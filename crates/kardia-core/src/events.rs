@@ -122,7 +122,7 @@ impl Context {
     }
 
     /// Registers an asynchronous listener. `emit` and `bail` start it
-    /// without waiting; `serial` and `parallel` await it.
+    /// without waiting (a panic is logged); `serial` and `parallel` await it.
     pub fn on_async<E, F, Fut>(&self, listener: F) -> Result<EffectHandle>
     where
         E: Event,
@@ -152,6 +152,7 @@ impl Context {
     }
 
     /// Calls every listener; asynchronous ones are started, not awaited.
+    /// A panicking listener is logged and the rest still run.
     pub fn emit<E: Event>(&self, event: &E) {
         for entry in self.listeners_for(event) {
             if entry.removed.load(Ordering::Acquire) {
@@ -163,49 +164,48 @@ impl Context {
                         self.logger().log_error(&Error::from_panic(panic));
                     }
                 }
-                Callback::Async(listener) => {
-                    tokio::spawn(listener(event));
-                }
+                Callback::Async(listener) => self.spawn_logged(listener(event)),
             }
         }
     }
 
-    /// Calls synchronous listeners until one returns a bailing result.
+    /// Calls synchronous listeners until one returns a bailing result;
+    /// asynchronous ones are started, not awaited. A panicking listener is
+    /// logged and counts as not bailing.
     pub fn bail<E: Event>(&self, event: &E) -> Option<E::Output> {
         for entry in self.listeners_for(event) {
             if entry.removed.load(Ordering::Acquire) {
                 continue;
             }
             match entry.callback::<E>() {
-                Callback::Sync(listener) => {
-                    let result = listener(event);
-                    if result.is_bailed() {
-                        return Some(result);
-                    }
-                }
-                Callback::Async(listener) => {
-                    tokio::spawn(listener(event));
-                }
+                Callback::Sync(listener) => match catch_unwind(AssertUnwindSafe(|| listener(event))) {
+                    Ok(result) if result.is_bailed() => return Some(result),
+                    Ok(_) => {}
+                    Err(panic) => self.logger().log_error(&Error::from_panic(panic)),
+                },
+                Callback::Async(listener) => self.spawn_logged(listener(event)),
             }
         }
         None
     }
 
     /// Calls listeners one after another, awaiting each, until one bails.
-    pub async fn serial<E: Event>(&self, event: &E) -> Option<E::Output> {
+    /// A panicking listener stops the dispatch with its panic as the error.
+    pub async fn serial<E: Event>(&self, event: &E) -> Result<Option<E::Output>> {
         for entry in self.listeners_for(event) {
             if entry.removed.load(Ordering::Acquire) {
                 continue;
             }
             let result = match entry.callback::<E>() {
-                Callback::Sync(listener) => listener(event),
-                Callback::Async(listener) => listener(event).await,
+                Callback::Sync(listener) => catch_unwind(AssertUnwindSafe(|| listener(event))),
+                Callback::Async(listener) => AssertUnwindSafe(listener(event)).catch_unwind().await,
             };
+            let result = result.map_err(Error::from_panic)?;
             if result.is_bailed() {
-                return Some(result);
+                return Ok(Some(result));
             }
         }
-        None
+        Ok(None)
     }
 
     /// Calls all listeners concurrently and collects their failures.
@@ -283,6 +283,15 @@ impl Context {
             });
             Ok(())
         })
+    }
+
+    fn spawn_logged<T: Send + 'static>(&self, listener: BoxFuture<'static, T>) {
+        let logger = self.logger();
+        tokio::spawn(async move {
+            if let Err(panic) = AssertUnwindSafe(listener).catch_unwind().await {
+                logger.log_error(&Error::from_panic(panic));
+            }
+        });
     }
 
     fn listeners_for<E: Event>(&self, event: &E) -> Vec<Arc<ListenerEntry>> {
