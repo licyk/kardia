@@ -294,6 +294,7 @@ stdout 用于传输协议数据，因此进程客体插件不能向其打印内�
 | [`@kardiajs/timer`](js/packages/timer/) | 随所属插件结束的计时器 |
 | [`@kardiajs/bridge`](js/packages/bridge/) | 桥的客户端：镜像 Rust 应用暴露的服务，使依赖它们的客户端插件恰在其暴露期间运行；双向异步调用；宿主事件 |
 | [`@kardiajs/tauri`](js/packages/tauri/) | 桥在 Tauri 上的传输：一个命令加一个 `Channel` |
+| [`@kardiajs/vue`](js/packages/vue/) | Vue 集成：扩展向 Vue 应用贡献组件、视图和路由，并随所属插件一同移除 |
 
 桥的 Rust 一侧是 [`kardia-bridge`](crates/kardia-bridge/) crate。每个运行时各自保留自己的插件和副作用；桥在两者之间传递服务的可用性、调用和事件。[TypeScript 与 Tauri](https://kardia-dev.netlify.app/docs/guide-typescript) 介绍了两侧的用法。
 

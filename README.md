@@ -288,6 +288,7 @@ When part of an app is TypeScript, as in a Tauri app whose interface runs in a w
 | [`@kardiajs/timer`](js/packages/timer/) | Timers that end with their plugin |
 | [`@kardiajs/bridge`](js/packages/bridge/) | The client of the bridge: mirrors the services the Rust app exposes, so client plugins depending on them run exactly while they are exposed; asynchronous calls both ways; host events |
 | [`@kardiajs/tauri`](js/packages/tauri/) | The bridge's transport over one Tauri command and a `Channel` |
+| [`@kardiajs/vue`](js/packages/vue/) | Vue integration: extensions contribute components, views and routes to a Vue app, and they leave with their plugin |
 
 The Rust side of the bridge is the [`kardia-bridge`](crates/kardia-bridge/) crate. Each runtime keeps its own plugins and effects; the bridge carries service availability, calls and events between them. [TypeScript and Tauri](https://kardia-dev.netlify.app/docs/guide-typescript) shows both sides.
 

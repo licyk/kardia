@@ -116,7 +116,7 @@ Release 先检查标签是否对应工作区版本，然后找到 CI 对这个�
 
 ## npm 发布 [#npm-releases]
 
-四个 `@kardiajs/*` 包共用一个版本，与 crate 的版本分开（从 0.1.0 开始）。桥的协议有自己的版本（两侧的 `PROTOCOL`）：以其他版本打开会话的客户端会被以 `invalid` 错误拒绝，因此来自不同发布的宿主和客户端会明确失败，而不是行为异常。
+`@kardiajs/*` 各包共用一个版本，与 crate 的版本分开（从 0.1.0 开始）。桥的协议有自己的版本（两侧的 `PROTOCOL`）：以其他版本打开会话的客户端会被以 `invalid` 错误拒绝，因此来自不同发布的宿主和客户端会明确失败，而不是行为异常。
 
 <Steps>
 <Step>
@@ -126,7 +126,7 @@ Release 先检查标签是否对应工作区版本，然后找到 CI 对这个�
 `cargo xtask js-tag --push` 把该提交标记为 `js-v0.1.1` 并推送标签，从而启动 `.github/workflows/npm-release.yml`。
 </Step>
 <Step>
-该工作流检查每个包都处于所标记的版本，以 `js.yml` 作为检查，构建各包，并按 core、timer、bridge、tauri 的顺序发布，跳过 npm 上已有的版本（因此手动运行可以续跑一次中途停下的发布）。随后它为该标签创建 GitHub release，说明从上一个 `js-v*` 标签开始。
+该工作流检查每个包都处于所标记的版本，以 `js.yml` 作为检查，构建各包，并按 core、timer、bridge、tauri、vue 的顺序发布，跳过 npm 上已有的版本（因此手动运行可以续跑一次中途停下的发布）。随后它为该标签创建 GitHub release，说明从上一个 `js-v*` 标签开始。
 </Step>
 </Steps>
 
@@ -139,7 +139,7 @@ Release 先检查标签是否对应工作区版本，然后找到 CI 对这个�
 **npmjs.com，组织。** 创建免费组织 `kardiajs`（`kardia` 包名和 `@kardia` 作用域属于他人），并加入维护者的账户。为这些账户启用双因素认证。
 </Step>
 <Step>
-**npmjs.com，首次发布。** npm 在包的设置中配置可信发布者，因此每个包必须先存在。在用 `npm login` 登录的机器上：`cd js && bun install && bun run build`，然后按顺序在 `packages/core`、`timer`、`bridge` 和 `tauri` 中执行 `npm publish --access public`。这样发布的 0.1.0 不带来源证明；之后的版本都由 CI 发布。
+**npmjs.com，首次发布。** npm 在包的设置中配置可信发布者，因此每个包必须先存在。在用 `npm login` 登录的机器上：`cd js && bun install && bun run build`，然后按顺序在 `packages/core`、`timer`、`bridge`、`tauri` 和 `vue` 中执行 `npm publish --access public`。这样发布的首个版本不带来源证明；之后的版本都由 CI 发布。之后新增的包（如 `@kardiajs/vue`）在首次 CI 发布之前，同样需要这一步和它自己的可信发布者。
 </Step>
 <Step>
 **GitHub，环境。** 在仓库的 *Settings → Environments* 中创建 `npm`。可以选择把它的部署限制为 `js-v*` 标签，并添加必需的审核人：发布任务会等待他们批准。

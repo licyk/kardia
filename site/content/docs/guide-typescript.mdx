@@ -1,6 +1,6 @@
 ---
 title: "TypeScript 与 Tauri"
-description: "@kardiajs npm 包：在 TypeScript 中使用同一套插件模型，以及把 TypeScript 运行时（如 Tauri webview）连接到 Rust kardia 应用的桥。"
+description: "@kardiajs npm 包：在 TypeScript 中使用同一套插件模型、把 TypeScript 运行时（如 Tauri webview）连接到 Rust kardia 应用的桥，以及 Vue 界面的扩展点。"
 icon: Cable
 ---
 
@@ -12,6 +12,7 @@ kardia 组合的是 Rust 应用。当应用的一部分是 TypeScript 时（例�
 | [`@kardiajs/timer`](https://www.npmjs.com/package/@kardiajs/timer) | `timeout`、`interval`、`sleep`、`throttle` 与 `debounce`，在所属插件停止时取消 |
 | [`@kardiajs/bridge`](https://www.npmjs.com/package/@kardiajs/bridge) | 桥的客户端 |
 | [`@kardiajs/tauri`](https://www.npmjs.com/package/@kardiajs/tauri) | 桥在 Tauri 上的传输：一个命令加一个 `Channel` |
+| [`@kardiajs/vue`](https://www.npmjs.com/package/@kardiajs/vue) | Vue 集成：贡献点、`<ExtensionSlot>`、组合式函数、路由 |
 | `kardia-bridge`（crate） | 桥的宿主端，位于 Rust 应用中 |
 
 ## 两个运行时，一套模型 [#model]
@@ -189,6 +190,53 @@ if let Some(picker) = ctx.live_as::<RemoteService>("ui.picker") {
 ```
 
 客户端随时可能关闭，而 Rust 应用通常在没有任何窗口时也在运行。所以宿主插件应在需要时查找客户端服务（`live_as`），而不是在 `inject` 中声明它，否则窗口一关闭该插件就会停止。每次重连后，客户端都会重新提供它的服务。
+
+## Vue 界面 [#vue]
+
+`@kardiajs/vue` 让扩展向 Vue 界面贡献内容：组件、视图、设置分区、命令、路由。贡献是做出它的插件的效应，因此该插件停止时贡献随之移除，界面也随之更新。
+
+```sh
+npm install @kardiajs/core @kardiajs/vue vue
+```
+
+```ts
+import { Context } from "@kardiajs/core";
+import { type ComponentContribution, Contributions, createKardia, defineContributions } from "@kardiajs/vue";
+import { createApp } from "vue";
+
+declare module "@kardiajs/core" {
+  interface Services {
+    "ui.settings": Contributions<ComponentContribution & { title: string }>;
+  }
+}
+
+const root = new Context();
+root.plugin(defineContributions("ui.settings")); // 一个贡献点
+createApp(App).use(createKardia(root)).mount("#app");
+
+// 一个扩展：它的分区恰在宿主暴露 `web` 期间显示
+root.plugin({
+  name: "web-settings",
+  inject: ["ui.settings", "host.web"],
+  apply(ctx: Context<"ui.settings" | "host.web">) {
+    ctx.get("ui.settings").register({ id: "web", title: "Web search", component: WebSettings, order: 10 });
+  },
+});
+```
+
+```vue
+<!-- 分区出现的位置 -->
+<ExtensionSlot name="ui.settings" :props="{ compact: true }">
+  <p>No settings yet.</p>
+</ExtensionSlot>
+```
+
+- **贡献点**是 `Contributions<T>` 服务（`defineContributions(key)` 提供一个）。`register(item)` 是调用它的插件的效应；条目按 `order` 排序，`id` 唯一，`items` / `entries` 是 Vue 响应式的。
+- **`<ExtensionSlot name>`** 按顺序渲染一个贡献点的组件。每个组件都获得贡献它的插件的上下文，因此在组件内部 `useContext()`、`usePlugin()` 和 `useService()` 都以该插件的身份工作，其效应也随该插件停止。`props` 传给每个组件，位于各贡献自身的 `props` 之下；没有内容时显示默认插槽；`item` 插槽（`{ item, owner }`）可自行渲染每个贡献。
+- **组合式函数：** `useContext()`；`usePlugin(plugin, config)` 在组件存续期间运行一个插件；`useService(key)` 是跟随某个服务的 ref（未被提供时为 `undefined`）；`useContributions(key)` 是用于自定义渲染（如导航菜单）的计算列表；`useFiberState(fiber)` 跟随一个纤程。
+- **路由：** `addRoute(ctx, router, route)` 以效应的形式添加 vue-router 路由：插件停止时路由被移除。
+- **只有 Rust 部分的扩展**无法携带 Vue 代码，但 Rust 插件可以暴露一个描述其界面的值（例如设置 schema），再由 TypeScript 插件为它注册一个通用组件。
+- 第三方界面代码在 webview 中拥有对 Tauri 的全部访问权限：只把可信代码加载到主 webview，对不可信的扩展使用声明式贡献或沙箱化的 webview。
 
 ## 职责归属 [#responsibilities]
 

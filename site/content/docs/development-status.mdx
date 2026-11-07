@@ -107,7 +107,7 @@ hmr 的 `index` 用例“waits for a second re-enable init”在 Rust 中没有�
 
 ## TypeScript 一侧 [#typescript]
 
-`js/` 中是 npm 包 `@kardiajs/core`、`@kardiajs/timer`、`@kardiajs/bridge` 和 `@kardiajs/tauri`，`crates/kardia-bridge` 是桥的 Rust 宿主端（[TypeScript 与 Tauri](/docs/guide-typescript)）。它们与 crate 分开版本化和发布（[参与开发](/docs/development-contributing#npm-releases)）。
+`js/` 中是 npm 包 `@kardiajs/core`、`@kardiajs/timer`、`@kardiajs/bridge`、`@kardiajs/tauri` 和 `@kardiajs/vue`，`crates/kardia-bridge` 是桥的 Rust 宿主端（[TypeScript 与 Tauri](/docs/guide-typescript)）。它们与 crate 分开版本化和发布（[参与开发](/docs/development-contributing#npm-releases)）。
 
 `@kardiajs/core` 移植的是 Kardia 的核心（状态机、带检查的访问、效应引擎与日志器），而不是 TypeScript Cordis 的代码。它在运行时和开发时都不依赖 Cordis：本仓库从未依赖过（`cordis/` 是被 gitignore 的本地参考副本），这些包也没有任何运行时依赖。它的测试套件移植了 Cordis 中相关的 spec。不同之处：
 

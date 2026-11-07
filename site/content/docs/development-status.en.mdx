@@ -107,7 +107,7 @@ For using guests, see [Guest plugins](/docs/guide-guests) and [Hot reload](/docs
 
 ## The TypeScript side [#typescript]
 
-`js/` holds the npm packages `@kardiajs/core`, `@kardiajs/timer`, `@kardiajs/bridge` and `@kardiajs/tauri`, and `crates/kardia-bridge` the Rust host of the bridge ([TypeScript and Tauri](/docs/guide-typescript)). They are versioned and released apart from the crates ([Contributing](/docs/development-contributing#npm-releases)).
+`js/` holds the npm packages `@kardiajs/core`, `@kardiajs/timer`, `@kardiajs/bridge`, `@kardiajs/tauri` and `@kardiajs/vue`, and `crates/kardia-bridge` the Rust host of the bridge ([TypeScript and Tauri](/docs/guide-typescript)). They are versioned and released apart from the crates ([Contributing](/docs/development-contributing#npm-releases)).
 
 `@kardiajs/core` ports Kardia's core (its state machine, checked access, effect engine and logger), not the TypeScript Cordis code. It does not depend on Cordis, at run time or in development: this repository never did (`cordis/` is a local, gitignored copy for reference), and the packages have no runtime dependencies. Its test suite ports the relevant Cordis specs. Where it differs:
 

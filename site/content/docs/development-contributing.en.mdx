@@ -116,7 +116,7 @@ The publish step is **resumable**:
 
 ## npm releases [#npm-releases]
 
-The four `@kardiajs/*` packages share one version, apart from the crates' (they start at 0.1.0). The bridge's protocol has a version of its own (`PROTOCOL` on both sides): a client opening a session with another version is refused with an `invalid` error, so a host and a client from different releases fail clearly instead of misbehaving.
+The `@kardiajs/*` packages share one version, apart from the crates' (they start at 0.1.0). The bridge's protocol has a version of its own (`PROTOCOL` on both sides): a client opening a session with another version is refused with an `invalid` error, so a host and a client from different releases fail clearly instead of misbehaving.
 
 <Steps>
 <Step>
@@ -126,7 +126,7 @@ The four `@kardiajs/*` packages share one version, apart from the crates' (they 
 `cargo xtask js-tag --push` tags the commit `js-v0.1.1` and pushes the tag, which starts `.github/workflows/npm-release.yml`.
 </Step>
 <Step>
-The workflow checks that every package is at the tagged version, runs `js.yml` as its checks, builds the packages, and publishes core, timer, bridge and tauri, in that order, skipping a version npm already has (so a manual run resumes a release that stopped part-way). It then creates a GitHub release for the tag, with notes since the previous `js-v*` tag.
+The workflow checks that every package is at the tagged version, runs `js.yml` as its checks, builds the packages, and publishes core, timer, bridge, tauri and vue, in that order, skipping a version npm already has (so a manual run resumes a release that stopped part-way). It then creates a GitHub release for the tag, with notes since the previous `js-v*` tag.
 </Step>
 </Steps>
 
@@ -139,7 +139,7 @@ It publishes with **npm trusted publishing**: the publish job's `id-token: write
 **npmjs.com, organization.** Create the free organization `kardiajs` (the `kardia` package name and the `@kardia` scope belong to others), and add the maintainers' accounts. Enable two-factor authentication on them.
 </Step>
 <Step>
-**npmjs.com, first publish.** npm configures a trusted publisher in a package's settings, so each package must exist first. From a machine logged in with `npm login`: `cd js && bun install && bun run build`, then `npm publish --access public` in `packages/core`, `timer`, `bridge` and `tauri`, in that order. This publishes 0.1.0 without provenance; later versions come from CI.
+**npmjs.com, first publish.** npm configures a trusted publisher in a package's settings, so each package must exist first. From a machine logged in with `npm login`: `cd js && bun install && bun run build`, then `npm publish --access public` in `packages/core`, `timer`, `bridge`, `tauri` and `vue`, in that order. This publishes the first version without provenance; later versions come from CI. A package added later, such as `@kardiajs/vue`, needs this step, and its own trusted publisher, before its first CI release.
 </Step>
 <Step>
 **GitHub, environment.** In the repository's *Settings → Environments*, create `npm`. Optionally restrict its deployments to `js-v*` tags and add required reviewers: the publish job waits for them.

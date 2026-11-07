@@ -1,6 +1,6 @@
 ---
 title: "TypeScript and Tauri"
-description: "The @kardiajs npm packages: the same plugin model in TypeScript, and the bridge that connects a TypeScript runtime, such as a Tauri webview, to a Rust kardia app."
+description: "The @kardiajs npm packages: the same plugin model in TypeScript, the bridge that connects a TypeScript runtime, such as a Tauri webview, to a Rust kardia app, and extension points for Vue interfaces."
 icon: Cable
 ---
 
@@ -12,6 +12,7 @@ kardia composes a Rust app. When part of the app is TypeScript, as in a Tauri ap
 | [`@kardiajs/timer`](https://www.npmjs.com/package/@kardiajs/timer) | `timeout`, `interval`, `sleep`, `throttle` and `debounce`, cancelled when their plugin stops |
 | [`@kardiajs/bridge`](https://www.npmjs.com/package/@kardiajs/bridge) | The client side of the bridge |
 | [`@kardiajs/tauri`](https://www.npmjs.com/package/@kardiajs/tauri) | The bridge's transport over one Tauri command and a `Channel` |
+| [`@kardiajs/vue`](https://www.npmjs.com/package/@kardiajs/vue) | Vue integration: contribution points, `<ExtensionSlot>`, composables, routes |
 | `kardia-bridge` (crate) | The host side of the bridge, in the Rust app |
 
 ## Two runtimes, one model [#model]
@@ -189,6 +190,53 @@ if let Some(picker) = ctx.live_as::<RemoteService>("ui.picker") {
 ```
 
 A client can close at any time, and the Rust app usually runs without any window open. So a host plugin should look a client service up when it needs it (`live_as`), rather than declare it in `inject`, which would stop that plugin whenever the window closes. The client provides its services again after every reconnect.
+
+## Vue interfaces [#vue]
+
+`@kardiajs/vue` lets extensions contribute to a Vue interface: components, views, settings sections, commands, routes. A contribution is an effect of the plugin that makes it, so it leaves when that plugin stops, and the interface follows.
+
+```sh
+npm install @kardiajs/core @kardiajs/vue vue
+```
+
+```ts
+import { Context } from "@kardiajs/core";
+import { type ComponentContribution, Contributions, createKardia, defineContributions } from "@kardiajs/vue";
+import { createApp } from "vue";
+
+declare module "@kardiajs/core" {
+  interface Services {
+    "ui.settings": Contributions<ComponentContribution & { title: string }>;
+  }
+}
+
+const root = new Context();
+root.plugin(defineContributions("ui.settings")); // a contribution point
+createApp(App).use(createKardia(root)).mount("#app");
+
+// an extension: its section shows exactly while the host exposes `web`
+root.plugin({
+  name: "web-settings",
+  inject: ["ui.settings", "host.web"],
+  apply(ctx: Context<"ui.settings" | "host.web">) {
+    ctx.get("ui.settings").register({ id: "web", title: "Web search", component: WebSettings, order: 10 });
+  },
+});
+```
+
+```vue
+<!-- where the sections appear -->
+<ExtensionSlot name="ui.settings" :props="{ compact: true }">
+  <p>No settings yet.</p>
+</ExtensionSlot>
+```
+
+- **Contribution points** are `Contributions<T>` services (`defineContributions(key)` provides one). `register(item)` is an effect of the calling plugin; items are ordered by `order`, an `id` is unique, and `items` / `entries` are Vue-reactive.
+- **`<ExtensionSlot name>`** renders the components of a point, in order. Each one gets the context of the plugin that contributed it, so inside it `useContext()`, `usePlugin()` and `useService()` act as that plugin, and its effects stop with it. `props` go to every component, under each contribution's own; the default slot shows while there is nothing; the `item` slot (`{ item, owner }`) renders each contribution itself.
+- **Composables:** `useContext()`; `usePlugin(plugin, config)` runs a plugin for the lifetime of a component; `useService(key)` is a ref that follows a service (`undefined` while none is provided); `useContributions(key)` is a computed list for custom rendering, such as a navigation menu; `useFiberState(fiber)` follows a fiber.
+- **Routes:** `addRoute(ctx, router, route)` adds a vue-router route as an effect: it is removed when the plugin stops.
+- **Rust-only extensions** cannot ship Vue code, but a Rust plugin can expose a value describing its UI (a settings schema, say) and a TypeScript plugin can register a generic component for it.
+- Third-party UI code runs with the webview's full access to Tauri: load only trusted code into the main webview, and give untrusted extensions declarative contributions or a sandboxed webview.
 
 ## Where things belong [#responsibilities]
 
