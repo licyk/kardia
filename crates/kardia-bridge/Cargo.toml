@@ -1,0 +1,24 @@
+[package]
+name = "kardia-bridge"
+description = "The host side of the kardia bridge: exposes services, events and lifecycle of a kardia app to clients in another runtime, such as a Tauri webview"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+kardia-core.workspace = true
+tokio.workspace = true
+futures.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "io-std", "io-util", "test-util"] }
+
+[lints]
+workspace = true
