@@ -1,11 +1,40 @@
-//! `cargo xtask tag`: creates an annotated tag on `HEAD`, and optionally
-//! pushes it. A `v<version>` tag starts the release workflow, so it must name
-//! the workspace version.
+//! `cargo xtask tag` and `cargo xtask js-tag`: create an annotated tag on
+//! `HEAD`, and optionally push it. A `v<version>` tag starts the crates
+//! release workflow and a `js-v<version>` tag the npm one, so each must name
+//! the current version of what it releases.
 
 use std::path::Path;
 
 use crate::git::git;
 use crate::version::{Version, workspace_version};
+
+/// What a tag releases: its prefix, its current version and how to name it.
+pub struct Release {
+    /// `v` for the crates, `js-v` for the npm packages.
+    pub prefix: &'static str,
+    /// The release title: `kardia` or `@kardiajs`.
+    pub product: &'static str,
+    /// What the version is the version of, for errors.
+    pub what: &'static str,
+    /// The xtask command that bumps the version.
+    pub bump: &'static str,
+    pub version: Version,
+}
+
+impl Release {
+    /// The crates: the workspace version.
+    pub fn crates(root: &Path) -> Result<Self, String> {
+        let manifest =
+            std::fs::read_to_string(root.join("Cargo.toml")).map_err(|error| format!("Cargo.toml: {error}"))?;
+        Ok(Self {
+            prefix: "v",
+            product: "kardia",
+            what: "workspace",
+            bump: "version",
+            version: workspace_version(&manifest)?,
+        })
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct Options {
@@ -40,9 +69,8 @@ impl Options {
     }
 }
 
-pub fn run(root: &Path, options: &Options) -> Result<(), String> {
-    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).map_err(|error| format!("Cargo.toml: {error}"))?;
-    let (tag, message) = tag_for(workspace_version(&manifest)?, options)?;
+pub fn run(root: &Path, options: &Options, release: &Release) -> Result<(), String> {
+    let (tag, message) = tag_for(release, options)?;
     let remote = options.remote.as_deref().unwrap_or("origin");
 
     if !git(root, &["status", "--porcelain"])?.trim().is_empty() {
@@ -70,28 +98,29 @@ pub fn run(root: &Path, options: &Options) -> Result<(), String> {
     Ok(())
 }
 
-/// The tag and its message. A version tag must be the workspace version.
-pub fn tag_for(workspace: Version, options: &Options) -> Result<(String, String), String> {
+/// The tag and its message. A version tag must be the release's current version.
+pub fn tag_for(release: &Release, options: &Options) -> Result<(String, String), String> {
+    let prefix = release.prefix;
     let (tag, version) = match (&options.name, &options.version) {
         (Some(name), _) => (name.clone(), None),
         (None, Some(text)) => {
-            let version = Version::parse(text.trim_start_matches('v'))?;
-            if version != workspace {
+            let version = Version::parse(text.trim_start_matches(prefix).trim_start_matches('v'))?;
+            if version != release.version {
                 return Err(format!(
-                    "v{version} is not the workspace version {workspace}: \
-                     bump it with `cargo xtask version` and commit first"
+                    "{prefix}{version} is not the {} version {}: bump it with `cargo xtask {}` and commit first",
+                    release.what, release.version, release.bump
                 ));
             }
-            (format!("v{version}"), Some(version))
+            (format!("{prefix}{version}"), Some(version))
         }
-        (None, None) => (format!("v{workspace}"), Some(workspace)),
+        (None, None) => (format!("{prefix}{}", release.version), Some(release.version)),
     };
     if tag.is_empty() || tag.contains(char::is_whitespace) {
         return Err(format!("`{tag}` is not a valid tag name"));
     }
     let message = match (&options.message, version) {
         (Some(message), _) => message.clone(),
-        (None, Some(version)) => format!("kardia {version}"),
+        (None, Some(version)) => format!("{} {version}", release.product),
         (None, None) => tag.clone(),
     };
     Ok((tag, message))
@@ -107,35 +136,60 @@ mod tests {
         Version::parse(text).unwrap()
     }
 
+    fn crates(text: &str) -> Release {
+        Release { prefix: "v", product: "kardia", what: "workspace", bump: "version", version: version(text) }
+    }
+
     fn options(args: &[&str]) -> Options {
         Options::parse(&args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>()).unwrap()
     }
 
     #[test]
     fn names_the_workspace_version_by_default() {
-        let (tag, message) = tag_for(version("0.1.2"), &options(&[])).unwrap();
+        let (tag, message) = tag_for(&crates("0.1.2"), &options(&[])).unwrap();
         assert_eq!((tag.as_str(), message.as_str()), ("v0.1.2", "kardia 0.1.2"));
     }
 
     #[test]
     fn accepts_the_workspace_version_with_or_without_v() {
         for given in ["0.1.2", "v0.1.2"] {
-            let (tag, _) = tag_for(version("0.1.2"), &options(&["--version", given])).unwrap();
+            let (tag, _) = tag_for(&crates("0.1.2"), &options(&["--version", given])).unwrap();
             assert_eq!(tag, "v0.1.2");
         }
     }
 
     #[test]
     fn refuses_a_version_that_is_not_the_workspace_version() {
-        let error = tag_for(version("0.1.2"), &options(&["--version", "0.1.3"])).unwrap_err();
+        let error = tag_for(&crates("0.1.2"), &options(&["--version", "0.1.3"])).unwrap_err();
         assert!(error.contains("not the workspace version 0.1.2"), "{error}");
     }
 
     #[test]
+    fn names_npm_releases_with_their_prefix() {
+        let release = Release {
+            prefix: "js-v",
+            product: "@kardiajs",
+            what: "npm packages",
+            bump: "js-version",
+            version: version("0.2.0"),
+        };
+        let (tag, message) = tag_for(&release, &options(&[])).unwrap();
+        assert_eq!((tag.as_str(), message.as_str()), ("js-v0.2.0", "@kardiajs 0.2.0"));
+        for given in ["0.2.0", "js-v0.2.0"] {
+            assert_eq!(tag_for(&release, &options(&["--version", given])).unwrap().0, "js-v0.2.0");
+        }
+        let error = tag_for(&release, &options(&["--version", "0.3.0"])).unwrap_err();
+        assert!(
+            error.contains("not the npm packages version 0.2.0") && error.contains("cargo xtask js-version"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn takes_any_name_and_message() {
-        let (tag, message) = tag_for(version("0.1.2"), &options(&["--name", "docs-1", "-m", "Docs"])).unwrap();
+        let (tag, message) = tag_for(&crates("0.1.2"), &options(&["--name", "docs-1", "-m", "Docs"])).unwrap();
         assert_eq!((tag.as_str(), message.as_str()), ("docs-1", "Docs"));
-        assert!(tag_for(version("0.1.2"), &options(&["--name", "two words"])).is_err());
+        assert!(tag_for(&crates("0.1.2"), &options(&["--name", "two words"])).is_err());
         assert!(Options::parse(&["--version".into(), "1.0.0".into(), "--name".into(), "x".into()]).is_err());
     }
 
@@ -143,24 +197,24 @@ mod tests {
     fn tags_and_pushes_in_a_real_repository() {
         let (repo, remote) = repository("push");
         let opts = Options { push: true, ..Options::default() };
-        run(&repo, &opts).unwrap();
+        run(&repo, &opts, &Release::crates(&repo).unwrap()).unwrap();
         assert_eq!(git(&repo, &["tag", "--list"]).unwrap().trim(), "v0.3.1");
         assert_eq!(git(&repo, &["cat-file", "-t", "v0.3.1"]).unwrap().trim(), "tag", "annotated");
         assert!(git(&remote, &["tag", "--list"]).unwrap().contains("v0.3.1"));
 
         // the same tag again is refused
-        let error = run(&repo, &Options::default()).unwrap_err();
+        let error = run(&repo, &Options::default(), &Release::crates(&repo).unwrap()).unwrap_err();
         assert!(error.contains("already exists"), "{error}");
     }
 
     #[test]
     fn refuses_a_dirty_tree_and_dry_runs_change_nothing() {
         let (repo, _) = repository("dirty");
-        run(&repo, &Options { dry_run: true, ..Options::default() }).unwrap();
+        run(&repo, &Options { dry_run: true, ..Options::default() }, &Release::crates(&repo).unwrap()).unwrap();
         assert_eq!(git(&repo, &["tag", "--list"]).unwrap().trim(), "");
 
         std::fs::write(repo.join("Cargo.toml"), MANIFEST.replace("0.3.1", "0.3.2")).unwrap();
-        let error = run(&repo, &Options::default()).unwrap_err();
+        let error = run(&repo, &Options::default(), &Release::crates(&repo).unwrap()).unwrap_err();
         assert!(error.contains("uncommitted"), "{error}");
     }
 
