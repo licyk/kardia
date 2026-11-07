@@ -4,7 +4,7 @@ import type { Channel } from "@tauri-apps/api/core";
 import { clearMocks, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { tauriBridge } from "../src/index.ts";
+import { tauriBridge } from "#/index";
 
 // @tauri-apps/api reaches its IPC through `window.__TAURI_INTERNALS__`, which its mocks fill in.
 beforeAll(() => {

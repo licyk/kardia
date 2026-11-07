@@ -1,12 +1,12 @@
-import type { EffectCell } from "./effect.js";
-import { Interrupted, toError } from "./errors.js";
-import { fiberHandle } from "./fiber.js";
-import { Level } from "./logger.js";
-import type { PluginDef } from "./plugin.js";
-import type { Root } from "./root.js";
-import type { FiberId, Realm, Scope } from "./scope.js";
-import { removeProvision } from "./service.js";
-import { type FiberState, type ImplId, type State, type Target, sameTarget, settledState } from "./state.js";
+import type { EffectCell } from "#/effect";
+import { Interrupted, toError } from "#/errors";
+import { fiberHandle } from "#/fiber";
+import { Level } from "#/logger";
+import type { PluginDef } from "#/plugin";
+import type { Root } from "#/root";
+import type { FiberId, Realm, Scope } from "#/scope";
+import { removeProvision } from "#/service";
+import { type FiberState, type ImplId, type State, type Target, sameTarget, settledState } from "#/state";
 
 // The fiber state machine: a port of Kardia's `lifecycle.rs` (itself a port of
 // Cordis' `_checkImpl` / `_refresh` / `_setEpoch` / `_reload` / `_unload` /

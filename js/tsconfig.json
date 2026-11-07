@@ -3,6 +3,8 @@
   "compilerOptions": {
     "noEmit": true,
     "allowImportingTsExtensions": true,
+    // `#/` imports resolve to each package's sources (package.json `imports`, condition `source`)
+    "customConditions": ["source"],
     "types": ["node"],
     "paths": {
       "@kardiajs/core": ["./packages/core/src/index.ts"],

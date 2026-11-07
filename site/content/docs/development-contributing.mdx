@@ -38,7 +38,7 @@ bun run build       # 按依赖顺序生成每个包的 lib/（scripts/build.ts�
 ```
 
 - 各包之间按名称导入。类型检查和测试把这些名称解析到源码（`tsconfig.json` 的 paths、`vitest.config.ts` 的 alias），因此无需先构建；构建时则解析到已构建的包。
-- 相对导入写 `.js` 文件名，这样生成的 JavaScript 和声明文件可以直接使用。
+- 包内的模块以绝对路径互相导入：`import { Fiber } from "#/fiber"`。`#/` 是子路径导入（subpath import），在每个 `package.json` 中映射（`"imports": { "#/*": { "source": "./src/*.ts", "types": "./lib/*.d.ts", "default": "./lib/*.js" } }`）。Node、TypeScript 和打包工具都按包解析它，因此发布的 `lib/` 可以直接使用 `tsc` 的输出；类型检查和测试通过 `source` 条件把它解析到源码（`tsconfig.json` 中的 `customConditions`、`vitest.config.ts` 中的 `ssr.resolve.conditions`）。`site/` 使用的 `@/` 别名无法保留到已发布的包中，因为 `tsc` 不会改写路径别名。
 - 构建会把仓库的 `LICENSE` 和 `js/NOTICE`（Cordis 的 MIT 声明）复制进每个包，因为 npm 只发布包目录内的文件；这些副本已被 gitignore。
 - 各包以 peer 依赖互相引用（`"@kardiajs/core": "^0.1"`），因此应用中只有一份运行时。
 

@@ -1,10 +1,10 @@
-import type { Context } from "./context.js";
-import type { Disposer } from "./effect.js";
-import { AccessError, KardiaError } from "./errors.js";
-import { liveImpl, notify } from "./lifecycle.js";
-import type { Root } from "./root.js";
-import { type FiberId, ROOT_FIBER } from "./scope.js";
-import type { Check, ImplId, State } from "./state.js";
+import type { Context } from "#/context";
+import type { Disposer } from "#/effect";
+import { AccessError, KardiaError } from "#/errors";
+import { liveImpl, notify } from "#/lifecycle";
+import type { Root } from "#/root";
+import { type FiberId, ROOT_FIBER } from "#/scope";
+import type { Check, ImplId, State } from "#/state";
 
 /**
  * Service types by key, for typed access. Extend it by declaration merging:

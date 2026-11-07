@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { Context, Level } from "../src/index.ts";
+import { Context, Level } from "#/index";
 import { captureLogs, sleep } from "./helpers.ts";
 
 describe("Isolation", () => {

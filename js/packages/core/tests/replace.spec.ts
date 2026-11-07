@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { Context, type StandardSchemaV1 } from "../src/index.ts";
+import { Context, type StandardSchemaV1 } from "#/index";
 import { sleep } from "./helpers.ts";
 
 describe("registry.replace", () => {

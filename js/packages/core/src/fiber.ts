@@ -1,10 +1,10 @@
-import { Context } from "./context.js";
-import type { EffectMeta } from "./effect.js";
-import { refresh } from "./lifecycle.js";
-import type { Plugin } from "./plugin.js";
-import type { Root } from "./root.js";
-import { type FiberId, ROOT_FIBER, type Scope } from "./scope.js";
-import type { FiberData, FiberState } from "./state.js";
+import { Context } from "#/context";
+import type { EffectMeta } from "#/effect";
+import { refresh } from "#/lifecycle";
+import type { Plugin } from "#/plugin";
+import type { Root } from "#/root";
+import { type FiberId, ROOT_FIBER, type Scope } from "#/scope";
+import type { FiberData, FiberState } from "#/state";
 
 /**
  * Marks a promise as handled while still returning it: the fiber reports its

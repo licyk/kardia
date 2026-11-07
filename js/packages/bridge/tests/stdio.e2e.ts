@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { Context } from "@kardiajs/core";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { Bridge, type BridgeStatus, type ClientRequest, type HostMessage, type OpenReply, type OpenRequest, RemoteService, type Transport } from "../src/index.ts";
+import { Bridge, type BridgeStatus, type ClientRequest, type HostMessage, type OpenReply, type OpenRequest, RemoteService, type Transport } from "#/index";
 
 const HOST = fileURLToPath(
   new URL(`../../../../target/debug/examples/stdio_host${process.platform === "win32" ? ".exe" : ""}`, import.meta.url),

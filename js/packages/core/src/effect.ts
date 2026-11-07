@@ -1,6 +1,6 @@
-import { Interrupted } from "./errors.js";
-import type { Root } from "./root.js";
-import type { FiberId } from "./scope.js";
+import { Interrupted } from "#/errors";
+import type { Root } from "#/root";
+import type { FiberId } from "#/scope";
 
 /** The inverse of an effect. It may finish asynchronously. */
 export type Disposer = () => void | PromiseLike<void>;

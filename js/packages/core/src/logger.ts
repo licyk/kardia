@@ -1,5 +1,5 @@
-import type { Root } from "./root.js";
-import type { FiberId } from "./scope.js";
+import type { Root } from "#/root";
+import type { FiberId } from "#/scope";
 
 /** Log levels: lower is more severe. A logger exports messages at or below its level. */
 export const Level = { error: 0, warn: 1, info: 2, debug: 3 } as const;

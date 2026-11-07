@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { Context, consoleExporter, hyphenate, Level, type Message } from "../src/index.ts";
+import { Context, consoleExporter, hyphenate, Level, type Message } from "#/index";
 
 describe("Logger", () => {
   afterEach(() => void vi.restoreAllMocks());

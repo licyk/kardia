@@ -12,7 +12,7 @@ import {
   RemoteService,
   type ServiceInfo,
   type Transport,
-} from "../src/index.ts";
+} from "#/index";
 
 /** A transport whose replies the test scripts, standing in for the host at the transport boundary. */
 class ScriptedTransport implements Transport {

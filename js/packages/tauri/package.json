@@ -29,6 +29,13 @@
     },
     "./package.json": "./package.json"
   },
+  "imports": {
+    "#/*": {
+      "source": "./src/*.ts",
+      "types": "./lib/*.d.ts",
+      "default": "./lib/*.js"
+    }
+  },
   "files": [
     "lib",
     "src",

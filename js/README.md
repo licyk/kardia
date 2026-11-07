@@ -22,7 +22,7 @@ bun run build       # each package's lib/, in dependency order
 ```
 
 - The packages share one version, apart from the crates'. `cargo xtask js-version <patch|minor|major>` bumps it, and `cargo xtask js-tag --push` tags `js-v<version>`, which starts `.github/workflows/npm-release.yml` (npm trusted publishing).
-- Relative imports name `.js` files, so `tsc` emits working JavaScript and declarations as they are.
+- Inside a package, modules import each other as `#/<module>` (subpath imports, mapped by each `package.json`'s `imports`): Node, TypeScript and bundlers resolve them in the published `lib/`, and the type check and tests resolve them to the sources through the `source` condition.
 - `scripts/build.ts` copies the repository's `LICENSE` and this directory's `NOTICE` into each package before building it.
 
 [Contributing](https://kardia-dev.netlify.app/docs/development-contributing#js) has the details, including the one-time npm setup.

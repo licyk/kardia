@@ -1,15 +1,15 @@
-import { type Disposer, EffectCell, EffectHandle, EffectScope, isPromiseLike, runSequence } from "./effect.js";
-import { Interrupted } from "./errors.js";
-import { type EventArgs, type EventName, type Listener, bail, dispatch, listen, parallel, serial } from "./events.js";
-import { type Fiber, fiberHandle } from "./fiber.js";
-import { liveImpl } from "./lifecycle.js";
-import { type Exporter, hyphenate, Logger, type LoggerIntercept, type Message } from "./logger.js";
-import type { ConfigOf, InjectSpec, Plugin } from "./plugin.js";
-import { insertFiber, Registry } from "./registry.js";
-import { Root } from "./root.js";
-import { type FiberId, type Realm, ROOT_FIBER, Scope } from "./scope.js";
-import { access, bind, declaredMeta, isBindable, type ServiceOf, withdraw } from "./service.js";
-import type { Check, ImplId } from "./state.js";
+import { type Disposer, EffectCell, EffectHandle, EffectScope, isPromiseLike, runSequence } from "#/effect";
+import { Interrupted } from "#/errors";
+import { type EventArgs, type EventName, type Listener, bail, dispatch, listen, parallel, serial } from "#/events";
+import { type Fiber, fiberHandle } from "#/fiber";
+import { liveImpl } from "#/lifecycle";
+import { type Exporter, hyphenate, Logger, type LoggerIntercept, type Message } from "#/logger";
+import type { ConfigOf, InjectSpec, Plugin } from "#/plugin";
+import { insertFiber, Registry } from "#/registry";
+import { Root } from "#/root";
+import { type FiberId, type Realm, ROOT_FIBER, Scope } from "#/scope";
+import { access, bind, declaredMeta, isBindable, type ServiceOf, withdraw } from "#/service";
+import type { Check, ImplId } from "#/state";
 
 /** What an effect body may return: nothing, an inverse, or a promise of either. */
 export type EffectResult = void | Disposer | PromiseLike<void | Disposer>;

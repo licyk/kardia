@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { AccessError, Context, type Fiber, KardiaError, Service } from "../src/index.ts";
+import { AccessError, Context, type Fiber, KardiaError, Service } from "#/index";
 import { captureLogs, sleep } from "./helpers.ts";
 
 class Counter extends Service {

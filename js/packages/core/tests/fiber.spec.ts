@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { Context, type FiberState, type StandardSchemaV1, ValidationError } from "../src/index.ts";
+import { Context, type FiberState, type StandardSchemaV1, ValidationError } from "#/index";
 import { captureLogs, sleep, withTimers } from "./helpers.ts";
 
 describe("Fibers", () => {

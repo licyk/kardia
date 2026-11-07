@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { Context, definePlugin, Service } from "../src/index.ts";
+import { Context, definePlugin, Service } from "#/index";
 import { listenerCount } from "./helpers.ts";
 
 describe("Plugins", () => {

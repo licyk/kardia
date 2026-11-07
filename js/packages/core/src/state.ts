@@ -1,9 +1,9 @@
-import { KardiaError } from "./errors.js";
-import type { EffectCell } from "./effect.js";
-import type { Level } from "./logger.js";
-import type { PluginDef } from "./plugin.js";
-import type { Root } from "./root.js";
-import { type FiberId, type Realm, ROOT_FIBER, Scope } from "./scope.js";
+import { KardiaError } from "#/errors";
+import type { EffectCell } from "#/effect";
+import type { Level } from "#/logger";
+import type { PluginDef } from "#/plugin";
+import type { Root } from "#/root";
+import { type FiberId, type Realm, ROOT_FIBER, Scope } from "#/scope";
 
 /** The paper's θ. */
 export type FiberState = "pending" | "loading" | "active" | "unloading" | "failed" | "disposed";

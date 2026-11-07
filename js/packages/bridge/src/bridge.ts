@@ -8,7 +8,7 @@ import {
   PROTOCOL,
   type ServiceInfo,
   type Transport,
-} from "./protocol.js";
+} from "#/protocol";
 
 declare module "@kardiajs/core" {
   interface Services {

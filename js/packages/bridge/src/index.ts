@@ -5,7 +5,7 @@ export {
   type LocalService,
   type RemoteMethods,
   RemoteService,
-} from "./bridge.js";
+} from "#/bridge";
 export {
   BridgeError,
   type BridgeErrorType,
@@ -18,4 +18,4 @@ export {
   type ServiceInfo,
   type Transport,
   type WireError,
-} from "./protocol.js";
+} from "#/protocol";

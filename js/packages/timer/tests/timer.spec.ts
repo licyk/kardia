@@ -1,7 +1,7 @@
 import { Context } from "@kardiajs/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { Disposed, Timer } from "../src/index.ts";
+import { Disposed, Timer } from "#/index";
 
 async function setup() {
   const root = new Context();

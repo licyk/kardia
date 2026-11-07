@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { Context, Interrupted } from "../src/index.ts";
+import { Context, Interrupted } from "#/index";
 import { captureLogs, sleep, withTimers } from "./helpers.ts";
 
 describe("Effects", () => {

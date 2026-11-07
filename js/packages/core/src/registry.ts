@@ -1,13 +1,13 @@
-import type { Context } from "./context.js";
-import { type Disposer, EffectCell } from "./effect.js";
-import { type Fiber, fiberHandle } from "./fiber.js";
-import { checkImpl, collectRemoved, refresh, setTarget } from "./lifecycle.js";
-import { Level } from "./logger.js";
-import { type Plugin, type PluginDef, resolvePlugin } from "./plugin.js";
-import type { Root } from "./root.js";
-import type { FiberId } from "./scope.js";
-import { unbind } from "./service.js";
-import { newFiber, type State } from "./state.js";
+import type { Context } from "#/context";
+import { type Disposer, EffectCell } from "#/effect";
+import { type Fiber, fiberHandle } from "#/fiber";
+import { checkImpl, collectRemoved, refresh, setTarget } from "#/lifecycle";
+import { Level } from "#/logger";
+import { type Plugin, type PluginDef, resolvePlugin } from "#/plugin";
+import type { Root } from "#/root";
+import type { FiberId } from "#/scope";
+import { unbind } from "#/service";
+import { newFiber, type State } from "#/state";
 
 /** Registry operations of a root: the plugins with live fibers, and hot replacement. */
 export class Registry {

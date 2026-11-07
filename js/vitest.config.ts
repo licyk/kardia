@@ -13,6 +13,9 @@ export default defineConfig({
       "@kardiajs/tauri": source("tauri"),
     },
   },
+  // `#/` imports resolve to each package's sources (package.json `imports`, condition `source`);
+  // tests run in Vite's server-side environment, which reads its own conditions
+  ssr: { resolve: { conditions: ["source"] } },
   test: {
     environment: "node",
     include: ["packages/*/tests/**/*.spec.ts"],

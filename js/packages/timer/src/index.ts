@@ -1,1 +1,1 @@
-export { Disposed, type Scheduled, type ThrottleOptions, Timer } from "./timer.js";
+export { Disposed, type Scheduled, type ThrottleOptions, Timer } from "#/timer";

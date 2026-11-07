@@ -1,8 +1,8 @@
-import type { Context } from "./context.js";
-import { type EffectHandle, isPromiseLike } from "./effect.js";
-import type { Fiber } from "./fiber.js";
-import type { Root } from "./root.js";
-import type { EventFilter, FiberState, ListenerEntry } from "./state.js";
+import type { Context } from "#/context";
+import { type EffectHandle, isPromiseLike } from "#/effect";
+import type { Fiber } from "#/fiber";
+import type { Root } from "#/root";
+import type { EventFilter, FiberState, ListenerEntry } from "#/state";
 
 /**
  * Event signatures by name. The runtime's own events are below; add yours by

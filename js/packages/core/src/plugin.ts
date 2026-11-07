@@ -1,5 +1,5 @@
-import type { Context } from "./context.js";
-import { type Issue, ValidationError } from "./errors.js";
+import type { Context } from "#/context";
+import { type Issue, ValidationError } from "#/errors";
 
 /**
  * The Standard Schema interface (https://standardschema.dev), copied as its

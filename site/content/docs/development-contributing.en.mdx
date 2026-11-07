@@ -38,7 +38,7 @@ bun run build       # each package's lib/, in dependency order (scripts/build.ts
 ```
 
 - The packages import each other by name. Type checking and tests resolve those names to the sources (`tsconfig.json` paths, `vitest.config.ts` aliases), so they need no build first; the build resolves them to the built packages.
-- Relative imports name `.js` files, so the emitted JavaScript and declarations work as they are.
+- Inside a package, modules import each other by absolute path: `import { Fiber } from "#/fiber"`. `#/` is a subpath import, mapped in each `package.json` (`"imports": { "#/*": { "source": "./src/*.ts", "types": "./lib/*.d.ts", "default": "./lib/*.js" } }`). Node, TypeScript and bundlers resolve it per package, so the published `lib/` works as `tsc` emits it; type checking and tests resolve it to the sources through the `source` condition (`customConditions` in `tsconfig.json`, `ssr.resolve.conditions` in `vitest.config.ts`). The `@/` alias of `site/` would not survive into a published package, since `tsc` does not rewrite path aliases.
 - The build copies the repository's `LICENSE` and `js/NOTICE` (the MIT notice of Cordis) into each package, since npm only ships files inside a package directory; the copies are gitignored.
 - Packages require each other as peers (`"@kardiajs/core": "^0.1"`), so an app has one copy of the runtime.
 

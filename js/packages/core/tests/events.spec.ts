@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { Context } from "../src/index.ts";
+import { Context } from "#/index";
 import { captureLogs, listenerCount, sleep } from "./helpers.ts";
 
-declare module "../src/index.ts" {
+declare module "#/index" {
   interface Events {
     "test/event"(value: number): unknown;
   }

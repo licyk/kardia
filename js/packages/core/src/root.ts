@@ -1,8 +1,8 @@
-import { dispatch } from "./events.js";
-import { reload, unload } from "./lifecycle.js";
-import { Level, Logger, LoggerState } from "./logger.js";
-import type { FiberId } from "./scope.js";
-import { type Action, State } from "./state.js";
+import { dispatch } from "#/events";
+import { reload, unload } from "#/lifecycle";
+import { Level, Logger, LoggerState } from "#/logger";
+import type { FiberId } from "#/scope";
+import { type Action, State } from "#/state";
 
 interface Waiter {
   predicate: (st: State) => boolean;

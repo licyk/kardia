@@ -1,6 +1,6 @@
 import { vi } from "vitest";
 
-import { Context, type Message } from "../src/index.ts";
+import { Context, type Message } from "#/index";
 
 export function sleep(ms = 0) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
