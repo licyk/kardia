@@ -90,7 +90,7 @@ await fiber.dispose(); // 它的 interval 停止，每次 increase 都被撤销
 
 ```toml
 [dependencies]
-kardia-bridge = "0.1"
+kardia-bridge = "0.2"
 ```
 
 应用创建一个 `Bridge`，挂载它的插件，并把客户端请求交给 `Bridge::handle`。插件注入 `bridge` 并暴露服务；暴露是暴露它的插件的效应，因此该插件停止时会被撤回：

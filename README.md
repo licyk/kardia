@@ -114,7 +114,7 @@ Add the facade crate:
 
 ```toml
 [dependencies]
-kardia = "0.1"
+kardia = "0.2"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
@@ -217,7 +217,7 @@ Create a `cdylib` crate that depends on `kardia-guest`:
 crate-type = ["cdylib"]
 
 [dependencies]
-kardia-guest = "0.1"
+kardia-guest = "0.2"
 ```
 
 ```rust
