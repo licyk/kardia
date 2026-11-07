@@ -1,6 +1,6 @@
 {
   "name": "@kardiajs/timer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Timeouts, intervals, sleep, throttle and debounce that end with their plugin, for @kardiajs/core",
   "type": "module",
   "sideEffects": false,

@@ -13,18 +13,18 @@
     },
     "packages/bridge": {
       "name": "@kardiajs/bridge",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "peerDependencies": {
         "@kardiajs/core": "^0.1.0",
       },
     },
     "packages/core": {
       "name": "@kardiajs/core",
-      "version": "0.1.0",
+      "version": "0.1.1",
     },
     "packages/tauri": {
       "name": "@kardiajs/tauri",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "peerDependencies": {
         "@kardiajs/bridge": "^0.1.0",
         "@tauri-apps/api": "^2.0.0",
@@ -32,7 +32,7 @@
     },
     "packages/timer": {
       "name": "@kardiajs/timer",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "peerDependencies": {
         "@kardiajs/core": "^0.1.0",
       },

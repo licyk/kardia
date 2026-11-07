@@ -1,6 +1,6 @@
 {
   "name": "@kardiajs/core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Plugins, revertible effects, lifecycle and reactive services for TypeScript: the TypeScript side of kardia",
   "type": "module",
   "sideEffects": false,

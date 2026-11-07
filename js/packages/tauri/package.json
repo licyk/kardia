@@ -1,6 +1,6 @@
 {
   "name": "@kardiajs/tauri",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "The Tauri transport of the kardia bridge: one command and a Channel",
   "type": "module",
   "sideEffects": false,
