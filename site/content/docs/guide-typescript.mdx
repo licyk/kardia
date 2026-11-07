@@ -233,6 +233,15 @@ root.plugin({
 
 - **贡献点**是 `Contributions<T>` 服务（`defineContributions(key)` 提供一个）。`register(item)` 是调用它的插件的效应；条目按 `order` 排序，`id` 唯一，`items` / `entries` 是 Vue 响应式的。
 - **`<ExtensionSlot name>`** 按顺序渲染一个贡献点的组件。每个组件都获得贡献它的插件的上下文，因此在组件内部 `useContext()`、`usePlugin()` 和 `useService()` 都以该插件的身份工作，其效应也随该插件停止。`props` 传给每个组件，位于各贡献自身的 `props` 之下；没有内容时显示默认插槽；`item` 插槽（`{ item, owner }`）可自行渲染每个贡献。
+- **出错的贡献**会被隔离：抛出异常的贡献（在 setup、渲染、钩子、侦听器或事件处理函数中）会被 `error` 插槽（`{ error, item, owner, retry }`）取代，没有该插槽时不渲染任何内容；其他贡献照常渲染，错误也不会传到应用。`retry()` 重新挂载它。`@error`（`{ error, item, owner }`）报告这次失败，例如用于显示是哪个插件出错；没有它时，失败由所属插件的日志器记录。所属插件继续运行：出错的视图只是该插件的一个贡献，停止插件还会移除它的服务和其他贡献。要停止它，可在 `@error` 中调用 `owner.fiber.dispose()`。
+
+```vue
+<ExtensionSlot name="ui.settings" @error="({ owner }) => notify(`${owner.fiber.name} failed`)">
+  <template #error="{ item, retry }">
+    <p>The section {{ item.id }} failed. <button @click="retry">Retry</button></p>
+  </template>
+</ExtensionSlot>
+```
 - **组合式函数：** `useContext()`；`usePlugin(plugin, config)` 在组件存续期间运行一个插件；`useService(key)` 是跟随某个服务的 ref（未被提供时为 `undefined`）；`useContributions(key)` 是用于自定义渲染（如导航菜单）的计算列表；`useFiberState(fiber)` 跟随一个纤程。
 - **路由：** `addRoute(ctx, router, route)` 以效应的形式添加 vue-router 路由：插件停止时路由被移除。
 - **只有 Rust 部分的扩展**无法携带 Vue 代码，但 Rust 插件可以暴露一个描述其界面的值（例如设置 schema），再由 TypeScript 插件为它注册一个通用组件。

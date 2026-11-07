@@ -16,4 +16,4 @@ export {
   useContributions,
 } from "#/contributions";
 export { addRoute, type RouteHost } from "#/routes";
-export { type ComponentContribution, ExtensionSlot } from "#/slot";
+export { type ComponentContribution, type ContributionError, ExtensionSlot } from "#/slot";

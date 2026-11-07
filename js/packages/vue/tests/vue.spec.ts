@@ -1,12 +1,13 @@
 import { Context, type EffectHandle } from "@kardiajs/core";
 import { describe, expect, it, vi } from "vitest";
-import { createApp, createSSRApp, defineComponent, effectScope, h, nextTick, watch } from "vue";
+import { type Component, createApp, createRenderer, createSSRApp, defineComponent, effectScope, h, nextTick, watch } from "vue";
 import { renderToString } from "vue/server-renderer";
 
 import {
   addRoute,
   type ComponentContribution,
   type Contribution,
+  type ContributionError,
   Contributions,
   createKardia,
   defineContributions,
@@ -204,5 +205,140 @@ describe("ExtensionSlot", () => {
     root.get("ui.panels").register({ id: "greeting", component: Greeting });
     const html = await render(root, { item: ({ item }: { item: ComponentContribution }) => h("li", item.id) });
     expect(html).toBe("<li>greeting</li>");
+  });
+});
+
+interface TestNode {
+  tag: string;
+  text: string;
+  children: TestNode[];
+  parent: TestNode | null;
+}
+
+/** A renderer into plain objects: the tests run without a DOM, and the server renderer never re-renders. */
+const { createApp: createTestApp } = createRenderer<TestNode, TestNode>({
+  createElement: (tag) => node(tag),
+  createText: (text) => node("#text", text),
+  createComment: (text) => node("#comment", text),
+  setText: (target, text) => void (target.text = text),
+  setElementText: (element, text) => {
+    for (const child of [...element.children]) detach(child);
+    if (text) insert(node("#text", text), element);
+  },
+  insert,
+  remove: detach,
+  parentNode: (target) => target.parent,
+  nextSibling: (target) => target.parent?.children[target.parent.children.indexOf(target) + 1] ?? null,
+  patchProp: () => {},
+});
+
+function node(tag: string, text = ""): TestNode {
+  return { tag, text, children: [], parent: null };
+}
+
+function insert(child: TestNode, parent: TestNode, anchor?: TestNode | null) {
+  detach(child);
+  const index = anchor ? parent.children.indexOf(anchor) : -1;
+  parent.children.splice(index < 0 ? parent.children.length : index, 0, child);
+  child.parent = parent;
+}
+
+function detach(child: TestNode) {
+  if (!child.parent) return;
+  child.parent.children.splice(child.parent.children.indexOf(child), 1);
+  child.parent = null;
+}
+
+function html(target: TestNode): string {
+  if (target.tag === "#text") return target.text;
+  if (target.tag === "#comment") return "";
+  return `<${target.tag}>${target.children.map(html).join("")}</${target.tag}>`;
+}
+
+describe("ExtensionSlot error boundary", () => {
+  const Greeting = defineComponent({ setup: () => () => h("p", "hello") });
+
+  /** Throws in its render until `fixed`. */
+  function flaky() {
+    const state = { fixed: false, mounted: 0 };
+    const component = defineComponent({
+      setup() {
+        state.mounted++;
+        return () => {
+          if (!state.fixed) throw new Error("render failed");
+          return h("p", "recovered");
+        };
+      },
+    });
+    return { state, component };
+  }
+
+  async function setup(contributions: Record<string, Component>) {
+    const root = new Context();
+    await root.plugin(defineContributions<ComponentContribution>("ui.panels")).settled();
+    const extension = root.plugin({
+      name: "web-panels",
+      inject: ["ui.panels"],
+      apply(ctx: Context<"ui.panels">) {
+        for (const [id, component] of Object.entries(contributions)) ctx.get("ui.panels").register({ id, component });
+      },
+    });
+    await extension.settled();
+    return { root, extension };
+  }
+
+  function mount(root: Context, attrs: Record<string, unknown> = {}, slots: Record<string, unknown> = {}) {
+    const app = createTestApp({ render: () => h(ExtensionSlot, { name: "ui.panels", ...attrs }, slots) });
+    const appErrors = vi.fn();
+    app.config.errorHandler = appErrors;
+    app.config.warnHandler = () => {};
+    app.use(createKardia(root));
+    const container = node("root");
+    app.mount(container);
+    return { appErrors, html: () => container.children.map(html).join("") };
+  }
+
+  it("replaces a failing contribution with the error slot, keeps its siblings, and reports the owner", async () => {
+    const Broken = defineComponent({
+      setup() {
+        throw new Error("setup failed");
+      },
+    });
+    const { root, extension } = await setup({ broken: Broken, greeting: Greeting });
+    const failures: ContributionError[] = [];
+    const error = ({ error, item, owner }: ContributionError) =>
+      h("em", `${item.id} of ${owner.fiber.name}: ${(error as Error).message}`);
+    const view = mount(root, { onError: (failure: ContributionError) => failures.push(failure) }, { error });
+    await nextTick();
+    expect(view.html()).toBe("<em>broken of web-panels: setup failed</em><p>hello</p>");
+    expect(failures.map(({ item, owner }) => [item.id, owner.fiber.id])).toEqual([["broken", extension.id]]);
+    expect(view.appErrors).not.toHaveBeenCalled();
+    expect(extension.state).toBe("active");
+  });
+
+  it("logs a failure to the owner's logger and renders nothing without handlers", async () => {
+    const { component } = flaky();
+    const { root } = await setup({ greeting: Greeting, flaky: component });
+    const view = mount(root);
+    await nextTick();
+    expect(view.html()).toBe("<p>hello</p>");
+    expect(view.appErrors).not.toHaveBeenCalled();
+    const logged = root.logBuffer().filter((message) => message.text.includes("render failed"));
+    expect(logged.map((message) => message.name)).toEqual(["web-panels"]);
+  });
+
+  it("mounts the contribution again on retry", async () => {
+    const { state, component } = flaky();
+    const { root } = await setup({ flaky: component });
+    let retry = () => {};
+    const error = (props: { retry: () => void }) => ((retry = props.retry), h("em", "failed"));
+    const view = mount(root, { onError: () => {} }, { error });
+    await nextTick();
+    expect(view.html()).toBe("<em>failed</em>");
+    state.fixed = true;
+    retry();
+    await nextTick();
+    expect(view.html()).toBe("<p>recovered</p>");
+    expect(state.mounted).toBe(2);
   });
 });

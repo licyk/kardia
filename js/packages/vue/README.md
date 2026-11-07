@@ -37,7 +37,7 @@ root.inject(["ui.panels"], (ctx) => {
 |---|---|
 | `createKardia(root)` | The Vue plugin: makes `root` every component's context |
 | `Contributions<T>`, `defineContributions(key)` | A contribution point; `register(item)` is an effect of the calling plugin. Items are ordered by `order`, `id` is unique, `items` / `entries` are reactive |
-| `<ExtensionSlot name>` | Renders a point's components, each with the context of the plugin that contributed it; `props`, a default slot for the empty case, an `item` slot |
+| `<ExtensionSlot name>` | Renders a point's components, each with the context of the plugin that contributed it; `props`, a default slot for the empty case, an `item` slot. A contribution that throws is replaced by the `error` slot (`{ error, item, owner, retry }`), or by nothing, and reported to `@error` (`{ error, item, owner }`), or logged by its owner; the rest keep rendering and the owner keeps running |
 | `useContext()`, `usePlugin(plugin, config)` | The component's context; a plugin that runs while the component lives |
 | `useService(key)`, `useContributions(key)`, `useFiberState(fiber)` | Refs that follow a service, a point's items, a fiber's state |
 | `addRoute(ctx, router, route)` | A vue-router route, removed when the plugin stops |

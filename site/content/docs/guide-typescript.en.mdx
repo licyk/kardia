@@ -233,6 +233,15 @@ root.plugin({
 
 - **Contribution points** are `Contributions<T>` services (`defineContributions(key)` provides one). `register(item)` is an effect of the calling plugin; items are ordered by `order`, an `id` is unique, and `items` / `entries` are Vue-reactive.
 - **`<ExtensionSlot name>`** renders the components of a point, in order. Each one gets the context of the plugin that contributed it, so inside it `useContext()`, `usePlugin()` and `useService()` act as that plugin, and its effects stop with it. `props` go to every component, under each contribution's own; the default slot shows while there is nothing; the `item` slot (`{ item, owner }`) renders each contribution itself.
+- **Failing contributions** are contained: a contribution that throws (in setup, render, a hook, a watcher or a handler) is replaced by the `error` slot (`{ error, item, owner, retry }`), or by nothing without one, while the other contributions keep rendering and the error does not reach the app. `retry()` mounts it again. `@error` (`{ error, item, owner }`) reports the failure, for example to show which plugin failed; without it, the failure is logged by the owner's logger. The owner's plugin keeps running: a broken view is one contribution of the plugin, and stopping the plugin would also remove its services and its other contributions. To stop it, call `owner.fiber.dispose()` from `@error`.
+
+```vue
+<ExtensionSlot name="ui.settings" @error="({ owner }) => notify(`${owner.fiber.name} failed`)">
+  <template #error="{ item, retry }">
+    <p>The section {{ item.id }} failed. <button @click="retry">Retry</button></p>
+  </template>
+</ExtensionSlot>
+```
 - **Composables:** `useContext()`; `usePlugin(plugin, config)` runs a plugin for the lifetime of a component; `useService(key)` is a ref that follows a service (`undefined` while none is provided); `useContributions(key)` is a computed list for custom rendering, such as a navigation menu; `useFiberState(fiber)` follows a fiber.
 - **Routes:** `addRoute(ctx, router, route)` adds a vue-router route as an effect: it is removed when the plugin stops.
 - **Rust-only extensions** cannot ship Vue code, but a Rust plugin can expose a value describing its UI (a settings schema, say) and a TypeScript plugin can register a generic component for it.
