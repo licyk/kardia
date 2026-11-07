@@ -1,10 +1,10 @@
 ---
 title: "参与开发"
-description: "如何参与 kardia 的开发：构建与测试、xtask 命令、CI、发布到 crates.io，以及文档站点。"
+description: "如何参与 kardia 的开发：构建与测试、xtask 命令、CI、发布到 crates.io 与 npm，以及文档站点。"
 icon: GitPullRequest
 ---
 
-kardia 在 [github.com/licyk/kardia](https://github.com/licyk/kardia) 上开发。本页介绍 Rust 工作区、它的 CI 与发布，以及本文档站点。
+kardia 在 [github.com/licyk/kardia](https://github.com/licyk/kardia) 上开发。本页介绍 Rust 工作区、`js/` 下的 npm 包、它们的 CI 与发布，以及本文档站点。
 
 <Callout type="info">
 仓库的 [`AGENTS.md`](https://github.com/licyk/kardia/blob/main/AGENTS.md) 列出了代码规则。简而言之：允许破坏性重构，不加兼容层；外部数据只在边界处校验一次，并容忍未知字段；未经事先同意，不为推测性的竞态或边界情况增加复杂度；主函数只保留正常流程，细节放在其下方的小型辅助函数中；只为不明显的约束写注释；生成的文件应重新生成而不是手动编辑；测试真实的实现，尽量少用 mock；遵循仓库现有的工具和工作流；只有当函数会被复用、逻辑复杂或代表一个可以命名的概念时才提取它。
@@ -24,6 +24,24 @@ cargo xtask arch                # lib.rs and mod.rs only declare and re-export m
 - 这些 crate 的最低支持 Rust 版本是 1.85（工作区 `Cargo.toml` 中的 `rust-version`）；CI 使用一个固定的、更新的工具链（见下文）。
 - 测试如何组织，以及每个测试套件使用哪个运行时，见[测试](/docs/development-testing)。
 
+### npm 包 [#js]
+
+`js/` 是 `@kardiajs/*` 包的 Bun 工作区（[TypeScript 与 Tauri](/docs/guide-typescript)），位于 Cargo 工作区之外：
+
+```sh
+cd js
+bun install
+bun run check       # TypeScript，覆盖每个包的源码和测试
+bun run test        # Vitest
+bun run test:e2e    # 构建 kardia-bridge 的 stdio 宿主，然后从 TypeScript 客户端驱动它
+bun run build       # 按依赖顺序生成每个包的 lib/（scripts/build.ts）
+```
+
+- 各包之间按名称导入。类型检查和测试把这些名称解析到源码（`tsconfig.json` 的 paths、`vitest.config.ts` 的 alias），因此无需先构建；构建时则解析到已构建的包。
+- 相对导入写 `.js` 文件名，这样生成的 JavaScript 和声明文件可以直接使用。
+- 构建会把仓库的 `LICENSE` 和 `js/NOTICE`（Cordis 的 MIT 声明）复制进每个包，因为 npm 只发布包目录内的文件；这些副本已被 gitignore。
+- 各包以 peer 依赖互相引用（`"@kardiajs/core": "^0.1"`），因此应用中只有一份运行时。
+
 ## 仓库任务：`cargo xtask` [#xtask]
 
 `xtask` crate（`xtask/`，工作区成员，从不发布）承载仓库自身的任务；`.cargo/config.toml` 让它们以 `cargo xtask <命令>` 运行。
@@ -33,16 +51,20 @@ cargo xtask arch                # lib.rs and mod.rs only declare and re-export m
 | `cargo xtask arch` | 检查模块结构：每个 `lib.rs` 和 `mod.rs`（位于 `crates/*/src`、`crates/*/tests` 和 `xtask/src`）只声明模块、重新导出，并承载文档和属性。实现代码（函数、类型、trait、`impl` 块、常量、静态变量、`macro_rules!`、内联测试模块）放在各自的文件里，再由入口文件重新导出。只做重新导出的内联模块（如 `kardia::prelude`）以及 Rust 要求放在 crate 根部的过程宏入口函数是允许的。它会列出每处违规的文件、行号和种类，只要有违规就失败。CI 会运行它。 |
 | `cargo xtask version <patch\|minor\|major> [--dry-run]` | 递增工作区版本（`0.1.3` → `0.1.4` / `0.2.0` / `1.0.0`），更新 `[workspace.package]`、`[workspace.dependencies]` 中的 `kardia-*` 条目以及 `Cargo.lock`。当用户填写的版本要求发生变化时（1.0 之前的 minor 或 major 递增、1.0 之后的 major 递增），还会更新 README 和本文档中的 `kardia = "0.x"` 依赖片段。它不会提交。 |
 | `cargo xtask tag [--version X.Y.Z \| --name NAME] [--message TEXT] [--push] [--remote NAME] [--dry-run]` | 在 `HEAD` 上创建一个附注标签：默认是 `v<工作区版本>`。`--version` 必须等于工作区版本（`v*` 标签会发布它），`--name` 用来创建其他任意标签。工作区有未提交的修改，或标签已经存在（在本地，或使用 `--push` 时在远端）时，它会拒绝执行。`--push` 会推送标签（到 `origin`，或 `--remote` 指定的远端）。 |
+| `cargo xtask js-version <patch\|minor\|major> [--dry-run]` | 递增 npm 包的版本，这些包共用一个独立的版本：更新每个 `js/packages/*/package.json` 中的 `version`，在版本要求变化时更新它们互相引用的 `^` 范围，并更新 `js/bun.lock`（`bun install`）。各包版本不一致时它会拒绝执行。它不会提交。 |
+| `cargo xtask js-tag [与 tag 相同的选项]` | 与 `tag` 相同，用于 npm 包：默认是 `js-v<版本>`，它会启动 npm 发布。 |
 
 ## CI [#ci]
 
-仓库有三个工作流，各管一部分，使每次修改只运行它所需要的检查，而一次发布只对提交测试一次。
+仓库有五个工作流，各管一部分，使每次修改只运行它所需要的检查，而一次发布只对提交测试一次。
 
 | 工作流 | 触发条件 | 内容 |
 |---|---|---|
-| `ci.yml`（Rust） | 推送到 `main` 和拉取请求，但只修改 `site/`、Markdown、`LICENSE`、`NOTICE` 和托管配置文件的除外；手动运行；被 Release 调用 | fmt、clippy、`cargo xtask arch`、测试套件 |
+| `ci.yml`（Rust） | 推送到 `main` 和拉取请求，但只修改 `site/`、`js/`、Markdown、`LICENSE`、`NOTICE` 和托管配置文件的除外；手动运行；被 Release 调用 | fmt、clippy、`cargo xtask arch`、测试套件 |
+| `js.yml`（npm 包） | 修改了 `js/` 或 `crates/kardia-bridge/` 的推送到 `main` 和拉取请求；手动运行；被 npm release 调用 | 各包的类型检查、测试和构建；桥对 Rust 宿主的端到端测试 |
 | `site.yml`（文档） | 修改了 `site/` 的推送到 `main` 和拉取请求；手动运行 | 站点的类型检查、测试和构建；在拉取请求之外还会部署（见下文） |
 | `release.yml` | `v*` 标签；手动运行 | 发布到 crates.io（见下文） |
+| `npm-release.yml` | `js-v*` 标签（`v*` 不匹配它）；手动运行 | 发布到 npm（[见下文](#npm-releases)） |
 
 CI 的步骤：
 
@@ -60,8 +82,11 @@ CI 的步骤：
 |---|---|
 | 文档页面（`site/`） | 只有 `site.yml` |
 | README、`AGENTS.md`、许可证 | 什么都不运行 |
-| Rust 代码、测试、`Cargo.*`、`xtask/`、除 `site.yml` 以外的工作流 | `ci.yml` |
+| Rust 代码、测试、`Cargo.*`、`xtask/`、除 `site.yml` 和 js 相关工作流以外的工作流 | `ci.yml` |
+| `js/` | 只有 `js.yml` |
+| `crates/kardia-bridge/` | `ci.yml` 和 `js.yml` |
 | 版本递增，然后打标签 | `ci.yml` 运行一次；`release.yml` 复用那次运行 |
+| npm 版本递增，然后打 `js-v*` 标签 | 推送时运行 `js.yml`，作为发布的检查时再运行一次 |
 
 ## 发布 [#releases]
 
@@ -88,6 +113,57 @@ Release 先检查标签是否对应工作区版本，然后找到 CI 对这个�
 - crates.io 只允许一个账户一次创建少量新 crate，之后每十分钟一个。当 `cargo publish` 因 `429 Too Many Requests` 失败时，工作流等待 610 秒后重试，最多尝试八次；其他任何失败都会使该步骤失败。新增 crate 的发布会等过这个限制。
 - 也可以在某个分支上手动启动这个工作流（`workflow_dispatch`），续跑一次中途停下的发布。
 - 它使用仓库密钥 `CARGO_REGISTRY_TOKEN` 发布。
+
+## npm 发布 [#npm-releases]
+
+四个 `@kardiajs/*` 包共用一个版本，与 crate 的版本分开（从 0.1.0 开始）。桥的协议有自己的版本（两侧的 `PROTOCOL`）：以其他版本打开会话的客户端会被以 `invalid` 错误拒绝，因此来自不同发布的宿主和客户端会明确失败，而不是行为异常。
+
+<Steps>
+<Step>
+`cargo xtask js-version patch`（或 `minor`、`major`），然后提交并推送：`git commit -am "chore(release): @kardiajs 0.1.1"`、`git push`。
+</Step>
+<Step>
+`cargo xtask js-tag --push` 把该提交标记为 `js-v0.1.1` 并推送标签，从而启动 `.github/workflows/npm-release.yml`。
+</Step>
+<Step>
+该工作流检查每个包都处于所标记的版本，以 `js.yml` 作为检查，构建各包，并按 core、timer、bridge、tauri 的顺序发布，跳过 npm 上已有的版本（因此手动运行可以续跑一次中途停下的发布）。随后它为该标签创建 GitHub release，说明从上一个 `js-v*` 标签开始。
+</Step>
+</Steps>
+
+它使用 **npm 可信发布**（trusted publishing）：发布任务的 `id-token: write` 权限让它可以签发一个短期 OIDC 令牌，npm 对那些可信发布者指向本仓库和本工作流的包接受该令牌。任何地方都不保存 npm 令牌，npm 还会自动为每个版本附上来源证明（provenance，这要求仓库保持公开）。
+
+### 一次性设置 [#npm-setup]
+
+<Steps>
+<Step>
+**npmjs.com，组织。** 创建免费组织 `kardiajs`（`kardia` 包名和 `@kardia` 作用域属于他人），并加入维护者的账户。为这些账户启用双因素认证。
+</Step>
+<Step>
+**npmjs.com，首次发布。** npm 在包的设置中配置可信发布者，因此每个包必须先存在。在用 `npm login` 登录的机器上：`cd js && bun install && bun run build`，然后按顺序在 `packages/core`、`timer`、`bridge` 和 `tauri` 中执行 `npm publish --access public`。这样发布的 0.1.0 不带来源证明；之后的版本都由 CI 发布。
+</Step>
+<Step>
+**GitHub，环境。** 在仓库的 *Settings → Environments* 中创建 `npm`。可以选择把它的部署限制为 `js-v*` 标签，并添加必需的审核人：发布任务会等待他们批准。
+</Step>
+<Step>
+**npmjs.com，可信发布者。** 在每个包的 *Settings → Trusted publishing* 中添加一个 GitHub Actions 发布者：组织或用户 `licyk`，仓库 `kardia`，工作流 `npm-release.yml`，环境 `npm`。这些字段区分大小写，npm 只在发布时检查它们。新建的可信发布者必须在两天内完成一次发布，否则会过期并需要重新创建，因此请紧接着发布一个版本（第 5 步）。
+</Step>
+<Step>
+**首次 CI 发布。** 按上文递增版本并打标签。发布完成后，把每个包的 *Publishing access* 设为 "Require two-factor authentication and disallow tokens"，这样只有可信发布者（以及启用了双因素认证的维护者）可以发布。
+</Step>
+</Steps>
+
+### 密钥、变量与凭据 [#credentials]
+
+| 位置 | 名称 | 使用者 | 说明 |
+|---|---|---|---|
+| GitHub，仓库密钥 | `CARGO_REGISTRY_TOKEN` | `release.yml` | 带发布权限的 crates.io API 令牌；已存在 |
+| GitHub，仓库密钥 | `GITEE_RSA_PRIVATE_KEY` | `site.yml` | 把站点推送到 `gh-pages` 的部署密钥；已存在 |
+| GitHub，环境 | `npm` | `npm-release.yml`（发布任务） | 不保存密钥：它是可信发布者所指定的环境，并承载保护规则 |
+| GitHub，仓库变量 | 无 | | |
+| GitHub，工作流令牌 | `GITHUB_TOKEN` | 各发布任务 | 由 Actions 提供；各任务只在需要处申请 `contents: write`（GitHub release）和 `id-token: write`（npm） |
+| npmjs.com | 组织 `kardiajs`、每个包一个可信发布者、"要求双因素认证并禁止令牌"策略 | npm | 在 npmjs.com 上配置，而不是在 GitHub 中 |
+
+不存在 `NPM_TOKEN`。如果将来必须绕过可信发布，可以退而使用一个仅限 `@kardiajs` 各包的细粒度 npm 访问令牌，保存为 `npm` 环境的密钥；本工作流不使用它。
 
 ## 文档站点 [#site]
 

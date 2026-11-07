@@ -22,6 +22,7 @@
 - [配置文件](#配置文件)
 - [使用 Rust 编写插件](#使用-rust-编写插件)
 - [热重载与客体插件](#热重载与客体插件)
+- [TypeScript 与 Tauri](#typescript-与-tauri)
 - [Crate 列表](#crate-列表)
 - [开发](#开发)
 - [文档](#文档)
@@ -283,6 +284,19 @@ stdout 用于传输协议数据，因此进程客体插件不能向其打印内�
 
 其他语言编写的客体插件需要实现基于 JSON 的客体接口，详见 `kardia-hmr` crate 文档（`cargo doc -p kardia-hmr --open`）。`examples/plugins/hello.wat` 是一个手写的 WebAssembly 文本格式客体插件。
 
+## TypeScript 与 Tauri
+
+当应用的一部分是 TypeScript 时（例如界面运行在 webview 中的 Tauri 应用），`@kardiajs` npm 包为这一侧提供同样的模型，并由桥把它连接到 Rust 应用：
+
+| 包 | 内容 |
+|---|---|
+| [`@kardiajs/core`](js/packages/core/) | 上下文、fiber、可撤销副作用、响应式服务、事件和日志：`kardia-core` 的 TypeScript 移植，无任何依赖 |
+| [`@kardiajs/timer`](js/packages/timer/) | 随所属插件结束的计时器 |
+| [`@kardiajs/bridge`](js/packages/bridge/) | 桥的客户端：镜像 Rust 应用暴露的服务，使依赖它们的客户端插件恰在其暴露期间运行；双向异步调用；宿主事件 |
+| [`@kardiajs/tauri`](js/packages/tauri/) | 桥在 Tauri 上的传输：一个命令加一个 `Channel` |
+
+桥的 Rust 一侧是 [`kardia-bridge`](crates/kardia-bridge/) crate。每个运行时各自保留自己的插件和副作用；桥在两者之间传递服务的可用性、调用和事件。[TypeScript 与 Tauri](https://kardia-dev.netlify.app/docs/guide-typescript) 介绍了两侧的用法。
+
 ## Crate 列表
 
 | Crate | 内容 |
@@ -297,7 +311,8 @@ stdout 用于传输协议数据，因此进程客体插件不能向其打印内�
 | [`kardia-include`](crates/kardia-include/) | YAML/JSON 条目树、文件监听、补丁及与运行时变更的双向同步 |
 | [`kardia-hmr`](crates/kardia-hmr/) | 模块图、热替换、文件监听，以及 WebAssembly、动态库和子进程的客体服务桥接 |
 | [`kardia-guest`](crates/kardia-guest/) | Rust 客体插件 SDK，提供宿主服务访问、模块导出和进程客体服务端 |
-| [`xtask`](xtask/) | 仓库内部工具：架构检查、工作区版本更新和发布标签管理；不发布到 crates.io |
+| [`kardia-bridge`](crates/kardia-bridge/) | 连接 TypeScript 运行时（如 Tauri webview）的桥的宿主端：暴露的服务、事件、客户端会话及其服务 |
+| [`xtask`](xtask/) | 仓库内部工具：架构检查，以及 crate 与 npm 包的版本更新和发布标签管理；不发布 |
 
 ## 开发
 
@@ -310,15 +325,27 @@ cargo xtask arch                # lib.rs 和 mod.rs 仅声明和重新导出模�
 
 部分测试会在运行时使用 cargo 构建测试用 crate，因此首次运行耗时稍长。
 
+npm 包位于 Bun 工作区 [`js/`](js/) 中：
+
+```sh
+cd js
+bun install
+bun run check && bun run test   # 类型检查和单元测试
+bun run test:e2e                # TypeScript 客户端对 Rust 宿主的端到端测试
+bun run build
+```
+
 **仓库任务**通过 `cargo xtask <command>` 执行：
 
 - **`arch`：** 检查模块结构。
 - **`version <patch|minor|major>`：** 更新工作区版本号及其所有引用。
 - **`tag [--push]`：** 创建（并推送）发布标签 `v<version>`。
+- **`js-version <patch|minor|major>`** 与 **`js-tag [--push]`：** 对 npm 包执行同样的操作；npm 包有自己的版本和 `js-v<version>` 标签。
 
 **CI** 按变更涉及的内容划分：
 
-- **`ci.yml`：** 执行 Rust 检查，固定使用 Rust 1.96.0，因为 `kardia-macros` 的编译错误快照依赖编译器版本。仅修改文档站点或 Markdown 时会跳过。
+- **`ci.yml`：** 执行 Rust 检查，固定使用 Rust 1.96.0，因为 `kardia-macros` 的编译错误快照依赖编译器版本。仅修改文档站点、`js/` 或 Markdown 时会跳过。
+- **`js.yml`：** npm 包的类型检查、测试和构建，以及桥的端到端测试。
 - **`site.yml`：** 检查并部署文档站点。
 
 **发布流程：**
@@ -331,6 +358,8 @@ cargo xtask tag --push
 ```
 
 标签会触发 `release.yml`。它复用该标签所指提交的 CI 结果，发布新版本尚未出现在 crates.io 上的各个 crate，并创建 GitHub Release。也可以手动触发，以继续中途停止的发布。详情见[贡献指南](https://kardia-dev.netlify.app/docs/development-contributing)。
+
+npm 包以同样的方式发布，使用 `cargo xtask js-version` 和 `cargo xtask js-tag --push`：`js-v*` 标签会触发 `npm-release.yml`，它使用 npm 可信发布（GitHub 中不保存令牌）。[贡献指南](https://kardia-dev.netlify.app/docs/development-contributing#npm-releases)列出了 GitHub 和 npmjs.com 上的一次性设置。
 
 ## 文档
 

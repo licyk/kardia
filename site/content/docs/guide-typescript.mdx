@@ -1,0 +1,206 @@
+---
+title: "TypeScript 与 Tauri"
+description: "@kardiajs npm 包：在 TypeScript 中使用同一套插件模型，以及把 TypeScript 运行时（如 Tauri webview）连接到 Rust kardia 应用的桥。"
+icon: Cable
+---
+
+kardia 组合的是 Rust 应用。当应用的一部分是 TypeScript 时（例如界面运行在 webview 中的 Tauri 应用），`@kardiajs` 系列包为这一侧提供同样的模型：插件、服务、可撤销效应与生命周期。两个运行时之间由**桥**（bridge）连接。
+
+| 包 | 内容 |
+|---|---|
+| [`@kardiajs/core`](https://www.npmjs.com/package/@kardiajs/core) | 上下文、纤程、可撤销效应、响应式服务、事件与日志。无依赖，可在浏览器和 Node 中运行。 |
+| [`@kardiajs/timer`](https://www.npmjs.com/package/@kardiajs/timer) | `timeout`、`interval`、`sleep`、`throttle` 与 `debounce`，在所属插件停止时取消 |
+| [`@kardiajs/bridge`](https://www.npmjs.com/package/@kardiajs/bridge) | 桥的客户端 |
+| [`@kardiajs/tauri`](https://www.npmjs.com/package/@kardiajs/tauri) | 桥在 Tauri 上的传输：一个命令加一个 `Channel` |
+| `kardia-bridge`（crate） | 桥的宿主端，位于 Rust 应用中 |
+
+## 两个运行时，一套模型 [#model]
+
+每个运行时组合自己的插件。Rust 插件不能是 TypeScript 插件的子插件，反之亦然：效应的逆操作是某个运行时内存中的闭包，服务也是那里的值。因此桥并不共享一棵插件树，而是让每一侧对另一侧的视图保持同步：
+
+- **效应从不跨越边界。** 每一侧各自撤销自己的效应。
+- **服务的可用性会跨越边界。** 宿主暴露的服务恰在暴露期间出现在客户端，所以注入它的客户端插件恰在此时运行，并在它被重新暴露时重启。
+- **调用是异步的**，两个方向都是。另一侧已不在时调用以 `unavailable` 失败，未按时应答时以 `timeout` 失败。
+- **事件**从宿主发往每个客户端，以名称区分。
+
+这正是论文为跨越进程边界所描述的安排（每个进程承载自己的上下文，进程之间的调用遵循异步约定，见[相关工作](/docs/concepts-related-work)）。
+
+## TypeScript 运行时 [#core]
+
+```sh
+npm install @kardiajs/core @kardiajs/timer
+```
+
+```ts
+import { Context, definePlugin, Service } from "@kardiajs/core";
+import { Timer } from "@kardiajs/timer";
+
+class Counter extends Service {
+  value = 0;
+  constructor(ctx: Context) {
+    super(ctx, "counter"); // 以 `counter` 提供自身
+  }
+  /** 调用者的效应：调用它的插件停止时撤销。 */
+  increase() {
+    return this.caller.effect(() => {
+      this.value++;
+      return () => void this.value--;
+    });
+  }
+}
+
+declare module "@kardiajs/core" {
+  interface Services {
+    counter: Counter;
+  }
+}
+
+const ticker = definePlugin({
+  name: "ticker",
+  inject: ["timer", "counter"],
+  apply(ctx) {
+    // `ctx` 只能 `get` 在 `inject` 中声明的服务：其他的都是类型错误
+    ctx.get("timer").interval(1000, () => ctx.get("counter").increase());
+  },
+});
+
+const root = new Context();
+root.plugin(Timer);
+root.plugin(Counter);
+const fiber = root.plugin(ticker); // `timer` 与 `counter` 都在时启动
+await fiber.settled();
+await fiber.dispose(); // 它的 interval 停止，每次 increase 都被撤销
+```
+
+它移植的是 Kardia 的核心，而不是对 TypeScript Cordis 的封装：
+
+- **插件**是函数、类或带 `apply` 的对象，各自可带 `name`、`inject`、`provide` 和 `Config`（任意 [Standard Schema](https://standardschema.dev) 校验器）。`apply` 可以返回 promise，或返回一个在插件停止时运行的函数。
+- **服务**以字符串为键。`ctx.get(key)` 是带检查的访问：插件未声明的服务会失败。`ctx.live(key)` 不经检查读取实时存储。`Service` 返回的是一个视图，其 `caller` 是发起访问的上下文，对应 Kardia 的 `Svc::caller`。
+- **效应：** `ctx.effect(scope => ...)` 用 `scope.defer` 收集逆操作，或直接返回一个。异步的效应体不会被取消：效应被处置后，`scope.checkpoint()` 会结束它。
+- **生命周期：** 纤程依次经历 `pending`、`loading`、`active`、`unloading`、`failed` 和 `disposed`，与 Rust 一致。依赖被替换时插件重启，依赖离开时插件等待，提供者会一直运行到它的消费者完成清理。`fiber.update(config)`、`restart()`、`ctx.onUpdate(...)` 和 `ctx.registry.replace(old, new)`（热替换，用于 Vite HMR）的行为都与 Rust 相同。
+- **事件**以名称区分：`ctx.on`、`emit`、`bail`、`serial`、`parallel`。运行时会报告 `internal/plugin-inserted`、`internal/plugin-removed`、`internal/status`、`internal/service`、`internal/commit` 和 `internal/replace`。
+- **隔离与拦截：** `ctx.isolate(key, realm?)`、`ctx.intercept(key, meta)`、`ctx.interceptMeta(key)`。
+
+它与 Kardia 和 Cordis 的不同之处列在[实现状态](/docs/development-status#typescript)中。
+
+## 桥 [#bridge]
+
+### 宿主：`kardia-bridge` [#host]
+
+```toml
+[dependencies]
+kardia-bridge = "0.1"
+```
+
+应用创建一个 `Bridge`，挂载它的插件，并把客户端请求交给 `Bridge::handle`。插件注入 `bridge` 并暴露服务；暴露是暴露它的插件的效应，因此该插件停止时会被撤回：
+
+```rust
+use kardia_bridge::{Bridge, BridgeError, BridgeExt};
+
+let bridge = Bridge::default();
+root.plugin_def(&bridge.plugin(), serde_json::Value::Null)?;
+
+let agent = PluginDef::new(|ctx, _| async move {
+    let bridge = ctx.get::<Bridge>()?;
+    // 客户端可以读取的值
+    bridge.expose("agent-status", serde_json::json!({ "model": "local" }))?;
+    // 客户端可以调用的方法；先把 `args` 解码为有类型的结构体
+    bridge.expose("agent", |method: String, args: serde_json::Value| async move {
+        match method.as_str() {
+            "ping" => Ok(args),
+            _ => Err(BridgeError::invalid(format!("unknown method {method}"))),
+        }
+    })?;
+    // 发给每个客户端的事件
+    bridge.emit("agent/ready", &serde_json::Value::Null);
+    Ok(())
+})
+.inject([Bridge::NAME]);
+```
+
+`Bridge::handle` 在桥插件所在的运行时上执行工作，因此 Tauri 命令可以从 Tauri 的运行时调用它。Tauri 一侧的胶水代码只有一个命令（`kardia-bridge` 的 crate 文档给出了完整写法）：
+
+```rust
+#[tauri::command]
+async fn kardia_bridge(
+    bridge: tauri::State<'_, Bridge>,
+    webview: tauri::Webview,
+    request: serde_json::Value,
+    channel: Option<tauri::ipc::JavaScriptChannelId>,
+) -> Result<serde_json::Value, BridgeError> {
+    let outbox = channel.map(|id| Arc::new(ChannelOutbox(id.channel_on(webview))) as Arc<dyn Outbox>);
+    bridge.handle(request, outbox).await
+}
+```
+
+窗口销毁时调用 `bridge.close_client(label)`。页面重新加载无需处理：新会话会替换同一标签的旧会话。
+
+### 客户端：`@kardiajs/bridge` 与 `@kardiajs/tauri` [#client]
+
+```sh
+npm install @kardiajs/core @kardiajs/bridge @kardiajs/tauri
+```
+
+```ts
+import { Context } from "@kardiajs/core";
+import { Bridge, type RemoteService } from "@kardiajs/bridge";
+import { tauriBridge } from "@kardiajs/tauri";
+
+declare module "@kardiajs/core" {
+  interface Services {
+    "host.agent": RemoteService<{ ping(args: string): string }>;
+  }
+}
+
+const root = new Context();
+root.plugin(Bridge, tauriBridge()); // webview 的标签即客户端标签
+
+// 恰在宿主暴露 `agent` 期间运行
+root.inject(["host.agent"], async (ctx) => {
+  console.log(await ctx.get("host.agent").call("ping", "hello"));
+});
+
+root.on("host/agent/ready", () => console.log("the agent is ready"));
+```
+
+- 宿主服务显示为 `host.<name>`，宿主事件显示为 `host/<name>`（`prefix` 选项可以修改 `host`）。
+- 客户端在后台连接，并在宿主的桥重启后重新连接。断开期间它的插件仍处于活跃状态，只是宿主服务不存在。`bridge.status` 和 `bridge/status` 事件报告 `connecting`、`connected`、`disconnected` 或 `replaced`（同一标签的另一个 webview 接管了会话；此时不会重连）。
+- 失败的调用以 `BridgeError` 拒绝，其 `type` 为 `unavailable`、`timeout`、`invalid` 或 `failed`。
+
+### 来自客户端的服务 [#client-services]
+
+客户端可以向宿主提供服务，作为调用它的插件的效应：
+
+```ts
+root.inject(["bridge"], (ctx) => {
+  ctx.get("bridge").provide("ui.picker", {
+    value: { multiple: true },
+    methods: { pick: async (args: { title: string }) => showPicker(args.title) },
+  });
+});
+```
+
+宿主把它看作 `RemoteService`，由客户端的会话纤程提供，会话结束时撤回：
+
+```rust
+if let Some(picker) = ctx.live_as::<RemoteService>("ui.picker") {
+    let files = picker.call("pick", json!({ "title": "Open" })).await?;
+}
+```
+
+客户端随时可能关闭，而 Rust 应用通常在没有任何窗口时也在运行。所以宿主插件应在需要时查找客户端服务（`live_as`），而不是在 `inject` 中声明它，否则窗口一关闭该插件就会停止。每次重连后，客户端都会重新提供它的服务。
+
+## 职责归属 [#responsibilities]
+
+| | 归属 |
+|---|---|
+| 后端能力、状态、设置、持久化 | kardia 上的 Rust 插件 |
+| 界面组合：设置分区、命令、渲染器、面板 | `@kardiajs/core` 上的 TypeScript 插件 |
+| 客户端能看到哪些宿主服务，以及对它们的调用 | 宿主的 `expose`，经由桥 |
+| 传输、窗口身份、权限 | Tauri（一个命令，每个会话一个 `Channel`，capabilities） |
+
+一个扩展可以只有 Rust 部分（大多数后端能力；界面渲染它暴露的内容），只有 TypeScript 部分（使用已有宿主服务的面板或命令），或者两者兼有：一个暴露服务的 Rust 插件，加上一个注入 `host.<name>` 的 TypeScript 插件，使界面部分恰在后端部分运行时运行。
+
+## 协议 [#protocol]
+
+协议（版本 1）是以 `type` 标记、字段为 camelCase 的 JSON；未知字段会被忽略。`kardia-bridge` 的 crate 文档列出了每种请求和消息。任何传输都可以使用：桥的端到端测试通过 stdin 和 stdout 驱动 Rust 宿主（`crates/kardia-bridge/examples/stdio_host.rs`）。

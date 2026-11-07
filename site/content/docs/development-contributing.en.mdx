@@ -1,10 +1,10 @@
 ---
 title: "Contributing"
-description: "How to work on kardia: building and testing, the xtask commands, CI, releasing to crates.io, and the documentation site."
+description: "How to work on kardia: building and testing, the xtask commands, CI, releasing to crates.io and npm, and the documentation site."
 icon: GitPullRequest
 ---
 
-kardia is developed at [github.com/licyk/kardia](https://github.com/licyk/kardia). This page covers the Rust workspace, its CI and releases, and this documentation site.
+kardia is developed at [github.com/licyk/kardia](https://github.com/licyk/kardia). This page covers the Rust workspace, the npm packages under `js/`, their CI and releases, and this documentation site.
 
 <Callout type="info">
 The repository's [`AGENTS.md`](https://github.com/licyk/kardia/blob/main/AGENTS.md) has the code rules. In short: breaking refactors are allowed, with no compatibility layers; validate external data once, at the boundary, and tolerate unknown fields; no complexity for speculative races or edge cases without agreement first; keep main functions on the normal flow, with details in small helpers below; comment only non-obvious constraints; regenerate generated files instead of editing them; test the real implementation with few mocks; follow the repository's existing tools and workflows; extract a function only when it is reused, complex or a nameable concept.
@@ -24,6 +24,24 @@ cargo xtask arch                # lib.rs and mod.rs only declare and re-export m
 - The minimum supported Rust version of the crates is 1.85 (`rust-version` in the workspace `Cargo.toml`); CI uses a pinned, newer toolchain (below).
 - How the tests are organised, and which runtime each suite uses, is on [Testing](/docs/development-testing).
 
+### The npm packages [#js]
+
+`js/` is a Bun workspace of the `@kardiajs/*` packages ([TypeScript and Tauri](/docs/guide-typescript)), outside the Cargo workspace:
+
+```sh
+cd js
+bun install
+bun run check       # TypeScript, over the sources and tests of every package
+bun run test        # Vitest
+bun run test:e2e    # builds kardia-bridge's stdio host, then drives it from the TypeScript client
+bun run build       # each package's lib/, in dependency order (scripts/build.ts)
+```
+
+- The packages import each other by name. Type checking and tests resolve those names to the sources (`tsconfig.json` paths, `vitest.config.ts` aliases), so they need no build first; the build resolves them to the built packages.
+- Relative imports name `.js` files, so the emitted JavaScript and declarations work as they are.
+- The build copies the repository's `LICENSE` and `js/NOTICE` (the MIT notice of Cordis) into each package, since npm only ships files inside a package directory; the copies are gitignored.
+- Packages require each other as peers (`"@kardiajs/core": "^0.1"`), so an app has one copy of the runtime.
+
 ## Repository tasks: `cargo xtask` [#xtask]
 
 The `xtask` crate (`xtask/`, a workspace member that is never published) holds the repository's own tasks; `.cargo/config.toml` makes them `cargo xtask <command>`.
@@ -33,16 +51,20 @@ The `xtask` crate (`xtask/`, a workspace member that is never published) holds t
 | `cargo xtask arch` | Checks the module structure: every `lib.rs` and `mod.rs` (in `crates/*/src`, `crates/*/tests` and `xtask/src`) only declares modules, re-exports, and holds docs and attributes. Implementation (functions, types, traits, `impl` blocks, constants, statics, `macro_rules!`, inline test modules) lives in a file of its own, re-exported from the entry file. Inline modules that only re-export (such as `kardia::prelude`) and proc-macro entry points, which Rust requires at the crate root, are allowed. It lists each violation with its file, line and kind, and fails if there is any. CI runs it. |
 | `cargo xtask version <patch\|minor\|major> [--dry-run]` | Bumps the workspace version (`0.1.3` → `0.1.4` / `0.2.0` / `1.0.0`) in `[workspace.package]`, in the `kardia-*` entries of `[workspace.dependencies]`, and in `Cargo.lock`. When the requirement users write changes (a minor or major bump before 1.0, a major bump after), it also updates the `kardia = "0.x"` snippets of the README and these docs. It does not commit. |
 | `cargo xtask tag [--version X.Y.Z \| --name NAME] [--message TEXT] [--push] [--remote NAME] [--dry-run]` | Creates an annotated tag on `HEAD`: `v<workspace version>` by default. `--version` must equal the workspace version (a `v*` tag releases it), and `--name` creates any other tag. It refuses an uncommitted working tree and a tag that already exists, locally or (with `--push`) on the remote. `--push` pushes the tag (to `origin`, or `--remote`). |
+| `cargo xtask js-version <patch\|minor\|major> [--dry-run]` | Bumps the version of the npm packages, which share one version of their own: `version` in each `js/packages/*/package.json`, the `^` ranges they require of each other when the requirement changes, and `js/bun.lock` (`bun install`). It refuses packages at different versions. It does not commit. |
+| `cargo xtask js-tag [same options as tag]` | Like `tag`, for the npm packages: `js-v<version>` by default, which starts the npm release. |
 
 ## CI [#ci]
 
-The repository has three workflows, each for one part of it, so that a change runs only the checks it needs and a release tests a commit once.
+The repository has five workflows, each for one part of it, so that a change runs only the checks it needs and a release tests a commit once.
 
 | Workflow | Runs on | Does |
 |---|---|---|
-| `ci.yml` (Rust) | pushes to `main` and pull requests, except changes only to `site/`, Markdown, `LICENSE`, `NOTICE` and the hosting files; manual runs; called by Release | fmt, clippy, `cargo xtask arch`, the test suite |
+| `ci.yml` (Rust) | pushes to `main` and pull requests, except changes only to `site/`, `js/`, Markdown, `LICENSE`, `NOTICE` and the hosting files; manual runs; called by Release | fmt, clippy, `cargo xtask arch`, the test suite |
+| `js.yml` (npm packages) | pushes to `main` and pull requests that change `js/` or `crates/kardia-bridge/`; manual runs; called by npm release | the packages' types, tests and build; the bridge's end-to-end test against the Rust host |
 | `site.yml` (docs) | pushes to `main` and pull requests that change `site/`; manual runs | the site's types, tests and build; outside pull requests, the deploy (below) |
 | `release.yml` | `v*` tags; manual runs | publishes to crates.io (below) |
+| `npm-release.yml` | `js-v*` tags (which `v*` does not match); manual runs | publishes to npm ([below](#npm-releases)) |
 
 CI's steps:
 
@@ -60,8 +82,11 @@ A newer push cancels an older CI run of the same branch or pull request. Tags ne
 |---|---|
 | a docs page (`site/`) | `site.yml` only |
 | the README, `AGENTS.md`, the licence | nothing |
-| Rust code, tests, `Cargo.*`, `xtask/`, a workflow other than `site.yml` | `ci.yml` |
+| Rust code, tests, `Cargo.*`, `xtask/`, a workflow other than `site.yml` and the js ones | `ci.yml` |
+| `js/` | `js.yml` only |
+| `crates/kardia-bridge/` | `ci.yml` and `js.yml` |
 | a version bump, then its tag | `ci.yml` once; `release.yml` reuses that run |
+| an npm version bump, then its `js-v*` tag | `js.yml` on the push, and again as the release's checks |
 
 ## Releases [#releases]
 
@@ -88,6 +113,57 @@ The publish step is **resumable**:
 - crates.io lets an account create only a few new crates at once and then one every ten minutes. When `cargo publish` fails with `429 Too Many Requests`, the workflow waits 610 seconds and tries again, up to eight attempts; any other failure fails the step. A release that adds new crates waits out this limit.
 - The workflow can also be started by hand (`workflow_dispatch`) on a branch to resume a release that stopped part-way.
 - It publishes with the `CARGO_REGISTRY_TOKEN` repository secret.
+
+## npm releases [#npm-releases]
+
+The four `@kardiajs/*` packages share one version, apart from the crates' (they start at 0.1.0). The bridge's protocol has a version of its own (`PROTOCOL` on both sides): a client opening a session with another version is refused with an `invalid` error, so a host and a client from different releases fail clearly instead of misbehaving.
+
+<Steps>
+<Step>
+`cargo xtask js-version patch` (or `minor`, `major`), then commit and push: `git commit -am "chore(release): @kardiajs 0.1.1"`, `git push`.
+</Step>
+<Step>
+`cargo xtask js-tag --push` tags the commit `js-v0.1.1` and pushes the tag, which starts `.github/workflows/npm-release.yml`.
+</Step>
+<Step>
+The workflow checks that every package is at the tagged version, runs `js.yml` as its checks, builds the packages, and publishes core, timer, bridge and tauri, in that order, skipping a version npm already has (so a manual run resumes a release that stopped part-way). It then creates a GitHub release for the tag, with notes since the previous `js-v*` tag.
+</Step>
+</Steps>
+
+It publishes with **npm trusted publishing**: the publish job's `id-token: write` permission lets it mint a short-lived OIDC token that npm accepts for packages whose trusted publisher names this repository and workflow. No npm token is stored anywhere, and npm attaches a provenance statement to each version automatically (this needs the repository to stay public).
+
+### One-time setup [#npm-setup]
+
+<Steps>
+<Step>
+**npmjs.com, organization.** Create the free organization `kardiajs` (the `kardia` package name and the `@kardia` scope belong to others), and add the maintainers' accounts. Enable two-factor authentication on them.
+</Step>
+<Step>
+**npmjs.com, first publish.** npm configures a trusted publisher in a package's settings, so each package must exist first. From a machine logged in with `npm login`: `cd js && bun install && bun run build`, then `npm publish --access public` in `packages/core`, `timer`, `bridge` and `tauri`, in that order. This publishes 0.1.0 without provenance; later versions come from CI.
+</Step>
+<Step>
+**GitHub, environment.** In the repository's *Settings → Environments*, create `npm`. Optionally restrict its deployments to `js-v*` tags and add required reviewers: the publish job waits for them.
+</Step>
+<Step>
+**npmjs.com, trusted publishers.** In each package's *Settings → Trusted publishing*, add a GitHub Actions publisher: organization or user `licyk`, repository `kardia`, workflow `npm-release.yml`, environment `npm`. The fields are case-sensitive and npm checks them only at publish time. A new trusted publisher must publish within two days, or it expires and has to be recreated, so release a version (step 5) right after.
+</Step>
+<Step>
+**First CI release.** Bump and tag as above. When it has published, set each package's *Publishing access* to "Require two-factor authentication and disallow tokens", so only the trusted publisher (and maintainers with 2FA) can publish.
+</Step>
+</Steps>
+
+### Secrets, variables and credentials [#credentials]
+
+| Where | Name | Used by | Notes |
+|---|---|---|---|
+| GitHub, repository secret | `CARGO_REGISTRY_TOKEN` | `release.yml` | crates.io API token with the publish scopes; existing |
+| GitHub, repository secret | `GITEE_RSA_PRIVATE_KEY` | `site.yml` | deploy key that pushes the site to `gh-pages`; existing |
+| GitHub, environment | `npm` | `npm-release.yml` (publish job) | holds no secret: it names the trusted publisher's environment and carries any protection rules |
+| GitHub, repository variables | none | | |
+| GitHub, workflow token | `GITHUB_TOKEN` | the release jobs | provided by Actions; the jobs ask for `contents: write` (GitHub release) and `id-token: write` (npm) only where needed |
+| npmjs.com | organization `kardiajs`, a trusted publisher per package, the 2FA-and-no-tokens policy | npm | configured on npmjs.com, not in GitHub |
+
+There is no `NPM_TOKEN`. If trusted publishing ever has to be bypassed, a granular npm access token limited to the `@kardiajs` packages, stored as an `npm` environment secret, would be the fallback; the workflow does not use one.
 
 ## Documentation site [#site]
 

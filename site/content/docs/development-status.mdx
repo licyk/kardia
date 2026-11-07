@@ -104,3 +104,24 @@ hmr 的 `index` 用例“waits for a second re-enable init”在 Rust 中没有�
 `kardia` 二进制注册了 `hmr`，并把任何不是内置插件的条目名称解析为相对于配置文件的访客模块：`examples/kardia.yml` 会热重载 `plugins/hello.wat`。
 
 关于如何使用访客，见[访客插件](/docs/guide-guests)和[热重载](/docs/guide-hot-reload)。
+
+## TypeScript 一侧 [#typescript]
+
+`js/` 中是 npm 包 `@kardiajs/core`、`@kardiajs/timer`、`@kardiajs/bridge` 和 `@kardiajs/tauri`，`crates/kardia-bridge` 是桥的 Rust 宿主端（[TypeScript 与 Tauri](/docs/guide-typescript)）。它们与 crate 分开版本化和发布（[参与开发](/docs/development-contributing#npm-releases)）。
+
+`@kardiajs/core` 移植的是 Kardia 的核心（状态机、带检查的访问、效应引擎与日志器），而不是 TypeScript Cordis 的代码。它在运行时和开发时都不依赖 Cordis：本仓库从未依赖过（`cordis/` 是被 gitignore 的本地参考副本），这些包也没有任何运行时依赖。它的测试套件移植了 Cordis 中相关的 spec。不同之处：
+
+| 主题 | `@kardiajs/core` |
+|---|---|
+| 服务访问 | 使用 `ctx.get(key)` / `ctx.live(key)`，而不是通过 `Proxy` 上下文的属性访问。用 `definePlugin` 定义的插件得到一个按其 `inject` 定型的上下文，因此访问未声明的服务是类型错误（对应 Kardia 的 `Injected<D>`）。 |
+| 调用者归属 | `ctx.get` 返回的 `Service` 是一个视图，其 `caller` 是发起访问的上下文（对应 Kardia 的 `Svc::caller`）。视图是 `Proxy` 对象，服务的 `#private` 字段无法穿过它；请使用 `private`。 |
+| `apply` | 可以返回 promise，或返回一个在插件停止时运行的函数（与 Cordis 相同；Kardia 的 `apply` 只返回结果）。类按纤程实例化；没有 `Service.init`。 |
+| 效应 | `ctx.effect(scope => ...)`，配合 `scope.defer`、`scope.adopt` 和 `scope.checkpoint`，或返回一个撤销函数（相当于 Kardia 的 `effect_sync` / `effect` 合一）。没有生成器或异步迭代器形式的效应。 |
+| 内部事件 | 使用 `internal/plugin-inserted` 和 `internal/plugin-removed`（对应 Kardia 的 `PluginInserted` / `PluginRemoved`），而不是 Cordis 的单个 `internal/plugin`；`internal/status` 同时传递旧状态和新状态。 |
+| 事件 | 与 Kardia 相同：`emit` 记录失败的监听器并继续运行其余监听器；没有 `waterfall`；更新钩子是 `ctx.onUpdate`。没有装饰器，也不绑定监听器的 `this`。 |
+| `update` / `restart` | 配置无效或纤程已退役时立即抛出（对应 Kardia 的 `Result`）；它们返回的 promise 随纤程一起结算，并被标记为已处理，因此丢弃它不会引发未处理的拒绝。 |
+| `ctx.inject(deps, apply)` | 每次调用都创建一个独立的插件，因此 `registry.replace` 无法指向它。 |
+| 名称 | 纤程在其插件的最后一个纤程退役后仍保留插件名称，因此移除时的事件仍带有该名称。 |
+| 加载器、include、HMR | 未移植：它们读取文件，而客户端运行在 webview 中。Vite 的 HMR 可以驱动 `registry.replace`。 |
+
+与访客 ABI（[动态模块](#dynamic-modules)）不同，桥的调用是异步的：这正是论文 §6.2 中的异步约定。它的端到端测试从 TypeScript 客户端驱动真实的 Rust 宿主。

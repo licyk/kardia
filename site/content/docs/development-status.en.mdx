@@ -104,3 +104,24 @@ Watch mode (`HmrConfig { base, watch: { enabled, files, debounce } }`) follows t
 The `kardia` binary registers `hmr` and resolves any entry name that is not a built-in plugin as a guest module relative to the config file: `examples/kardia.yml` hot-reloads `plugins/hello.wat`.
 
 For using guests, see [Guest plugins](/docs/guide-guests) and [Hot reload](/docs/guide-hot-reload).
+
+## The TypeScript side [#typescript]
+
+`js/` holds the npm packages `@kardiajs/core`, `@kardiajs/timer`, `@kardiajs/bridge` and `@kardiajs/tauri`, and `crates/kardia-bridge` the Rust host of the bridge ([TypeScript and Tauri](/docs/guide-typescript)). They are versioned and released apart from the crates ([Contributing](/docs/development-contributing#npm-releases)).
+
+`@kardiajs/core` ports Kardia's core (its state machine, checked access, effect engine and logger), not the TypeScript Cordis code. It does not depend on Cordis, at run time or in development: this repository never did (`cordis/` is a local, gitignored copy for reference), and the packages have no runtime dependencies. Its test suite ports the relevant Cordis specs. Where it differs:
+
+| Topic | `@kardiajs/core` |
+|---|---|
+| Service access | `ctx.get(key)` / `ctx.live(key)` instead of property access through a `Proxy` context. A plugin defined with `definePlugin` gets a context typed by its `inject`, so an undeclared access is a type error (Kardia's `Injected<D>`). |
+| Caller attribution | A `Service` comes back from `ctx.get` as a view whose `caller` is the accessing context (Kardia's `Svc::caller`). Views are `Proxy` objects, so a service's `#private` fields do not pass through them; use `private`. |
+| `apply` | May return a promise, or a function that runs when the plugin stops (as in Cordis; Kardia's `apply` returns only its result). Classes are instantiated per fiber; there is no `Service.init`. |
+| Effects | `ctx.effect(scope => ...)` with `scope.defer`, `scope.adopt` and `scope.checkpoint`, or a returned disposer (Kardia's `effect_sync` / `effect` in one). No generator or async-iterator effects. |
+| Internal events | `internal/plugin-inserted` and `internal/plugin-removed` (Kardia's `PluginInserted` / `PluginRemoved`) instead of Cordis' single `internal/plugin`; `internal/status` passes the old and new state. |
+| Events | As in Kardia: `emit` logs a failing listener and runs the rest; no `waterfall`; update hooks are `ctx.onUpdate`. No decorators, no `this` binding of listeners. |
+| `update` / `restart` | Throw at once for an invalid config or a retired fiber (Kardia's `Result`); the promise they return, which settles with the fiber, is marked handled, so dropping it never raises an unhandled rejection. |
+| `ctx.inject(deps, apply)` | Creates a plugin of its own on every call, so `registry.replace` cannot target it. |
+| Names | A fiber keeps its plugin's name after its last fiber is retired, so the events of its removal still name it. |
+| Loader, include, HMR | Not ported: they read files, and the client runs in a webview. Vite's HMR can drive `registry.replace`. |
+
+The bridge's calls are asynchronous, unlike the guest ABI's ([Dynamic modules](#dynamic-modules)): it is the asynchronous contract of paper §6.2. Its end-to-end tests drive the real Rust host from the TypeScript client.

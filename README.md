@@ -21,6 +21,7 @@ An app is a tree of **plugins**. Each plugin runs in a **fiber**:
 - [The configuration file](#the-configuration-file)
 - [Writing plugins in Rust](#writing-plugins-in-rust)
 - [Hot reload and guest plugins](#hot-reload-and-guest-plugins)
+- [TypeScript and Tauri](#typescript-and-tauri)
 - [Crates](#crates)
 - [Development](#development)
 - [Documentation](#documentation)
@@ -277,6 +278,19 @@ What a guest can do:
 
 Guests in other languages implement the JSON-based guest interface described in the `kardia-hmr` crate docs (`cargo doc -p kardia-hmr --open`). `examples/plugins/hello.wat` is a guest written by hand in WebAssembly text.
 
+## TypeScript and Tauri
+
+When part of an app is TypeScript, as in a Tauri app whose interface runs in a webview, the `@kardiajs` npm packages give that side the same model, and a bridge connects it to the Rust app:
+
+| Package | Contents |
+|---|---|
+| [`@kardiajs/core`](js/packages/core/) | Contexts, fibers, revertible effects, reactive services, events and logging: a TypeScript port of `kardia-core`, with no dependencies |
+| [`@kardiajs/timer`](js/packages/timer/) | Timers that end with their plugin |
+| [`@kardiajs/bridge`](js/packages/bridge/) | The client of the bridge: mirrors the services the Rust app exposes, so client plugins depending on them run exactly while they are exposed; asynchronous calls both ways; host events |
+| [`@kardiajs/tauri`](js/packages/tauri/) | The bridge's transport over one Tauri command and a `Channel` |
+
+The Rust side of the bridge is the [`kardia-bridge`](crates/kardia-bridge/) crate. Each runtime keeps its own plugins and effects; the bridge carries service availability, calls and events between them. [TypeScript and Tauri](https://kardia-dev.netlify.app/docs/guide-typescript) shows both sides.
+
 ## Crates
 
 | Crate | Contents |
@@ -291,7 +305,8 @@ Guests in other languages implement the JSON-based guest interface described in 
 | [`kardia-include`](crates/kardia-include/) | YAML/JSON entry trees, file watching, patches and bidirectional synchronization with runtime changes |
 | [`kardia-hmr`](crates/kardia-hmr/) | Module graph, hot replacement, file watching and guest service bridging for WebAssembly, dynamic libraries and child processes |
 | [`kardia-guest`](crates/kardia-guest/) | Rust guest SDK: host service access, module exports and the process guest server |
-| [`xtask`](xtask/) | Internal repository tasks: architecture checks, workspace version updates and release tags; not published |
+| [`kardia-bridge`](crates/kardia-bridge/) | The host side of the bridge to a TypeScript runtime such as a Tauri webview: exposed services, events, client sessions and their services |
+| [`xtask`](xtask/) | Internal repository tasks: architecture checks, version updates and release tags for the crates and the npm packages; not published |
 
 ## Development
 
@@ -304,13 +319,25 @@ cargo xtask arch                # lib.rs and mod.rs only declare and re-export m
 
 Some tests build fixture crates with cargo while they run, so the first run takes a little longer.
 
+The npm packages live in [`js/`](js/), a Bun workspace:
+
+```sh
+cd js
+bun install
+bun run check && bun run test   # types and unit tests
+bun run test:e2e                # the TypeScript client against the Rust host
+bun run build
+```
+
 **Repository tasks** run as `cargo xtask <command>`:
 - **`arch`:** checks the module structure.
 - **`version <patch|minor|major>`:** bumps the workspace version everywhere it appears.
 - **`tag [--push]`:** creates (and pushes) the release tag `v<version>`.
+- **`js-version <patch|minor|major>`** and **`js-tag [--push]`:** the same for the npm packages, which have a version of their own and `js-v<version>` tags.
 
 **CI** is split by what a change touches:
-- **`ci.yml`:** the Rust checks, on a pinned Rust 1.96.0, since the compile-error snapshots of `kardia-macros` depend on the compiler version. It skips changes only to the docs site or Markdown.
+- **`ci.yml`:** the Rust checks, on a pinned Rust 1.96.0, since the compile-error snapshots of `kardia-macros` depend on the compiler version. It skips changes only to the docs site, `js/` or Markdown.
+- **`js.yml`:** the npm packages' types, tests and build, and the bridge's end-to-end test.
 - **`site.yml`:** checks and deploys the docs site.
 
 **To release:**
@@ -323,6 +350,8 @@ cargo xtask tag --push
 ```
 
 The tag starts `release.yml`. It reuses CI's run of the tagged commit rather than testing it again, publishes every crate whose new version is not on crates.io yet, and creates a GitHub release. It can also be started by hand to resume a release that stopped part-way. [Contributing](https://kardia-dev.netlify.app/docs/development-contributing) has the details.
+
+The npm packages are released the same way with `cargo xtask js-version` and `cargo xtask js-tag --push`: the `js-v*` tag starts `npm-release.yml`, which publishes with npm trusted publishing (no token in GitHub). [Contributing](https://kardia-dev.netlify.app/docs/development-contributing#npm-releases) lists the one-time GitHub and npmjs.com setup.
 
 ## Documentation
 

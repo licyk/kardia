@@ -1,0 +1,206 @@
+---
+title: "TypeScript and Tauri"
+description: "The @kardiajs npm packages: the same plugin model in TypeScript, and the bridge that connects a TypeScript runtime, such as a Tauri webview, to a Rust kardia app."
+icon: Cable
+---
+
+kardia composes a Rust app. When part of the app is TypeScript, as in a Tauri app whose interface runs in a webview, the `@kardiajs` packages give that side the same model: plugins, services, revertible effects and lifecycle. The **bridge** connects the two runtimes.
+
+| Package | Contents |
+|---|---|
+| [`@kardiajs/core`](https://www.npmjs.com/package/@kardiajs/core) | Contexts, fibers, revertible effects, reactive services, events and logging. No dependencies; runs in browsers and Node. |
+| [`@kardiajs/timer`](https://www.npmjs.com/package/@kardiajs/timer) | `timeout`, `interval`, `sleep`, `throttle` and `debounce`, cancelled when their plugin stops |
+| [`@kardiajs/bridge`](https://www.npmjs.com/package/@kardiajs/bridge) | The client side of the bridge |
+| [`@kardiajs/tauri`](https://www.npmjs.com/package/@kardiajs/tauri) | The bridge's transport over one Tauri command and a `Channel` |
+| `kardia-bridge` (crate) | The host side of the bridge, in the Rust app |
+
+## Two runtimes, one model [#model]
+
+Each runtime composes its own plugins. A Rust plugin cannot be a child of a TypeScript one or the reverse: an effect's inverse is a closure in one runtime's memory, and a service is a value there. So the bridge does not share a plugin tree. It keeps each side's view of the other in step:
+
+- **Effects never cross.** Each side reverts its own.
+- **Service availability crosses.** A service the host exposes appears on the client exactly while it is exposed, so a client plugin that injects it runs exactly then, and restarts when it is exposed anew.
+- **Calls are asynchronous** in both directions. A call into the other side fails with `unavailable` when that side is gone, and with `timeout` when it does not answer.
+- **Events** go from the host to every client, named.
+
+This is the arrangement the paper describes for crossing a process boundary (each process hosts its own context, and calls between them follow an asynchronous contract, see [Related work](/docs/concepts-related-work)).
+
+## The TypeScript runtime [#core]
+
+```sh
+npm install @kardiajs/core @kardiajs/timer
+```
+
+```ts
+import { Context, definePlugin, Service } from "@kardiajs/core";
+import { Timer } from "@kardiajs/timer";
+
+class Counter extends Service {
+  value = 0;
+  constructor(ctx: Context) {
+    super(ctx, "counter"); // provides itself as `counter`
+  }
+  /** An effect of the caller: undone when the calling plugin stops. */
+  increase() {
+    return this.caller.effect(() => {
+      this.value++;
+      return () => void this.value--;
+    });
+  }
+}
+
+declare module "@kardiajs/core" {
+  interface Services {
+    counter: Counter;
+  }
+}
+
+const ticker = definePlugin({
+  name: "ticker",
+  inject: ["timer", "counter"],
+  apply(ctx) {
+    // `ctx` may only `get` what `inject` declares: anything else is a type error
+    ctx.get("timer").interval(1000, () => ctx.get("counter").increase());
+  },
+});
+
+const root = new Context();
+root.plugin(Timer);
+root.plugin(Counter);
+const fiber = root.plugin(ticker); // starts once `timer` and `counter` are there
+await fiber.settled();
+await fiber.dispose(); // its interval stops, and every increase is undone
+```
+
+It is a port of Kardia's core rather than a wrapper of the TypeScript Cordis:
+
+- **Plugins** are functions, classes or objects with `apply`, each with optional `name`, `inject`, `provide` and `Config` (any [Standard Schema](https://standardschema.dev) validator). `apply` may return a promise, or a function that runs when the plugin stops.
+- **Services** are keyed by string. `ctx.get(key)` is checked access: it fails for a service the plugin did not declare. `ctx.live(key)` reads the live store without a check. A `Service` comes back as a view whose `caller` is the accessing context, Kardia's `Svc::caller`.
+- **Effects:** `ctx.effect(scope => ...)` collects inverses with `scope.defer` or returns one. An asynchronous body is never cancelled: `scope.checkpoint()` ends it once the effect is disposed.
+- **Lifecycle:** fibers move through `pending`, `loading`, `active`, `unloading`, `failed` and `disposed`, as in Rust. A plugin restarts when a dependency is replaced, waits when one leaves, and its provider keeps running until its consumers have cleaned up. `fiber.update(config)`, `restart()`, `ctx.onUpdate(...)` and `ctx.registry.replace(old, new)` (hot replacement, for Vite HMR) behave as in Rust.
+- **Events** are named: `ctx.on`, `emit`, `bail`, `serial`, `parallel`. The runtime reports `internal/plugin-inserted`, `internal/plugin-removed`, `internal/status`, `internal/service`, `internal/commit` and `internal/replace`.
+- **Isolation and interception:** `ctx.isolate(key, realm?)`, `ctx.intercept(key, meta)`, `ctx.interceptMeta(key)`.
+
+Where it differs from Kardia and Cordis is listed on [Implementation status](/docs/development-status#typescript).
+
+## The bridge [#bridge]
+
+### Host: `kardia-bridge` [#host]
+
+```toml
+[dependencies]
+kardia-bridge = "0.1"
+```
+
+The app creates a `Bridge`, mounts its plugin, and routes client requests into `Bridge::handle`. Plugins inject `bridge` and expose services; an exposure is an effect of the exposing plugin, so it is withdrawn when that plugin stops:
+
+```rust
+use kardia_bridge::{Bridge, BridgeError, BridgeExt};
+
+let bridge = Bridge::default();
+root.plugin_def(&bridge.plugin(), serde_json::Value::Null)?;
+
+let agent = PluginDef::new(|ctx, _| async move {
+    let bridge = ctx.get::<Bridge>()?;
+    // a value clients can read
+    bridge.expose("agent-status", serde_json::json!({ "model": "local" }))?;
+    // methods clients can call; decode `args` into a typed struct first
+    bridge.expose("agent", |method: String, args: serde_json::Value| async move {
+        match method.as_str() {
+            "ping" => Ok(args),
+            _ => Err(BridgeError::invalid(format!("unknown method {method}"))),
+        }
+    })?;
+    // an event for every client
+    bridge.emit("agent/ready", &serde_json::Value::Null);
+    Ok(())
+})
+.inject([Bridge::NAME]);
+```
+
+`Bridge::handle` runs its work on the runtime the bridge plugin runs on, so a Tauri command can call it from Tauri's runtime. The Tauri glue is one command (the `kardia-bridge` crate docs show it in full):
+
+```rust
+#[tauri::command]
+async fn kardia_bridge(
+    bridge: tauri::State<'_, Bridge>,
+    webview: tauri::Webview,
+    request: serde_json::Value,
+    channel: Option<tauri::ipc::JavaScriptChannelId>,
+) -> Result<serde_json::Value, BridgeError> {
+    let outbox = channel.map(|id| Arc::new(ChannelOutbox(id.channel_on(webview))) as Arc<dyn Outbox>);
+    bridge.handle(request, outbox).await
+}
+```
+
+Call `bridge.close_client(label)` when a window is destroyed. A reloaded page needs nothing: its new session replaces the old one with the same label.
+
+### Client: `@kardiajs/bridge` and `@kardiajs/tauri` [#client]
+
+```sh
+npm install @kardiajs/core @kardiajs/bridge @kardiajs/tauri
+```
+
+```ts
+import { Context } from "@kardiajs/core";
+import { Bridge, type RemoteService } from "@kardiajs/bridge";
+import { tauriBridge } from "@kardiajs/tauri";
+
+declare module "@kardiajs/core" {
+  interface Services {
+    "host.agent": RemoteService<{ ping(args: string): string }>;
+  }
+}
+
+const root = new Context();
+root.plugin(Bridge, tauriBridge()); // the webview's label is the client label
+
+// runs exactly while the host exposes `agent`
+root.inject(["host.agent"], async (ctx) => {
+  console.log(await ctx.get("host.agent").call("ping", "hello"));
+});
+
+root.on("host/agent/ready", () => console.log("the agent is ready"));
+```
+
+- Host services appear as `host.<name>` and host events as `host/<name>` (the `prefix` option changes `host`).
+- The client connects in the background and reconnects when the host's bridge restarts. Its plugin is active while disconnected; host services are simply absent. `bridge.status` and the `bridge/status` event report `connecting`, `connected`, `disconnected` or `replaced` (another webview with the same label took over; it does not reconnect).
+- A failed call rejects with a `BridgeError` whose `type` is `unavailable`, `timeout`, `invalid` or `failed`.
+
+### Services from the client [#client-services]
+
+A client can provide a service to the host, as an effect of the calling plugin:
+
+```ts
+root.inject(["bridge"], (ctx) => {
+  ctx.get("bridge").provide("ui.picker", {
+    value: { multiple: true },
+    methods: { pick: async (args: { title: string }) => showPicker(args.title) },
+  });
+});
+```
+
+The host sees it as a `RemoteService`, provided by the client's session fiber and withdrawn when the session ends:
+
+```rust
+if let Some(picker) = ctx.live_as::<RemoteService>("ui.picker") {
+    let files = picker.call("pick", json!({ "title": "Open" })).await?;
+}
+```
+
+A client can close at any time, and the Rust app usually runs without any window open. So a host plugin should look a client service up when it needs it (`live_as`), rather than declare it in `inject`, which would stop that plugin whenever the window closes. The client provides its services again after every reconnect.
+
+## Where things belong [#responsibilities]
+
+| | Belongs to |
+|---|---|
+| Backend capabilities, state, settings, persistence | Rust plugins on kardia |
+| Interface composition: settings sections, commands, renderers, panels | TypeScript plugins on `@kardiajs/core` |
+| Which host services a client can see, and calls into them | the host's `expose`, through the bridge |
+| Transport, window identity, permissions | Tauri (one command, one `Channel` per session, capabilities) |
+
+An extension can be Rust only (most backend capabilities; the interface renders what it exposes), TypeScript only (a panel or command using existing host services), or both: a Rust plugin that exposes a service, and a TypeScript plugin that injects `host.<name>`, so the interface half runs exactly while the backend half does.
+
+## Protocol [#protocol]
+
+The protocol (version 1) is JSON, tagged by `type`, with camelCase fields; unknown fields are ignored. The `kardia-bridge` crate docs list every request and message. Any transport works: the bridge's end-to-end tests drive the Rust host over stdin and stdout (`crates/kardia-bridge/examples/stdio_host.rs`).

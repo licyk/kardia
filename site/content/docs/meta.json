@@ -14,6 +14,7 @@
     "guide-loader",
     "guide-hot-reload",
     "guide-guests",
+    "guide-typescript",
     "---概念---",
     "concepts",
     "concepts-revertible-effects",
