@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "types": ["node"],
+    "paths": {
+      "@kardiajs/core": ["./packages/core/src/index.ts"],
+      "@kardiajs/timer": ["./packages/timer/src/index.ts"],
+      "@kardiajs/bridge": ["./packages/bridge/src/index.ts"],
+      "@kardiajs/tauri": ["./packages/tauri/src/index.ts"]
+    }
+  },
+  "include": ["packages/*/src", "packages/*/tests", "scripts", "*.config.ts"]
+}

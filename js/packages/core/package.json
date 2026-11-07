@@ -1,0 +1,43 @@
+{
+  "name": "@kardiajs/core",
+  "version": "0.1.0",
+  "description": "Plugins, revertible effects, lifecycle and reactive services for TypeScript: the TypeScript side of kardia",
+  "type": "module",
+  "sideEffects": false,
+  "license": "GPL-3.0-only",
+  "author": "licyk",
+  "homepage": "https://kardia-dev.netlify.app",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/licyk/kardia.git",
+    "directory": "js/packages/core"
+  },
+  "bugs": {
+    "url": "https://github.com/licyk/kardia/issues"
+  },
+  "keywords": [
+    "kardia",
+    "cordis",
+    "plugin",
+    "dependency-injection",
+    "lifecycle",
+    "effects"
+  ],
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "src",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

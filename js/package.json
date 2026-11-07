@@ -1,0 +1,21 @@
+{
+  "name": "@kardiajs/workspace",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "check": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:e2e": "cargo build -p kardia-bridge --example stdio_host && vitest run --config vitest.e2e.config.ts",
+    "build": "bun run scripts/build.ts",
+    "clean": "bun run scripts/build.ts --clean"
+  },
+  "devDependencies": {
+    "@tauri-apps/api": "^2.12.4",
+    "@types/node": "^26.6.3",
+    "typescript": "~7.0.2",
+    "vitest": "^5.0.3"
+  }
+}

@@ -1,0 +1,5 @@
+node_modules/
+packages/*/lib/
+# copied from the repository root and js/NOTICE by scripts/build.ts
+packages/*/LICENSE
+packages/*/NOTICE

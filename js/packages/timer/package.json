@@ -1,0 +1,44 @@
+{
+  "name": "@kardiajs/timer",
+  "version": "0.1.0",
+  "description": "Timeouts, intervals, sleep, throttle and debounce that end with their plugin, for @kardiajs/core",
+  "type": "module",
+  "sideEffects": false,
+  "license": "GPL-3.0-only",
+  "author": "licyk",
+  "homepage": "https://kardia-dev.netlify.app",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/licyk/kardia.git",
+    "directory": "js/packages/timer"
+  },
+  "bugs": {
+    "url": "https://github.com/licyk/kardia/issues"
+  },
+  "keywords": [
+    "kardia",
+    "cordis",
+    "timer",
+    "plugin"
+  ],
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "src",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "peerDependencies": {
+    "@kardiajs/core": "^0.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
