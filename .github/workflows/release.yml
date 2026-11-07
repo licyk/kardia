@@ -1,6 +1,7 @@
 # Publishes the workspace's crates to crates.io. A v<version> tag (cargo xtask tag --push) releases the workspace
 # version it names; a manual run releases the chosen ref's version, resuming a release that stopped part-way (a
-# version already on crates.io is skipped).
+# version already on crates.io is skipped). The npm packages under js/ are released by npm-release.yml, on js-v* tags,
+# which the v* pattern below does not match.
 #
 # The released commit is tested once: CI's run of it (from the push of the version bump) is reused, waiting for it
 # if it is still running, and this workflow calls ci.yml as its checks only when no usable run exists (a commit CI

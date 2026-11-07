@@ -1,7 +1,7 @@
-# The Rust workspace's checks. The documentation site has its own workflow (site.yml), and a change only to files
-# no Rust check reads (the site, Markdown, licence and hosting files) runs nothing here. Tags never start this
-# workflow: a v* tag starts Release, which reuses this workflow's run of the tagged commit, or calls this file as its
-# checks when there is none.
+# The Rust workspace's checks. The documentation site (site.yml) and the npm packages under js/ (js.yml) have their own
+# workflows, and a change only to files no Rust check reads (the site, js/, Markdown, licence and hosting files) runs
+# nothing here. Tags never start this workflow: a v* tag starts Release, which reuses this workflow's run of the tagged
+# commit, or calls this file as its checks when there is none.
 name: CI
 
 on:
@@ -10,6 +10,9 @@ on:
     paths-ignore:
       - "site/**"
       - ".github/workflows/site.yml"
+      - "js/**"
+      - ".github/workflows/js.yml"
+      - ".github/workflows/npm-release.yml"
       - "**.md"
       - "LICENSE"
       - "NOTICE"
@@ -19,6 +22,9 @@ on:
     paths-ignore:
       - "site/**"
       - ".github/workflows/site.yml"
+      - "js/**"
+      - ".github/workflows/js.yml"
+      - ".github/workflows/npm-release.yml"
       - "**.md"
       - "LICENSE"
       - "NOTICE"

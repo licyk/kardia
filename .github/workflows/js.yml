@@ -1,0 +1,62 @@
+# The TypeScript packages under js/ (@kardiajs/* on npm): types, tests and build, plus the end-to-end test of the
+# bridge between the TypeScript client and the Rust host (crates/kardia-bridge). Rust's own checks are in ci.yml.
+# npm-release.yml calls this file as its checks.
+name: JS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "js/**"
+      - "crates/kardia-bridge/**"
+      - ".github/workflows/js.yml"
+  pull_request:
+    paths:
+      - "js/**"
+      - "crates/kardia-bridge/**"
+      - ".github/workflows/js.yml"
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# A newer push cancels an older run of the same ref. Inside npm release, github.workflow is "npm release", so its
+# call never shares a group with (or cancels) a JS run.
+concurrency:
+  group: js-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  packages:
+    name: Types, tests and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: js
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: oven-sh/setup-bun@v2.2.0
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun run test
+      - run: bun run build
+
+  e2e:
+    name: Bridge end to end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      # pinned like ci.yml: rust-toolchain.toml names the same version
+      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: Swatinem/rust-cache@v2.9.3
+      - uses: oven-sh/setup-bun@v2.2.0
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+        working-directory: js
+      # builds the stdio host example of kardia-bridge, then drives it from the TypeScript client
+      - run: bun run test:e2e
+        working-directory: js

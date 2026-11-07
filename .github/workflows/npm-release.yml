@@ -1,0 +1,115 @@
+# Publishes the npm packages under js/ (@kardiajs/core, timer, bridge, tauri), which are versioned together and apart
+# from the crates. A js-v<version> tag (cargo xtask js-tag --push) releases the version it names; a manual run releases
+# the chosen ref's version, resuming a release that stopped part-way (a version already on npm is skipped). The crates
+# have their own workflow, release.yml, whose v* tags js-v* tags do not match.
+#
+# Publishing uses npm trusted publishing (OIDC): GitHub stores no npm token. On npmjs.com, each package's trusted
+# publisher names this repository, this workflow file (npm-release.yml) and the `npm` environment; npm then accepts
+# the short-lived token this job's id-token permission mints, and attaches a provenance statement automatically.
+name: npm release
+
+on:
+  push:
+    tags: ["js-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: What to release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - id: plan
+        working-directory: js
+        run: |
+          version=$(node -p 'require("./packages/core/package.json").version')
+          for name in core timer bridge tauri; do
+            other=$(node -p "require('./packages/$name/package.json').version")
+            if [ "$other" != "$version" ]; then
+              echo "::error::@kardiajs/$name is at $other, @kardiajs/core at $version: bump them with cargo xtask js-version"
+              exit 1
+            fi
+          done
+          echo "npm packages version: $version"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "js-v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not name the npm packages version $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  checks:
+    name: Checks
+    needs: plan
+    uses: ./.github/workflows/js.yml
+
+  publish:
+    name: Publish to npm
+    needs: [plan, checks]
+    runs-on: ubuntu-latest
+    # names the trusted publisher's environment; protection rules (required reviewers, tag rules) can gate it
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: oven-sh/setup-bun@v2.2.0
+        with:
+          bun-version: latest
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: npm with trusted publishing (11.5.1 or later)
+        run: |
+          if ! node -e 'const [a, b, c] = process.argv[1].split(".").map(Number); process.exit(a > 11 || (a === 11 && (b > 5 || (b === 5 && c >= 1))) ? 0 : 1)' "$(npm --version)"; then
+            npm install --global npm@11
+          fi
+          npm --version
+      # the build also copies LICENSE and NOTICE into each package
+      - run: bun install --frozen-lockfile && bun run build
+        working-directory: js
+      - name: npm publish, in dependency order
+        working-directory: js
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          for name in core timer bridge tauri; do
+            if npm view "@kardiajs/$name@$VERSION" version > /dev/null 2>&1; then
+              echo "@kardiajs/$name@$VERSION is on npm already"
+              continue
+            fi
+            (cd "packages/$name" && npm publish --access public)
+          done
+
+  github-release:
+    name: GitHub release
+    needs: [plan, publish]
+    if: ${{ !cancelled() && github.ref_type == 'tag' && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Create the release
+        # notes start at the previous js-v* tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          previous=$(git tag --list "js-v[0-9]*" --sort=-v:refname | awk -v t="$tag" 'found { print; exit } $0 == t { found = 1 }')
+          args=(--title "@kardiajs $VERSION" --generate-notes --verify-tag)
+          if [ -n "$previous" ]; then args+=(--notes-start-tag "$previous"); fi
+          gh release create "$tag" "${args[@]}"
