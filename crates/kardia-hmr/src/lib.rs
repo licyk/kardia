@@ -43,7 +43,8 @@
 //! (`kardia_meta`, `kardia_new`, …). The host looks each one up as
 //! `kardia_*` first and falls back to `cordis_*`, so a guest may export
 //! either set, or both (the SDKs' guests export the same functions under
-//! both, and the host then calls the `kardia_*` one). WASM host functions are
+//! both, so that older hosts, which know only `cordis_*`, load them too; this
+//! host then calls the `kardia_*` one). WASM host functions are
 //! offered under both import modules, `kardia` and `cordis`, and a module may
 //! import from either or both.
 //!

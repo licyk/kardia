@@ -217,3 +217,40 @@ async fn loads_a_dylib_exporting_only_the_kardia_names() {
     assert_eq!(app.view("greeter")["version"], "v1");
     assert_eq!(app.service("greeter").call("hello", json!(null)).unwrap()["calls"], 1);
 }
+
+/// What an SDK-built guest exports: each entry under both name sets, so a
+/// host that knows only `cordis_*` loads it as well.
+#[test]
+#[allow(unsafe_code, reason = "dlopen, to list the library's symbols")]
+fn sdk_guests_export_both_name_sets() {
+    let library = artifact("v1", Kind::Dylib);
+    // SAFETY: the fixture's initializers are trusted, as for DylibSource
+    let library = unsafe { libloading::Library::new(&library) }.unwrap();
+    for name in ["new", "meta", "apply", "call", "dispose"] {
+        for prefix in ["cordis", "kardia"] {
+            let symbol = format!("{prefix}_{name}\0");
+            // SAFETY: only the address is looked up
+            assert!(unsafe { library.get::<*const ()>(symbol.as_bytes()) }.is_ok(), "{symbol}");
+        }
+    }
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::from_file(&engine, artifact("v1", Kind::Wasm)).unwrap();
+    let exports: Vec<_> = module
+        .exports()
+        .map(|export| {
+            (
+                export.name().to_string(),
+                format!("{:?}", export.ty().func().map(|ty| (ty.params().count(), ty.results().count()))),
+            )
+        })
+        .collect();
+    for name in ["meta", "apply", "call", "dispose"] {
+        let ty = |prefix: &str| {
+            exports.iter().find(|(export, _)| *export == format!("{prefix}_{name}")).map(|(_, ty)| ty.clone())
+        };
+        assert!(ty("cordis").is_some(), "cordis_{name}");
+        assert_eq!(ty("kardia"), ty("cordis"), "kardia_{name}");
+    }
+    assert!(module.imports().all(|import| import.module() == "cordis"));
+}

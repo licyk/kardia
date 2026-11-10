@@ -362,7 +362,7 @@ impl Guest for Greeter {
 
 `deps` 是相对于本模块的模块路径；`imports` 把每个导出了 `value` 的依赖映射到该值。既不导出插件也不导出值的模块什么也不导出。
 
-**名称。** 每个导出和 dylib 符号也可以用 `kardia_*` 代替 `cordis_*` 命名（`kardia_meta`、`kardia_new` 等）。宿主对每一项都先查找 `kardia_*`，找不到时再查找 `cordis_*`，因此访客可以只导出其中一套、混用两套，或两套都导出：两者都存在时，宿主调用 `kardia_*` 的那个。WASM 宿主函数同时在 `kardia` 和 `cordis` 两个导入模块下提供，一个模块可以从其中任意一个或两个导入。kardia-hmr 0.2.0 及更早的宿主只认识 `cordis_*` 和 `cordis`。
+**名称。** 每个导出和 dylib 符号也可以用 `kardia_*` 代替 `cordis_*` 命名（`kardia_meta`、`kardia_new` 等）。宿主对每一项都先查找 `kardia_*`，找不到时再查找 `cordis_*`，因此访客可以只导出其中一套、混用两套，或两套都导出：两者都存在时，宿主调用 `kardia_*` 的那个。WASM 宿主函数同时在 `kardia` 和 `cordis` 两个导入模块下提供，一个模块可以从其中任意一个或两个导入。kardia-hmr 0.2.0 及更早的宿主只认识 `cordis_*` 和 `cordis`，因此 `kardia-guest`（以及 pykardia 的导出工具）会以两套名称导出每一项，并从 `cordis` 导入宿主函数：这样构建的访客在新旧宿主上都能加载。
 
 **宿主函数**（WASM 从模块 `cordis` 或 `kardia` 导入；dylib 则是 `host` 结构体 `{ host, read, write, log, provide, view, invoke }` 中的函数指针，每个都以 `host.host` 作为第一个参数）。指针是访客地址，长度是字节数：
 
