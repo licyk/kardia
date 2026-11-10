@@ -6,6 +6,9 @@
 //! binary's `main` calls [`serve::<G>()`](serve) instead; its stdout carries
 //! the protocol, so it logs through [`Host::log`] or stderr.
 //!
+//! Unlike the rest of kardia, this crate is licensed under MIT OR Apache-2.0,
+//! so a guest that links it chooses its own licence.
+//!
 //! ```no_run
 //! use kardia_guest::{Guest, Host, Level, Map, Meta, Request, Result, Value, json};
 //!

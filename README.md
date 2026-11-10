@@ -366,6 +366,6 @@ Its source is in [`site/`](site/). [Contributing](https://kardia-dev.netlify.app
 
 ## License
 
-kardia is licensed under the [GNU General Public License v3.0](LICENSE) (`GPL-3.0-only`).
+kardia is licensed under the [GNU General Public License v3.0](LICENSE) (`GPL-3.0-only`), except the guest SDK [`kardia-guest`](crates/kardia-guest), which is licensed under either of the [MIT license](crates/kardia-guest/LICENSE-MIT) or the [Apache License 2.0](crates/kardia-guest/LICENSE-APACHE) (`MIT OR Apache-2.0`), at your option: a guest plugin that links it chooses its own license.
 
 It is a port of the TypeScript [Cordis](https://github.com/cordiverse/cordis), which is MIT-licensed. [`NOTICE`](NOTICE) keeps its copyright and license notice.

@@ -375,6 +375,6 @@ npm 包以同样的方式发布，使用 `cargo xtask js-version` 和 `cargo xta
 
 ## 许可证
 
-kardia 使用 [GNU General Public License v3.0](LICENSE)（`GPL-3.0-only`）许可证。
+kardia 使用 [GNU General Public License v3.0](LICENSE)（`GPL-3.0-only`）许可证，客体插件 SDK [`kardia-guest`](crates/kardia-guest) 除外：它可任选 [MIT 许可证](crates/kardia-guest/LICENSE-MIT)或 [Apache License 2.0](crates/kardia-guest/LICENSE-APACHE)（`MIT OR Apache-2.0`），因此链接它的客体插件可以自行选择许可证。
 
 本项目移植自采用 MIT 许可证的 TypeScript [Cordis](https://github.com/cordiverse/cordis)。[`NOTICE`](NOTICE) 保留了其版权与许可证声明。

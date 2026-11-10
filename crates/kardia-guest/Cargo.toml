@@ -3,7 +3,8 @@ name = "kardia-guest"
 description = "Write guest plugins for kardia-hmr's WASM, dylib and process backends in Rust"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+# unlike the rest of kardia (GPL-3.0-only): a guest linking this crate picks its own licence
+license = "MIT OR Apache-2.0"
 repository.workspace = true
 rust-version.workspace = true
 
