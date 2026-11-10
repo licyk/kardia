@@ -41,9 +41,11 @@ pub fn artifact(version: &str, kind: Kind) -> PathBuf {
         Kind::V1 => build.args(["--bin", "rust-guest-v1"]),
         Kind::Wasm => build.args(["--lib", "--target", "wasm32-unknown-unknown"]),
     };
-    if version == "v2" {
-        build.args(["--features", "v2"]);
-    }
+    match version {
+        "v2" => build.args(["--features", "v2"]),
+        "kardia-names" => build.args(["--features", "kardia-names"]),
+        _ => &mut build,
+    };
     assert!(build.status().unwrap().success(), "cannot build the rust guest for {key}");
     let output = match kind {
         Kind::Dylib => dir.join(format!("debug/{DLL_PREFIX}rust_guest{DLL_SUFFIX}")),

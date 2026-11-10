@@ -8,7 +8,8 @@
 //! `cancelled` counts the calls it cancelled; `hang` never answers; `big`
 //! answers a string of `args` bytes; `stderr` writes `args` to stderr;
 //! `exit_later` writes to stderr and exits with status 3 after it answered.
-//! The plugin is named by `GREETER_NAME` if set.
+//! The plugin is named by `GREETER_NAME` if set. With the `kardia-names`
+//! feature, the dynamic library exports only the `kardia_*` symbols.
 
 use std::time::{Duration, Instant};
 
@@ -93,4 +94,9 @@ impl Guest for Greeter {
     }
 }
 
+#[cfg(not(feature = "kardia-names"))]
 kardia_guest::export!(Greeter);
+
+// with `kardia-names`, the library exports only the `kardia_*` symbols
+#[cfg(feature = "kardia-names")]
+mod kardia_names;

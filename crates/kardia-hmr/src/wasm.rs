@@ -49,7 +49,8 @@ impl WasmLimits {
 }
 
 /// Loads `.wasm` (or `.wat`) files exporting the guest ABI; module ids are
-/// their paths. An export that runs out of fuel or time traps, and the
+/// their paths. Exports are found as `kardia_*`, else `cordis_*`, and host
+/// functions are offered under both import modules, `kardia` and `cordis`. An export that runs out of fuel or time traps, and the
 /// instance fails its later calls.
 pub struct WasmSource {
     engine: Engine,
@@ -70,7 +71,9 @@ impl WasmSource {
             tick(&engine);
         }
         let mut linker = Linker::new(&engine);
-        define(&mut linker).expect("host functions have distinct names");
+        for module in ["kardia", "cordis"] {
+            define(&mut linker, module).expect("host functions have distinct names");
+        }
         Self { engine, linker: Arc::new(linker), limits: Arc::new(limits) }
     }
 }
@@ -155,23 +158,27 @@ impl WasmInstance {
         Ok(())
     }
 
+    /// Calls `kardia_<export>`, or `cordis_<export>` when the guest has no
+    /// `kardia_*` name for it.
     fn export(&mut self, export: Export) -> wasmtime::Result<i32> {
         let len = self.store.data().host.message.len() as i32;
         let (instance, store) = (self.instance.expect("instantiated"), &mut self.store);
+        let mut find = |prefix: &str| {
+            let name = format!("{prefix}_{}", export.name());
+            instance.get_func(&mut *store, &name).map(|func| (name, func))
+        };
+        let Some((name, func)) = find("kardia").or_else(|| find("cordis")) else {
+            return match export {
+                Export::Dispose => Ok(0),
+                _ => Err(wasmtime::Error::msg(format!("failed to find function export `cordis_{}`", export.name()))),
+            };
+        };
+        let convert =
+            |error: wasmtime::Error| error.context(format!("failed to convert function `{name}` to given type"));
         match export {
-            Export::Meta => {
-                instance.get_typed_func::<(), i32>(&mut *store, "cordis_meta").and_then(|f| f.call(store, ()))
-            }
-            Export::Apply => {
-                instance.get_typed_func::<i32, i32>(&mut *store, "cordis_apply").and_then(|f| f.call(store, len))
-            }
-            Export::Call => {
-                instance.get_typed_func::<i32, i32>(&mut *store, "cordis_call").and_then(|f| f.call(store, len))
-            }
-            Export::Dispose => match instance.get_func(&mut *store, "cordis_dispose") {
-                Some(dispose) => dispose.typed::<(), ()>(&*store).and_then(|f| f.call(store, ())).map(|()| 0),
-                None => Ok(0),
-            },
+            Export::Meta => func.typed::<(), i32>(&*store).map_err(convert)?.call(store, ()),
+            Export::Apply | Export::Call => func.typed::<i32, i32>(&*store).map_err(convert)?.call(store, len),
+            Export::Dispose => func.typed::<(), ()>(&*store)?.call(store, ()).map(|()| 0),
         }
     }
 }
@@ -197,38 +204,39 @@ impl GuestInstance for WasmInstance {
     }
 }
 
-/// The host functions, imported from the module `cordis`.
-fn define(linker: &mut Linker<State>) -> wasmtime::Result<()> {
-    linker.func_wrap("cordis", "read", |mut caller: Caller<'_, State>, ptr: i32| {
+/// The host functions, imported from the module `module` (`kardia` or
+/// `cordis`, the same functions either way).
+fn define(linker: &mut Linker<State>, module: &str) -> wasmtime::Result<()> {
+    linker.func_wrap(module, "read", |mut caller: Caller<'_, State>, ptr: i32| {
         let (memory, host) = memory(&mut caller)?;
         let start = ptr as u32 as usize;
         memory.get_mut(start..start + host.message.len()).ok_or_else(out_of_bounds)?.copy_from_slice(&host.message);
         Ok(())
     })?;
-    linker.func_wrap("cordis", "write", |mut caller: Caller<'_, State>, ptr: i32, len: i32| {
+    linker.func_wrap(module, "write", |mut caller: Caller<'_, State>, ptr: i32, len: i32| {
         let (memory, host) = memory(&mut caller)?;
         host.write(bytes(memory, ptr, len)?);
         Ok(())
     })?;
-    linker.func_wrap("cordis", "log", |mut caller: Caller<'_, State>, level: i32, ptr: i32, len: i32| {
+    linker.func_wrap(module, "log", |mut caller: Caller<'_, State>, level: i32, ptr: i32, len: i32| {
         let (memory, host) = memory(&mut caller)?;
         host.log_raw(level, bytes(memory, ptr, len)?);
         Ok(())
     })?;
     linker.func_wrap(
-        "cordis",
+        module,
         "provide",
         |mut caller: Caller<'_, State>, key: i32, key_len: i32, value: i32, value_len: i32| {
             let (memory, host) = memory(&mut caller)?;
             Ok(host.provide_raw(bytes(memory, key, key_len)?, bytes(memory, value, value_len)?))
         },
     )?;
-    linker.func_wrap("cordis", "view", |mut caller: Caller<'_, State>, key: i32, key_len: i32| {
+    linker.func_wrap(module, "view", |mut caller: Caller<'_, State>, key: i32, key_len: i32| {
         let (memory, host) = memory(&mut caller)?;
         Ok(host.view_raw(bytes(memory, key, key_len)?))
     })?;
     linker.func_wrap(
-        "cordis",
+        module,
         "invoke",
         |mut caller: Caller<'_, State>,
          key: i32,

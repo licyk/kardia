@@ -207,3 +207,13 @@ async fn a_crashing_process_fails_only_its_own_calls() {
     app.load(&process(&dir, "v1"), json!({})).await;
     assert_eq!(app.service("greeter").call("hello", json!(null)).unwrap()["calls"], 1);
 }
+
+#[tokio::test]
+async fn loads_a_dylib_exporting_only_the_kardia_names() {
+    let dir = scratch("dylib-kardia-names");
+    let app = App::setup(DylibSource).await;
+    let path = install(&dir, &format!("greeter{DLL_SUFFIX}"), "kardia-names", Kind::Dylib);
+    app.load(&path, json!({})).await;
+    assert_eq!(app.view("greeter")["version"], "v1");
+    assert_eq!(app.service("greeter").call("hello", json!(null)).unwrap()["calls"], 1);
+}

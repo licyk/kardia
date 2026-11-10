@@ -282,3 +282,56 @@ async fn caps_the_memory_of_an_instance() {
     let entry = app.load(&path, json!({})).await;
     assert_eq!(fiber(&entry).state(), FiberState::Active);
 }
+
+/// The greeter with the `kardia_*` export names, importing the host
+/// functions named in `kardia` from the module `kardia`.
+fn renamed(kardia: &[&str]) -> String {
+    let mut text = greeter("v1", greeter_meta()).replace("(export \"cordis_", "(export \"kardia_");
+    for name in kardia {
+        text = text.replace(&format!("(import \"cordis\" \"{name}\""), &format!("(import \"kardia\" \"{name}\""));
+    }
+    text
+}
+
+#[tokio::test]
+async fn finds_the_kardia_names_of_exports_and_host_functions() {
+    let dir = scratch("wasm-kardia-names");
+    let app = App::setup(WasmSource::new()).await;
+    let all = ["read", "write", "log", "provide", "view", "invoke"];
+    let entry = app.load(&write(&dir, "greeter.wat", &renamed(&all)), json!({ "name": "alice" })).await;
+    assert_eq!(fiber(&entry).state(), FiberState::Active);
+    assert_eq!(app.view("version"), json!("v1"));
+    let answer = app.service("greeter").call("hello", json!([1])).unwrap();
+    assert_eq!(answer, json!({ "key": "greeter", "method": "hello", "args": [1] }));
+    app.loader.remove(&entry.id()).unwrap();
+    app.loader.settled().await;
+    assert!(app.logs().contains(&"greeter v1 disposed".to_string()));
+}
+
+#[tokio::test]
+async fn a_module_may_import_from_both_modules() {
+    let dir = scratch("wasm-mixed-names");
+    let app = App::setup(WasmSource::new()).await;
+    let entry = app.load(&write(&dir, "greeter.wat", &renamed(&["read", "log"])), json!({})).await;
+    assert_eq!(fiber(&entry).state(), FiberState::Active);
+    assert!(app.logs().contains(&"greeter v1 applied".to_string()));
+    assert_eq!(app.service("greeter").call("hello", json!(null)).unwrap()["method"], "hello");
+}
+
+#[tokio::test]
+async fn prefers_the_kardia_name_when_a_module_exports_both() {
+    let dir = scratch("wasm-both-names");
+    let app = App::setup(WasmSource::new()).await;
+    let both = wat(
+        json!({ "plugin": { "provide": ["both"] } }),
+        &["both", "{}", "kardia", "cordis"],
+        r#"
+  (func (export "cordis_apply") (param i32) (result i32) (drop (call $provide @0 @1)) (i32.const 0))
+  (func (export "kardia_call") (param i32) (result i32) (call $write @2) (i32.const 1))
+  (func (export "cordis_call") (param i32) (result i32) (call $write @3) (i32.const 1))"#,
+    );
+    let entry = app.load(&write(&dir, "both.wat", &both), json!({})).await;
+    assert_eq!(fiber(&entry).state(), FiberState::Active);
+    let error = app.service("both").call("hello", json!(null)).unwrap_err().to_string();
+    assert_eq!(error, "kardia");
+}

@@ -362,7 +362,9 @@ Data crosses the boundary as UTF-8 JSON in byte buffers. The host keeps one **me
 
 `deps` are module paths relative to the module; `imports` maps each dependency that exports a `value` to that value. A module exporting neither a plugin nor a value exports nothing.
 
-**Host functions** (WASM imports from module `cordis`; for a dylib, function pointers in the `host` struct `{ host, read, write, log, provide, view, invoke }`, each taking `host.host` first). Pointers are guest addresses, lengths are byte counts:
+**Names.** Each export and dylib symbol may also be named `kardia_*` instead of `cordis_*` (`kardia_meta`, `kardia_new`, …). The host looks each one up as `kardia_*` first and falls back to `cordis_*`, so a guest may export either set, mix them, or export both: when both are present the host calls the `kardia_*` one. WASM host functions are offered under both import modules, `kardia` and `cordis`, and a module may import from either or both. Hosts up to kardia-hmr 0.2.0 know only `cordis_*` and `cordis`.
+
+**Host functions** (WASM imports from module `cordis` or `kardia`; for a dylib, function pointers in the `host` struct `{ host, read, write, log, provide, view, invoke }`, each taking `host.host` first). Pointers are guest addresses, lengths are byte counts:
 
 - `read(ptr)` copies the message to `ptr`.
 - `write(ptr, len)` sets the result of the current export.

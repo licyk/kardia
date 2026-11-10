@@ -15,7 +15,7 @@ use crate::graph::{ModuleCode, ModuleSource};
 use crate::guest::{CallControl, Export, GuestCode, GuestHost, GuestInstance, guest_module};
 
 /// Loads dynamic libraries exporting the C guest ABI; module ids are their
-/// paths.
+/// paths. Each symbol is found as `kardia_*`, else `cordis_*`.
 ///
 /// Each load copies the library to a fresh path, because the platform loader
 /// hands out the library it already loaded for a known path. Libraries are
@@ -47,15 +47,27 @@ fn open(path: &Path) -> Result<Symbols> {
     // SAFETY: the guest declares these symbols with the documented signatures.
     let symbols = unsafe {
         Symbols {
-            new: *library.get(b"cordis_new\0")?,
-            meta: *library.get(b"cordis_meta\0")?,
-            apply: *library.get(b"cordis_apply\0")?,
-            call: *library.get(b"cordis_call\0")?,
-            dispose: *library.get(b"cordis_dispose\0")?,
+            new: symbol(&library, "new")?,
+            meta: symbol(&library, "meta")?,
+            apply: symbol(&library, "apply")?,
+            call: symbol(&library, "call")?,
+            dispose: symbol(&library, "dispose")?,
         }
     };
     std::mem::forget(library);
     Ok(symbols)
+}
+
+/// The symbol `kardia_<name>`, or `cordis_<name>` when the library has no
+/// `kardia_*` name for it.
+///
+/// # Safety
+/// `T` is the symbol's type.
+unsafe fn symbol<T: Copy>(library: &Library, name: &str) -> Result<T> {
+    match unsafe { library.get::<T>(format!("kardia_{name}\0").as_bytes()) } {
+        Ok(symbol) => Ok(*symbol),
+        Err(_) => Ok(*unsafe { library.get::<T>(format!("cordis_{name}\0").as_bytes()) }?),
+    }
 }
 
 type State = *mut c_void;
