@@ -197,27 +197,34 @@ pub(crate) fn run(slot: &Slot, export: Export, input: Vec<u8>, control: &CallCon
         return Err(Error::msg("re-entrant call into a guest instance"));
     }
     ENTERED.with_borrow_mut(|entered| entered.push(id));
-    let result = (|| {
-        let mut instance = match control.deadline() {
-            // waiting for another call to finish: this one fails, the guest is not stopped
-            Some(deadline) => slot.instance.try_lock_until(deadline).ok_or_else(timed_out)?,
-            None => slot.instance.lock(),
-        };
-        if control.is_cancelled() {
-            return Err(cancelled());
-        }
-        let result = match instance.as_deref_mut() {
-            Some(running) => running.call(export, input, control),
-            None => Err(slot.gone()),
-        };
-        if export == Export::Dispose {
-            *instance = None;
-            slot.disposed.store(true, Ordering::Release);
-        }
-        result
-    })();
-    ENTERED.with_borrow_mut(|entered| entered.pop());
+    let _entered = Entered;
+    let mut instance = match control.deadline() {
+        // waiting for another call to finish: this one fails, the guest is not stopped
+        Some(deadline) => slot.instance.try_lock_until(deadline).ok_or_else(timed_out)?,
+        None => slot.instance.lock(),
+    };
+    if control.is_cancelled() {
+        return Err(cancelled());
+    }
+    let result = match instance.as_deref_mut() {
+        Some(running) => running.call(export, input, control),
+        None => Err(slot.gone()),
+    };
+    if export == Export::Dispose {
+        *instance = None;
+        slot.disposed.store(true, Ordering::Release);
+    }
     result
+}
+
+/// Leaves the instance entered last on this thread when dropped, so a call
+/// that fails or panics leaves it too.
+struct Entered;
+
+impl Drop for Entered {
+    fn drop(&mut self) {
+        ENTERED.with_borrow_mut(|entered| entered.pop());
+    }
 }
 
 /// Runs `f` on the blocking pool; a panic becomes its error.
