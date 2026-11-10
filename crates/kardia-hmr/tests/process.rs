@@ -56,8 +56,17 @@ async fn failed(fiber: &Fiber) -> String {
     panic!("{fiber:?} did not fail")
 }
 
-fn process_exists(pid: Value) -> bool {
-    !cfg!(target_os = "linux") || Path::new(&format!("/proc/{pid}")).exists()
+/// Whether a process with this id is still around, zombies included; `None`
+/// where the test cannot tell (Windows).
+fn process_exists(pid: &Value) -> Option<bool> {
+    if cfg!(target_os = "linux") {
+        return Some(Path::new(&format!("/proc/{pid}")).exists());
+    }
+    if cfg!(unix) {
+        let probe = std::process::Command::new("kill").args(["-0", &pid.to_string()]).output().unwrap();
+        return Some(probe.status.success());
+    }
+    None
 }
 
 #[tokio::test]
@@ -106,8 +115,11 @@ async fn a_call_past_its_deadline_kills_the_guest_and_fails_its_fiber() {
 
     let error = greeter.call_timeout("hang", json!(null), Duration::from_millis(200)).unwrap_err();
     assert_eq!(error.to_string(), "the guest did not answer in time");
-    assert_eq!(handle.exit().unwrap().cause, ExitCause::Killed("the guest did not answer in time".into()));
-    assert!(!process_exists(pid));
+    // the process is killed and reaped before the call returns
+    let exit = handle.exit().unwrap();
+    assert_eq!(exit.cause, ExitCause::Killed("the guest did not answer in time".into()));
+    assert!(exit.status.is_some_and(|status| !status.success()));
+    assert_ne!(process_exists(&pid), Some(true));
     assert_eq!(greeter.call("hello", json!(null)).unwrap_err().to_string(), "the guest process exited");
     assert!(!greeter.is_available());
 
@@ -215,12 +227,20 @@ async fn disposing_reports_a_disposed_guest_without_failing_its_fiber() {
     let exits = Arc::new(Mutex::new(0));
     let seen = exits.clone();
     root.on(move |_: &GuestExited| *seen.lock() += 1).unwrap();
-    let (fiber, greeter) = start(&root, &ProcessGuest::new(GuestCommand::new(executable(&dir)))).await;
-    let handle = greeter.handle().unwrap();
-    fiber.dispose().await.unwrap();
-    assert_eq!(handle.exit().unwrap().cause, ExitCause::Disposed);
+    let guest = ProcessGuest::new(GuestCommand::new(executable(&dir)));
+    // a disposed guest exits by itself: its reader must not report that first
+    for _ in 0..10 {
+        let (fiber, greeter) = start(&root, &guest).await;
+        let (pid, handle) = (greeter.call("pid", json!(null)).unwrap(), greeter.handle().unwrap());
+        fiber.dispose().await.unwrap();
+        let exit = handle.exit().unwrap();
+        assert_eq!(exit.cause, ExitCause::Disposed);
+        assert!(exit.status.is_some());
+        assert_ne!(process_exists(&pid), Some(true));
+        assert_eq!(greeter.call("hello", json!(null)).unwrap_err().to_string(), "the guest instance is disposed");
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(*exits.lock(), 0);
-    assert_eq!(greeter.call("hello", json!(null)).unwrap_err().to_string(), "the guest instance is disposed");
 }
 
 #[tokio::test]

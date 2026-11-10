@@ -202,7 +202,11 @@ impl GuestInstance for ProcessInstance {
             return if export == Export::Dispose { Ok(Vec::new()) } else { Err(exited()) };
         }
         let timeout = match export {
-            Export::Dispose => Some(self.timeout.unwrap_or(DISPOSE_TIMEOUT)),
+            Export::Dispose => {
+                // a guest exits once it is disposed: its reader may reap it before this call returns
+                self.shared.mark(ExitCause::Disposed);
+                Some(self.timeout.unwrap_or(DISPOSE_TIMEOUT))
+            }
             _ => self.timeout,
         };
         let deadline = control.deadline().or_else(|| timeout.map(|timeout| Instant::now() + timeout));

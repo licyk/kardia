@@ -62,9 +62,15 @@ impl Shared {
         }
     }
 
-    /// Ends the process; the first cause given is the one reported.
-    pub(crate) fn kill(&self, cause: ExitCause) {
+    /// Records why the process is ending; the first cause given is the one
+    /// reported.
+    pub(crate) fn mark(&self, cause: ExitCause) {
         self.cause.lock().get_or_insert(cause);
+    }
+
+    /// Ends the process, recording `cause` first.
+    pub(crate) fn kill(&self, cause: ExitCause) {
+        self.mark(cause);
         let _ = self.child.lock().kill();
     }
 
