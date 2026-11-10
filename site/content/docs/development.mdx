@@ -186,6 +186,8 @@ crate 之间的依赖方向与 TS 包一致：`core ← timer, logger-console, f
 | `trybuild`（dev） | macros | 针对未声明访问的编译失败测试 |
 | `wasmtime` / `libloading`（特性 `wasm` / `dylib`） | hmr | WASM 与 dylib 模块后端 |
 
+工作区不设置 `serde_json` 的 `preserve_order`：Cargo 会把它统一到每个嵌入 kardia 的应用中。`kardia-loader` 以其默认特性 `preserve-order` 开启它（为回写保持插入顺序的选项映射），`kardia-include` 与门面启用该特性，`kardia-hmr` 把它作为默认特性透传；`kardia-include` 自身也开启它。
+
 `kardia-loader` 使用 `serde_json` 但不使用 `serde`；`logger-console` 使用 `serde` 而不使用 `serde_json`。
 
 不使用的：

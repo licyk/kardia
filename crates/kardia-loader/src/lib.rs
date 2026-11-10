@@ -4,6 +4,11 @@
 //! step with live fibers in both directions: configuration changes are
 //! reconciled into the fibers, and a plugin that updates or disposes
 //! itself is written back to its entry.
+//!
+//! The default feature `preserve-order` turns on `serde_json/preserve_order`,
+//! which keeps option keys in insertion order and lets [`sort_keys`] order
+//! write-backs. Cargo unifies it into every `serde_json::Map` of a build;
+//! without it, maps (write-backs included) list their keys alphabetically.
 
 mod catalog;
 mod entry;

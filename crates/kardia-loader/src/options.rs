@@ -94,17 +94,16 @@ fn read_inject(value: &Value) -> Inject {
 /// Merges a patch into options: `null` deletes a key.
 pub fn merge(target: &mut Value, patch: &Map<String, Value>) {
     let Value::Object(map) = target else { return };
-    for (key, value) in patch {
-        if value.is_null() {
-            map.shift_remove(key);
-        } else {
-            map.insert(key.clone(), value.clone());
-        }
+    // `retain`, unlike `remove`, keeps the order of the other keys with `preserve_order`
+    map.retain(|key, _| !patch.get(key).is_some_and(Value::is_null));
+    for (key, value) in patch.iter().filter(|(_, value)| !value.is_null()) {
+        map.insert(key.clone(), value.clone());
     }
 }
 
 /// Reorders keys for stable output: `id`, `name`, the rest alphabetically,
-/// `config` last.
+/// `config` last. Without the `preserve-order` feature the map keeps its keys
+/// sorted alphabetically instead.
 pub fn sort_keys(value: &mut Value) {
     let Value::Object(map) = value else { return };
     let mut entries: Vec<(String, Value)> = std::mem::take(map).into_iter().collect();
@@ -292,7 +291,10 @@ mod tests {
         merge(&mut options, json!({ "zeta": null, "beta": 3 }).as_object().unwrap());
         sort_keys(&mut options);
         let keys: Vec<_> = options.as_object().unwrap().keys().cloned().collect();
+        #[cfg(feature = "preserve-order")]
         assert_eq!(keys, vec!["id", "name", "alpha", "beta", "config"]);
+        #[cfg(not(feature = "preserve-order"))]
+        assert_eq!(keys, vec!["alpha", "beta", "config", "id", "name"]);
         assert_eq!(
             diff_keys(&options, &json!({ "id": "a", "name": "foo", "alpha": 2, "config": 2 })),
             vec!["beta", "config"]

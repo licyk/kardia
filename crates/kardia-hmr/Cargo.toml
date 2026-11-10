@@ -8,10 +8,12 @@ repository.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["wasm", "dylib", "process"]
+default = ["wasm", "dylib", "process", "preserve-order"]
 wasm = ["dep:wasmtime"]
 dylib = ["dep:libloading"]
 process = []
+# kardia-loader's insertion-ordered option maps; an embedder that leaves it off keeps serde_json's default maps
+preserve-order = ["kardia-loader/preserve-order"]
 
 [dependencies]
 kardia-core.workspace = true

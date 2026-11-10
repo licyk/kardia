@@ -32,6 +32,7 @@ Where `kardia-loader` differs from the table:
 - **Managed realms:** the delimiter test is `Context::is_within(..)` on contexts whose entry tables are tagged `Overlay` nodes; the realm-GC fix is in (`collect_realms` uses `continue`).
 - **Self-dispose:** `DisposeReason` was not introduced. The loader sets a per-entry `disposing` flag around its own `fiber.dispose()` call (`entry.rs`, `dispose_fiber`), the same pattern as the TS `_disposing` flag.
 - **Expressions:** implemented as a side-effect-free JavaScript subset (`kardia_loader::expr`) instead of CEL; identifiers resolve through the JSON views of services (`ctx.view(name)`, provided with `provide_serialized_as`), not through an `ExprValue` trait; see [Expressions](/docs/development-status#deviations).
+- **Key order:** options are `serde_json` maps, and `sort_keys` gives write-backs their stable order (`id`, `name`, the others alphabetically, `config` last) only with the `preserve-order` feature, which turns on `serde_json/preserve_order` and is on by default. Cargo unifies that feature into every `serde_json::Map` of a build, so it is optional: without it, maps and write-backs list their keys alphabetically. `kardia-include` and the `kardia` facade turn it on; `kardia-hmr` passes it through as a default feature, so an application that turns off `kardia-hmr`'s (and `kardia-loader`'s) default features keeps serde_json's default maps.
 </Callout>
 
 ## `kardia-include` [#include]

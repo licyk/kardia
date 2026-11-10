@@ -64,3 +64,8 @@ jobs:
       - name: Architecture (lib.rs / mod.rs only declare and re-export modules)
         run: cargo xtask arch
       - run: cargo test --workspace
+      # kardia-hmr's embedders may leave serde_json's preserve_order off: kardia-loader without it, and kardia-hmr
+      # without its default features (its test suites need the wasm and dylib backends)
+      - run: cargo clippy -p kardia-loader --no-default-features --all-targets -- -D warnings
+      - run: cargo test -p kardia-loader --no-default-features
+      - run: cargo clippy -p kardia-hmr --no-default-features --features process -- -D warnings

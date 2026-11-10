@@ -44,7 +44,7 @@ let source = WasmSource::with_limits(
 
 **子进程。** `ProcessSource` 把每个插件实例作为独立进程运行，通过 stdin 和 stdout 以 JSON 行的形式使用访客 ABI（见[进程传输](#process)）。进程结束的访客只会让它自己的插件失败；破坏协议或超过调用截止时间的访客会被杀死。命令行参数、spawner、超时和退出报告见[进程访客](#process-guests)。替换可执行文件时，请把新文件重命名覆盖到原路径：正在运行的可执行文件不能被写入，而以写方式打开着的文件不能被启动。
 
-**三者的共同点。** `GuestService::call` 会阻塞调用者直到访客应答；`call_async` 则在异步工作线程之外执行调用，桥接插件执行 `apply` 和 `dispose` 时也是如此。截止时间可以终止进程访客（将其杀死）和设置了时间上限的 WASM 访客（触发陷阱）；dylib 访客运行在调用者的线程上，无法被终止。没有单独的代理（broker）服务：每个纤程的 `GuestService` 就是 RPC 端点。这些后端是 `kardia-hmr` 的 cargo 特性（`wasm`、`dylib`、`process`，默认全部开启）。
+**三者的共同点。** `GuestService::call` 会阻塞调用者直到访客应答；`call_async` 则在异步工作线程之外执行调用，桥接插件执行 `apply` 和 `dispose` 时也是如此。截止时间可以终止进程访客（将其杀死）和设置了时间上限的 WASM 访客（触发陷阱）；dylib 访客运行在调用者的线程上，无法被终止。没有单独的代理（broker）服务：每个纤程的 `GuestService` 就是 RPC 端点。这些后端是 `kardia-hmr` 的 cargo 特性（`wasm`、`dylib`、`process`，默认全部开启）；另有 `preserve-order`（默认开启），它通过 `kardia-loader` 开启 `serde_json/preserve_order`，关闭它可让应用保留 serde_json 的默认映射（[键顺序](/docs/development-loader#loader)）。
 
 `kardia` 二进制按文件扩展名选择后端：`.wasm` 和 `.wat` 交给 `WasmSource`，其他一律交给 `DylibSource`。基于库构建的应用可以自行选择：
 

@@ -9,7 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 kardia-core.workspace = true
-kardia-loader.workspace = true
+kardia-loader = { workspace = true, features = ["preserve-order"] }
 kardia-fs.workspace = true
 tokio.workspace = true
 futures.workspace = true

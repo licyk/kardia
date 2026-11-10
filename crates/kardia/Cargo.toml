@@ -15,7 +15,7 @@ kardia-core.workspace = true
 kardia-macros.workspace = true
 kardia-timer.workspace = true
 kardia-logger-console.workspace = true
-kardia-loader.workspace = true
+kardia-loader = { workspace = true, features = ["preserve-order"] }
 kardia-fs.workspace = true
 kardia-include.workspace = true
 kardia-hmr.workspace = true

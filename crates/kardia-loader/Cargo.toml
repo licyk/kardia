@@ -7,13 +7,19 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+default = ["preserve-order"]
+# insertion-ordered serde_json maps, so that option write-backs keep the `sort_keys` order. Cargo unifies it into
+# every serde_json::Map of the build; without it, maps (and write-backs) list their keys alphabetically.
+preserve-order = ["serde_json/preserve_order"]
+
 [dependencies]
 kardia-core.workspace = true
 tokio.workspace = true
 futures.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
-serde_json = { workspace = true, features = ["preserve_order"] }
+serde_json.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }

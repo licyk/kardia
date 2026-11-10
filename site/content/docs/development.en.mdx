@@ -186,6 +186,8 @@ Kept deliberately small; each line says why it is needed.
 | `trybuild` (dev) | macros | compile-fail tests for undeclared access |
 | `wasmtime` / `libloading` (features `wasm` / `dylib`) | hmr | the WASM and dylib module backends |
 
+`serde_json`'s `preserve_order` is not set for the workspace: Cargo would unify it into every application that embeds kardia. `kardia-loader` turns it on with its default feature `preserve-order` (insertion-ordered option maps for write-back), which `kardia-include` and the facade enable and `kardia-hmr` passes through as a default feature; `kardia-include` also turns it on itself.
+
 `kardia-loader` uses `serde_json` but not `serde`; `logger-console` uses `serde` without `serde_json`.
 
 Not used:

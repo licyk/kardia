@@ -32,6 +32,7 @@ icon: Blocks
 - **托管领域**：分界测试是在条目表为带标记的 `Overlay` 节点的上下文上调用 `Context::is_within(..)`；领域回收的修复已完成（`collect_realms` 使用 `continue`）。
 - **自我释放**：没有引入 `DisposeReason`。加载器在它自己的 `fiber.dispose()` 调用前后设置每个条目的 `disposing` 标志（`entry.rs`，`dispose_fiber`），与 TS 的 `_disposing` 标志是同一种模式。
 - **表达式**：实现为一个无副作用的 JavaScript 子集（`kardia_loader::expr`），而不是 CEL；标识符通过服务的 JSON 视图（`ctx.view(name)`，由 `provide_serialized_as` 提供）解析，而不是通过 `ExprValue` trait；见[表达式](/docs/development-status#deviations)。
+- **键顺序**：选项是 `serde_json` 映射；只有开启 `preserve-order` 特性时，`sort_keys` 才能让回写得到稳定的顺序（`id`、`name`，其余按字母序，`config` 最后）。该特性开启 `serde_json/preserve_order`，默认开启。Cargo 会把这个特性统一到构建中的每个 `serde_json::Map`，所以它是可选的：关闭时，映射与回写都按字母序列出键。`kardia-include` 与 `kardia` 门面开启它；`kardia-hmr` 把它作为默认特性透传，因此关闭 `kardia-hmr`（以及 `kardia-loader`）默认特性的应用保留 serde_json 的默认映射。
 </Callout>
 
 ## `kardia-include` [#include]

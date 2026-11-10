@@ -15,7 +15,8 @@ kardia-macros = { path = "crates/kardia-macros", version = "0.2.1" }
 kardia-timer = { path = "crates/kardia-timer", version = "0.2.1" }
 kardia-logger-console = { path = "crates/kardia-logger-console", version = "0.2.1" }
 kardia-fs = { path = "crates/kardia-fs", version = "0.2.1" }
-kardia-loader = { path = "crates/kardia-loader", version = "0.2.1" }
+# members opt into preserve-order themselves, so that kardia-hmr can leave serde_json's preserve_order to its embedder
+kardia-loader = { path = "crates/kardia-loader", version = "0.2.1", default-features = false }
 kardia-include = { path = "crates/kardia-include", version = "0.2.1" }
 kardia-hmr = { path = "crates/kardia-hmr", version = "0.2.1" }
 kardia-bridge = { path = "crates/kardia-bridge", version = "0.2.1" }
