@@ -38,7 +38,18 @@ let source = WasmSource::with_limits(
 );
 ```
 
-An export that runs out of fuel or time traps, and the instance fails its later calls with `the guest was stopped: …`; growing memory past the cap traps. With a timeout, a caller's own deadline ([`call_timeout`, `call_async`](#guest-service)) is honoured too. None of the limits is set by `WasmSource::new()`.
+An export that runs out of fuel or time traps, and the instance fails its later calls with `the guest was stopped: …`; growing memory past the cap traps. With a timeout, a caller's own deadline ([`call_timeout`, `call_async`](#guest-service)) is honoured too. None of the limits is set by `WasmSource::new()`. Each of these failures is a typed [`GuestFailure`](#guest-failure).
+
+To give a WASM plugin's metadata from outside, as `ProcessGuest::plugin` does, compile the module into a `WasmGuest`: `WasmGuest::new(bytes, limits)` compiles WASM bytes or WAT text on an engine of its own, and `source.guest(bytes)` on a `WasmSource`'s engine, with its limits. Neither instantiates the module. `plugin(meta)` makes the plugin, and each instance must declare the same metadata when it starts; `module(id)` reads the metadata from an instance instead, as `WasmSource` does.
+
+```rust
+use kardia::hmr::{GuestMeta, WasmGuest, WasmLimits};
+
+let guest = WasmGuest::new(std::fs::read("greeter.wasm")?, WasmLimits::new().fuel(10_000_000))?;
+let plugin = guest.plugin(GuestMeta::new("greeter").provide("greeter"));
+```
+
+**Trap handling on macOS**. wasmtime handles WASM traps on macOS through Mach exception ports by default. Its trap handler is process-wide: wasmtime installs it with the first engine, and panics when a later engine asks for the other setting. `kardia::hmr::set_macos_mach_ports(false)` has every engine kardia-hmr makes use Unix signals instead. Call it before the first `WasmSource` or `WasmGuest` is made: after that, asking for the other setting returns an error and changes nothing. An engine the application makes with wasmtime itself must use the same setting. Elsewhere than macOS the call changes nothing.
 
 **Dynamic libraries.** `DylibSource` speaks a C ABI instead of passing Rust types: a `cdylib` carries its own copies of `kardia-core` and tokio, with separate statics and no runtime context. Each load copies the library to a fresh path (in a `kardia-dylib-<pid>` directory under the temp directory), because the platform loader hands out the library it already loaded for a known path. Libraries are never unloaded: unloading Rust code is unsound once it registered thread-local destructors or handed out `'static` references.
 
@@ -176,7 +187,7 @@ The backends implement two public traits, which a host can implement for a trans
 | `GuestInstance::call(&mut self, export, input, control: &CallControl) -> Result<Vec<u8>>` | calls an `Export` (`Meta`, `Apply`, `Call`, `Dispose`) with UTF-8 JSON input, returning the guest's output or its error; it should stop at `control.deadline()` and drop a result once `control.is_cancelled()` (`on_cancel` wakes it) |
 | `GuestInstance::handle(&self) -> Option<GuestHandle>` | the process behind it, if any (`None` by default) |
 
-`kardia::hmr::guest_module(id, code)` turns a `GuestCode` into module code, reading its metadata from a fresh instance; `guest_plugin(code, meta)` turns it into a plugin with metadata from the caller.
+`kardia::hmr::guest_module(id, code)` turns a `GuestCode` into module code, reading its metadata from a fresh instance; `guest_plugin(code, meta)` turns it into a plugin with metadata from the caller. `ProcessGuest` and `WasmGuest` are the process and WASM backends' `GuestCode`; their `plugin(meta)` and `module(id)` are these two. A transport whose instance fails should return a [`GuestFailure`](#guest-failure), so its callers can tell that failure from the guest's own errors.
 
 ## Writing a guest in Rust [#sdk]
 
@@ -257,7 +268,7 @@ Each fiber running the plugin gets its own instance of the type.
 | `Host` method | Does |
 |---|---|
 | `log(level, text)` | logs as the plugin (`Level::Error` … `Level::Debug`) |
-| `provide(key, &value)` | provides the service `key`, whose JSON view is `value`; calls to it arrive at `Guest::call`. It is withdrawn when the fiber is disposed. |
+| `provide(key, &value)` | provides the service `key`, whose JSON view is `value`; calls to it arrive at `Guest::call`. It is withdrawn when the fiber is disposed. The key must be declared with `Meta::provide`: the host refuses any other, and provides nothing. |
 | `view(key)` | the JSON view of a service declared with `Meta::inject` (or provided by this plugin or its ancestors), with the checked access of the plugin's declared `inject` |
 | `invoke(key, method, &args)` | calls a service provided by another guest |
 | `cancelled()` | whether the host cancelled the running export, so a long call may stop early; only a process guest served under `kardia-guest/2` is told |
@@ -343,6 +354,23 @@ An error or a panic in a guest fails only that plugin or call:
 - A panic in `dispose` is contained, as the host has nothing to report it to.
 - The process of a disposed or failed instance is never left running; after `dispose`, the host kills it, and `dispose` itself is bounded by the guest's timeout (5 seconds without one). If the host goes away, a process guest exits.
 - While the module's metadata is read (`meta`), there is no plugin context: host calls fail with `host calls are unavailable while reading module metadata`.
+- A guest provides only the services its metadata declares in `provide`: providing any other fails with `cannot provide "<key>": the plugin does not declare it in provide`, and nothing is provided, so no consumer sees the service, even briefly.
+
+### Typed failures [#guest-failure]
+
+When the guest instance itself fails, rather than the guest reporting an error, the call fails with a `kardia::hmr::GuestFailure`: its `kind` (a `GuestFailureKind`) says how, and its text is the error's message, unchanged. `GuestFailure::of(&error)` finds it in a `kardia_core::Error`, and so does `error.downcast_ref::<GuestFailure>()`. An error the guest reports itself (a failure status, or an error the SDK returns), a missing export, a disposed instance or a call that waited too long for another one to finish is not a `GuestFailure`; the instance keeps running.
+
+| `GuestFailureKind` | When |
+|---|---|
+| `Trap` | a WASM guest trapped (`wasm trap: …`), or a host function failed while it ran |
+| `OutOfFuel` | a WASM export used up its fuel; the instance's later calls fail the same way (`the guest was stopped: …`) |
+| `Timeout` | a WASM export was interrupted at its deadline (and the instance's later calls fail the same way), or a process guest was killed at its deadline (`the guest did not answer in time`) |
+| `OutOfMemory` | a WASM guest was refused growing its memory (`forcing trap when growing memory …`) |
+| `Exited` | the guest process ended on its own (`the guest process exited`, and the fiber's failure, its [exit report](#exit)) |
+| `Killed` | the guest process was killed: it broke the protocol, sent a line over the frame limit, a thread serving it panicked, or its host killed it (the fiber fails with its exit report) |
+| `Panicked` | a guest call panicked on the host's side, or the WASM epoch thread did (calls with a time limit then fail) |
+
+The threads kardia-hmr starts (a process guest's `guest-stdin`, `guest-stdout` and `guest-stderr` threads, and the `wasm-epoch` thread of an engine with a time limit) catch their panics: a process guest is then killed, with `the <thread> thread panicked: <message>` as the reason of its exit report and of its failed calls. A panic hook that aborts on panics it does not know to be caught can ask `kardia::hmr::is_panic_contained()`, which is true on those threads.
 
 ## The guest ABI [#abi]
 
@@ -369,7 +397,7 @@ Data crosses the boundary as UTF-8 JSON in byte buffers. The host keeps one **me
 - `read(ptr)` copies the message to `ptr`.
 - `write(ptr, len)` sets the result of the current export.
 - `log(level, ptr, len)` logs as the plugin (`0` error … `3` debug).
-- `provide(key, key_len, value, value_len) -> i32` provides the service `key` as a `GuestService` whose JSON view is `value`.
+- `provide(key, key_len, value, value_len) -> i32` provides the service `key` as a `GuestService` whose JSON view is `value`. A key the plugin's metadata does not declare in `provide` is refused with an error, and nothing is provided.
 - `view(key, key_len) -> i32` reads the JSON view of a service, with the checked access of the plugin's declared `inject`.
 - `invoke(key, key_len, method, method_len, args, args_len) -> i32` calls a `GuestService`.
 
@@ -389,7 +417,7 @@ A process guest exchanges one JSON object per line over its stdin and stdout (st
 |---|---|---|
 | host → guest | `{ export, input }` | an export: `export` is one of `meta`, `apply`, `call`, `dispose`; `input` is the message (`null` if empty) |
 | guest → host | `{ call: "log", level, text }` | logs; no reply |
-| guest → host | `{ call: "provide", key, value }` | answered with `{ result }` or `{ error }` |
+| guest → host | `{ call: "provide", key, value }` | answered with `{ result }` or `{ error }` (an undeclared `key` is an error) |
 | guest → host | `{ call: "view", key }` | answered with `{ result }` or `{ error }` |
 | guest → host | `{ call: "invoke", key, method, args }` | answered with `{ result }` or `{ error }` |
 | guest → host | `{ output }` | sets the result text of the export |

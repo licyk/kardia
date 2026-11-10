@@ -1,11 +1,11 @@
 //! The host side of a guest instance: what its host calls act on.
 
-use std::sync::Weak;
+use std::sync::{Arc, Weak};
 
 use kardia_core::{Context, Error, Level, Result};
 use serde_json::Value;
 
-use crate::guest::{GuestService, Slot};
+use crate::guest::{GuestMeta, GuestService, Slot};
 
 /// The host side of one guest instance: the fiber it runs in, and the host
 /// calls of the guest ABI (`log`, `provide`, `view`, `invoke`).
@@ -13,6 +13,8 @@ pub struct GuestHost {
     /// `None` while a module's metadata is read.
     ctx: Option<Context>,
     slot: Weak<Slot>,
+    /// The plugin's metadata: it provides only what this declares.
+    meta: Arc<GuestMeta>,
     /// The input of the current export, then the result of the last host
     /// call (the FFI backends' message).
     #[cfg(any(feature = "wasm", feature = "dylib"))]
@@ -23,10 +25,11 @@ pub struct GuestHost {
 }
 
 impl GuestHost {
-    pub(crate) fn new(ctx: Option<Context>, slot: Weak<Slot>) -> Self {
+    pub(crate) fn new(ctx: Option<Context>, slot: Weak<Slot>, meta: Arc<GuestMeta>) -> Self {
         Self {
             ctx,
             slot,
+            meta,
             #[cfg(any(feature = "wasm", feature = "dylib"))]
             message: Vec::new(),
             #[cfg(any(feature = "wasm", feature = "dylib"))]
@@ -48,10 +51,14 @@ impl GuestHost {
     }
 
     /// Provides the service `key` as a [`GuestService`] whose JSON view is
-    /// `value`; its calls reach this instance.
+    /// `value`; its calls reach this instance. A key the plugin's metadata
+    /// does not declare in `provide` is refused, and nothing is provided.
     pub fn provide(&self, key: &str, value: Value) -> Result<()> {
-        let service = GuestService::new(key, value, self.slot.clone());
-        self.ctx()?.provide_serialized_as(key, service)?;
+        let ctx = self.ctx()?;
+        if !self.meta.provide.iter().any(|declared| declared == key) {
+            return Err(Error::msg(format!("cannot provide \"{key}\": the plugin does not declare it in provide")));
+        }
+        ctx.provide_serialized_as(key, GuestService::new(key, value, self.slot.clone()))?;
         Ok(())
     }
 

@@ -12,7 +12,9 @@ use serde_json::{Map, Value, json};
 
 use crate::graph::{Exports, ModuleCode};
 use crate::guest::meta::ModuleMeta;
-use crate::guest::{CallControl, Export, GuestCode, GuestHost, GuestInstance, GuestMeta};
+use crate::guest::{
+    CallControl, Export, GuestCode, GuestFailure, GuestFailureKind, GuestHost, GuestInstance, GuestMeta,
+};
 use crate::hmr::normalize;
 #[cfg(feature = "process")]
 use crate::process::{ExitCause, GuestExited, GuestHandle, GuestStarted};
@@ -65,7 +67,7 @@ pub(crate) fn gone(handle: Option<&GuestHandle>) -> Error {
 /// Reads what a guest module depends on and exports from a fresh instance,
 /// and wraps it as module code; its plugin runs `code` in a bridge plugin.
 pub fn guest_module(id: &str, code: Arc<dyn GuestCode>) -> Result<ModuleCode> {
-    let mut instance = code.instantiate(GuestHost::new(None, Weak::new()))?;
+    let mut instance = code.instantiate(GuestHost::new(None, Weak::new(), Arc::default()))?;
     let control = CallControl::default();
     let output = instance.call(Export::Meta, Vec::new(), &control);
     instance.call(Export::Dispose, Vec::new(), &control)?;
@@ -104,7 +106,7 @@ fn bridge(code: Arc<dyn GuestCode>, meta: Arc<GuestMeta>, imports: Value, check:
         let input = json!({ "config": config, "imports": imports });
         async move {
             let slot = Arc::new(Slot::default());
-            let host = GuestHost::new(Some(ctx.clone()), Arc::downgrade(&slot));
+            let host = GuestHost::new(Some(ctx.clone()), Arc::downgrade(&slot), expected.clone());
             let instance = blocking(move || code.instantiate(host)).await?;
             #[cfg(feature = "process")]
             let handle = instance.handle();
@@ -162,7 +164,7 @@ fn watch_exit(ctx: &Context, handle: GuestHandle) -> Result<()> {
         }
         let fiber = watcher.fiber();
         watcher.emit(&GuestExited { fiber: fiber.clone(), exit: exit.clone() });
-        drop(fiber.fail(Error::msg(exit.to_string())));
+        drop(fiber.fail(exit.failure().into()));
     });
     ctx.on_dispose(move || task.abort())?;
     Ok(())
@@ -220,7 +222,13 @@ pub(crate) fn run(slot: &Slot, export: Export, input: Vec<u8>, control: &CallCon
 
 /// Runs `f` on the blocking pool; a panic becomes its error.
 pub(crate) async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T> {
-    tokio::task::spawn_blocking(f).await.map_err(|error| Error::msg(format!("a guest call panicked: {error}")))?
+    tokio::task::spawn_blocking(f).await.map_err(|error| {
+        let message = format!("a guest call panicked: {error}");
+        match error.is_panic() {
+            true => GuestFailure::new(GuestFailureKind::Panicked, message).into(),
+            false => Error::msg(message),
+        }
+    })?
 }
 
 /// Resolves a dependency relative to the module that declares it.
@@ -235,7 +243,7 @@ pub(crate) fn disposed() -> Error {
 
 #[cfg(feature = "process")]
 pub(crate) fn exited() -> Error {
-    Error::msg("the guest process exited")
+    GuestFailure::new(GuestFailureKind::Exited, "the guest process exited").into()
 }
 
 pub(crate) fn timed_out() -> Error {

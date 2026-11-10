@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 use kardia_core::{Error, Result};
 use serde_json::{Value, json};
 
-use crate::guest::{CallControl, Export, GuestHost, GuestInstance, cancelled, exited, timed_out};
+use crate::guest::{
+    CallControl, Export, GuestFailure, GuestFailureKind, GuestHost, GuestInstance, cancelled, exited, timed_out,
+};
 use crate::process::pipes::{self, Incoming, Shared};
 use crate::process::{ExitCause, GuestHandle, GuestProcess};
 
@@ -47,7 +49,7 @@ enum Fault {
     /// The reader killed the guest, for this reason.
     Closed(String),
     /// The guest must be killed, for this reason.
-    Kill(String),
+    Kill(GuestFailureKind, String),
 }
 
 impl ProcessInstance {
@@ -68,7 +70,7 @@ impl ProcessInstance {
             let Received::Message(message) = self.receive(deadline)? else { continue };
             if let Some(version) = message.get("ready") {
                 if version.as_str() != Some(PROTOCOL) {
-                    return Err(Fault::Kill(format!("the guest speaks an unknown protocol: {version}")));
+                    return Err(protocol_fault(format!("the guest speaks an unknown protocol: {version}")));
                 }
                 self.shared.protocol.store(2, Ordering::Release);
                 return Ok(());
@@ -77,7 +79,7 @@ impl ProcessInstance {
                 return Ok(());
             }
             if message.get("output").is_none() {
-                return Err(Fault::Kill(format!("unexpected message from guest: {message}")));
+                return Err(protocol_fault(format!("unexpected message from guest: {message}")));
             }
         }
     }
@@ -148,7 +150,7 @@ impl ProcessInstance {
                 Some("provide") => self.host.provide(text("key"), json("value")).map(|()| Value::Null),
                 Some("view") => self.host.view(text("key")),
                 Some("invoke") => self.host.invoke(text("key"), text("method"), json("args")),
-                _ => return Err(Fault::Kill(format!("unexpected message from guest: {message}"))),
+                _ => return Err(protocol_fault(format!("unexpected message from guest: {message}"))),
             };
             let reply = match result {
                 Ok(result) => json!({ "result": result }),
@@ -163,7 +165,7 @@ impl ProcessInstance {
             Some(deadline) => {
                 self.incoming.recv_timeout(deadline.saturating_duration_since(Instant::now())).map_err(|error| {
                     match error {
-                        RecvTimeoutError::Timeout => Fault::Kill(timed_out().to_string()),
+                        RecvTimeoutError::Timeout => Fault::Kill(GuestFailureKind::Timeout, timed_out().to_string()),
                         RecvTimeoutError::Disconnected => Fault::Exited,
                     }
                 })
@@ -184,15 +186,20 @@ impl ProcessInstance {
         self.broken = true;
         let error = match fault {
             Fault::Exited => exited(),
-            Fault::Closed(reason) => Error::msg(reason),
-            Fault::Kill(reason) => {
+            Fault::Closed(reason) => GuestFailure::new(GuestFailureKind::Killed, reason).into(),
+            Fault::Kill(kind, reason) => {
                 self.shared.kill(ExitCause::Killed(reason.clone()));
-                Error::msg(reason)
+                GuestFailure::new(kind, reason).into()
             }
         };
         self.shared.reap();
         error
     }
+}
+
+/// The guest broke the protocol and must be killed.
+fn protocol_fault(reason: String) -> Fault {
+    Fault::Kill(GuestFailureKind::Killed, reason)
 }
 
 impl GuestInstance for ProcessInstance {

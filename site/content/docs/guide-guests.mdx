@@ -38,7 +38,18 @@ let source = WasmSource::with_limits(
 );
 ```
 
-燃料或时间耗尽的导出会触发陷阱（trap），该实例之后的调用以 `the guest was stopped: …` 失败；内存增长超过上限也会触发陷阱。设置了时间上限时，调用者自己的截止时间（[`call_timeout`、`call_async`](#guest-service)）同样生效。`WasmSource::new()` 不设置任何上限。
+燃料或时间耗尽的导出会触发陷阱（trap），该实例之后的调用以 `the guest was stopped: …` 失败；内存增长超过上限也会触发陷阱。设置了时间上限时，调用者自己的截止时间（[`call_timeout`、`call_async`](#guest-service)）同样生效。`WasmSource::new()` 不设置任何上限。这些失败都是带类型的 [`GuestFailure`](#guest-failure)。
+
+要像 `ProcessGuest::plugin` 那样从外部给出 WASM 插件的元数据，可以把模块编译为 `WasmGuest`：`WasmGuest::new(bytes, limits)` 在自己的引擎上编译 WASM 字节或 WAT 文本，`source.guest(bytes)` 则在某个 `WasmSource` 的引擎上、按它的上限编译。两者都不实例化模块。`plugin(meta)` 生成插件，每个实例启动时必须声明相同的元数据；`module(id)` 则像 `WasmSource` 那样从一个实例中读取元数据。
+
+```rust
+use kardia::hmr::{GuestMeta, WasmGuest, WasmLimits};
+
+let guest = WasmGuest::new(std::fs::read("greeter.wasm")?, WasmLimits::new().fuel(10_000_000))?;
+let plugin = guest.plugin(GuestMeta::new("greeter").provide("greeter"));
+```
+
+**macOS 上的陷阱处理**。在 macOS 上，wasmtime 默认通过 Mach 异常端口处理 WASM 陷阱。它的陷阱处理器是进程级的：wasmtime 在创建第一个引擎时安装它，之后的引擎若要求另一种设置，wasmtime 会 panic。`kardia::hmr::set_macos_mach_ports(false)` 让 kardia-hmr 创建的每个引擎改用 Unix 信号。请在创建第一个 `WasmSource` 或 `WasmGuest` 之前调用它：此后再要求另一种设置会返回错误，且不改变任何东西。应用自己用 wasmtime 创建的引擎必须使用相同的设置。在 macOS 以外的平台上，这个调用不改变任何东西。
 
 **动态库。** `DylibSource` 使用 C ABI，而不是传递 Rust 类型：`cdylib` 自带一份 `kardia-core` 和 tokio，静态变量各自独立，也没有运行时上下文。每次加载都会把库复制到一个新路径（位于临时目录下的 `kardia-dylib-<pid>` 目录中），因为平台加载器对已知路径会直接交出已加载的那个库。库永不卸载：一旦 Rust 代码注册了线程局部析构函数或交出了 `'static` 引用，卸载它就是不健全的。
 
@@ -176,7 +187,7 @@ ctx.on(|event: &GuestExited| {
 | `GuestInstance::call(&mut self, export, input, control: &CallControl) -> Result<Vec<u8>>` | 以 UTF-8 JSON 输入调用一个 `Export`（`Meta`、`Apply`、`Call`、`Dispose`），返回访客的输出或错误；应在 `control.deadline()` 时停止，并在 `control.is_cancelled()` 后丢弃结果（`on_cancel` 会唤醒它） |
 | `GuestInstance::handle(&self) -> Option<GuestHandle>` | 背后的进程（如有；默认为 `None`） |
 
-`kardia::hmr::guest_module(id, code)` 把一个 `GuestCode` 变为模块代码，元数据从一个新实例中读取；`guest_plugin(code, meta)` 把它变为元数据由调用者给出的插件。
+`kardia::hmr::guest_module(id, code)` 把一个 `GuestCode` 变为模块代码，元数据从一个新实例中读取；`guest_plugin(code, meta)` 把它变为元数据由调用者给出的插件。`ProcessGuest` 和 `WasmGuest` 是进程后端和 WASM 后端的 `GuestCode`，它们的 `plugin(meta)` 和 `module(id)` 就是这两个函数。实例失败的传输应返回 [`GuestFailure`](#guest-failure)，以便调用者把这种失败与访客自己的错误区分开。
 
 ## 用 Rust 编写访客 [#sdk]
 
@@ -257,7 +268,7 @@ kardia_guest::export!(Counter);
 | `Host` 方法 | 作用 |
 |---|---|
 | `log(level, text)` | 以插件的身份记录日志（`Level::Error` … `Level::Debug`） |
-| `provide(key, &value)` | 提供服务 `key`，其 JSON 视图为 `value`；对它的调用会到达 `Guest::call`。纤程被释放时撤回。 |
+| `provide(key, &value)` | 提供服务 `key`，其 JSON 视图为 `value`；对它的调用会到达 `Guest::call`。纤程被释放时撤回。该键必须用 `Meta::provide` 声明：宿主拒绝其他任何键，且不提供任何东西。 |
 | `view(key)` | 用 `Meta::inject` 声明的服务（或由本插件及其祖先提供的服务）的 JSON 视图，按插件所声明 `inject` 的受检访问规则读取 |
 | `invoke(key, method, &args)` | 调用另一个访客提供的服务 |
 | `cancelled()` | 宿主是否已取消正在运行的导出，以便耗时的调用提前结束；只有以 `kardia-guest/2` 服务的进程访客会收到通知 |
@@ -343,6 +354,23 @@ impl Guest for Greeter {
 - `dispose` 中的 panic 会被吞下，因为宿主没有可报告的对象。
 - 已释放或已失败实例的进程绝不会继续运行；`dispose` 之后宿主会杀死它，`dispose` 本身也受访客超时的限制（未设置时为 5 秒）。宿主消失时，进程访客会退出。
 - 读取模块元数据（`meta`）期间没有插件上下文：宿主调用以 `host calls are unavailable while reading module metadata` 失败。
+- 访客只能提供其元数据在 `provide` 中声明的服务：提供其他服务会以 `cannot provide "<key>": the plugin does not declare it in provide` 失败，且不提供任何东西，因此没有消费者能看到该服务，哪怕是短暂地。
+
+### 带类型的失败 [#guest-failure]
+
+当访客实例本身失败（而不是访客报告一个错误）时，调用以 `kardia::hmr::GuestFailure` 失败：它的 `kind`（一个 `GuestFailureKind`）说明失败的方式，其文本就是错误消息，与以前相同。`GuestFailure::of(&error)` 从 `kardia_core::Error` 中找出它，`error.downcast_ref::<GuestFailure>()` 也可以。访客自己报告的错误（失败状态码，或 SDK 返回的错误）、缺少的导出、已释放的实例，以及因等待另一个调用结束而超时的调用，都不是 `GuestFailure`；实例继续运行。
+
+| `GuestFailureKind` | 何时 |
+|---|---|
+| `Trap` | WASM 访客触发陷阱（`wasm trap: …`），或在它运行时某个宿主函数失败 |
+| `OutOfFuel` | WASM 导出耗尽了燃料；该实例之后的调用以同样的方式失败（`the guest was stopped: …`） |
+| `Timeout` | WASM 导出在截止时间被中断（该实例之后的调用以同样的方式失败），或进程访客在截止时间被杀死（`the guest did not answer in time`） |
+| `OutOfMemory` | WASM 访客的内存增长被拒绝（`forcing trap when growing memory …`） |
+| `Exited` | 访客进程自行结束（`the guest process exited`；纤程的失败则是其[退出报告](#exit)） |
+| `Killed` | 访客进程被杀死：它破坏了协议、发送了超过帧上限的一行、为它服务的线程发生了 panic，或宿主杀死了它（纤程以其退出报告失败） |
+| `Panicked` | 某次访客调用在宿主一侧发生了 panic，或 WASM 的 epoch 线程发生了 panic（此后设有时间上限的调用都会失败） |
+
+kardia-hmr 启动的线程（进程访客的 `guest-stdin`、`guest-stdout`、`guest-stderr` 线程，以及设有时间上限的引擎的 `wasm-epoch` 线程）会捕获自己的 panic：此时进程访客会被杀死，其退出报告和失败调用的原因为 `the <thread> thread panicked: <message>`。如果 panic 钩子会在遇到不确定是否被捕获的 panic 时中止进程，可以询问 `kardia::hmr::is_panic_contained()`，它在这些线程上为 true。
 
 ## 访客 ABI [#abi]
 
@@ -369,7 +397,7 @@ impl Guest for Greeter {
 - `read(ptr)` 把消息复制到 `ptr`。
 - `write(ptr, len)` 设置当前导出的结果。
 - `log(level, ptr, len)` 以插件的身份记录日志（`0` error … `3` debug）。
-- `provide(key, key_len, value, value_len) -> i32` 把服务 `key` 作为 `GuestService` 提供，其 JSON 视图为 `value`。
+- `provide(key, key_len, value, value_len) -> i32` 把服务 `key` 作为 `GuestService` 提供，其 JSON 视图为 `value`。插件元数据未在 `provide` 中声明的键会以错误被拒绝，且不提供任何东西。
 - `view(key, key_len) -> i32` 按插件所声明 `inject` 的受检访问规则，读取某个服务的 JSON 视图。
 - `invoke(key, key_len, method, method_len, args, args_len) -> i32` 调用一个 `GuestService`。
 
@@ -389,7 +417,7 @@ impl Guest for Greeter {
 |---|---|---|
 | 宿主 → 访客 | `{ export, input }` | 一次导出：`export` 为 `meta`、`apply`、`call`、`dispose` 之一；`input` 是消息（为空时为 `null`） |
 | 访客 → 宿主 | `{ call: "log", level, text }` | 记录日志；无应答 |
-| 访客 → 宿主 | `{ call: "provide", key, value }` | 以 `{ result }` 或 `{ error }` 应答 |
+| 访客 → 宿主 | `{ call: "provide", key, value }` | 以 `{ result }` 或 `{ error }` 应答（未声明的 `key` 是错误） |
 | 访客 → 宿主 | `{ call: "view", key }` | 以 `{ result }` 或 `{ error }` 应答 |
 | 访客 → 宿主 | `{ call: "invoke", key, method, args }` | 以 `{ result }` 或 `{ error }` 应答 |
 | 访客 → 宿主 | `{ output }` | 设置导出的结果文本 |

@@ -1,20 +1,23 @@
 //! Process guests (`fixtures/rust-guest`): the spawner and the command, the
 //! metadata given from outside, call deadlines and cancellation, exit
-//! reports, the frame limit and protocol version 1.
+//! reports, typed failures, panics in the I/O threads, the frame limit and
+//! protocol version 1.
 
 mod common;
 
 use std::env::consts::EXE_SUFFIX;
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use common::{App, Kind, fiber, install, scratch};
 use kardia_core::{Context, Fiber, FiberState, Svc};
 use kardia_hmr::{
-    ExitCause, GuestCommand, GuestExited, GuestMeta, GuestProcess, GuestService, GuestStarted, ProcessGuest,
-    ProcessSource, Spawner, StdSpawner,
+    ExitCause, GuestCommand, GuestExited, GuestFailure, GuestFailureKind, GuestMeta, GuestProcess, GuestService,
+    GuestStarted, ProcessGuest, ProcessSource, Spawner, StdSpawner, is_panic_contained,
 };
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -115,15 +118,19 @@ async fn a_call_past_its_deadline_kills_the_guest_and_fails_its_fiber() {
 
     let error = greeter.call_timeout("hang", json!(null), Duration::from_millis(200)).unwrap_err();
     assert_eq!(error.to_string(), "the guest did not answer in time");
+    assert_eq!(GuestFailure::of(&error).unwrap().kind, GuestFailureKind::Timeout);
     // the process is killed and reaped before the call returns
     let exit = handle.exit().unwrap();
     assert_eq!(exit.cause, ExitCause::Killed("the guest did not answer in time".into()));
     assert!(exit.status.is_some_and(|status| !status.success()));
     assert_ne!(process_exists(&pid), Some(true));
-    assert_eq!(greeter.call("hello", json!(null)).unwrap_err().to_string(), "the guest process exited");
+    let error = greeter.call("hello", json!(null)).unwrap_err();
+    assert_eq!(error.to_string(), "the guest process exited");
+    assert_eq!(GuestFailure::of(&error).unwrap().kind, GuestFailureKind::Exited);
     assert!(!greeter.is_available());
 
     failed(&fiber).await;
+    assert_eq!(GuestFailure::of(&fiber.error().unwrap()).unwrap().kind, GuestFailureKind::Killed);
     assert_eq!(fiber.state(), FiberState::Failed);
     assert_eq!(*exits.lock(), vec![(fiber.clone(), handle.exit().unwrap().cause.clone())]);
     assert!(root.get_as::<GuestService>("greeter").is_err());
@@ -187,6 +194,7 @@ async fn reports_a_guest_that_exits_with_its_stderr_tail() {
     assert!(tail.contains("greeter v1 started") && tail.contains("greeter v1 dying"), "{tail}");
 
     assert_eq!(failed(&fiber).await, exit.to_string());
+    assert_eq!(GuestFailure::of(&fiber.error().unwrap()).unwrap().kind, GuestFailureKind::Exited);
     assert_eq!(fiber.state(), FiberState::Failed);
     assert!(!greeter.is_available());
     assert_eq!(greeter.call("hello", json!(null)).unwrap_err().to_string(), "the guest process exited");
@@ -213,7 +221,9 @@ async fn a_message_over_the_frame_limit_kills_the_guest() {
     let guest = ProcessGuest::new(GuestCommand::new(executable(&dir))).frame_limit(4096);
     let (_, greeter) = start(&Context::new(), &guest).await;
     assert_eq!(greeter.call("big", json!(100)).unwrap().as_str().unwrap().len(), 100);
-    let error = greeter.call("big", json!(10_000)).unwrap_err().to_string();
+    let error = greeter.call("big", json!(10_000)).unwrap_err();
+    assert_eq!(GuestFailure::of(&error).unwrap().kind, GuestFailureKind::Killed);
+    let error = error.to_string();
     assert_eq!(error, "a message from the guest exceeds the limit of 4096 bytes");
     let exit = greeter.handle().unwrap().exit().unwrap();
     assert_eq!(exit.cause, ExitCause::Killed(error));
@@ -237,7 +247,9 @@ async fn disposing_reports_a_disposed_guest_without_failing_its_fiber() {
         assert_eq!(exit.cause, ExitCause::Disposed);
         assert!(exit.status.is_some());
         assert_ne!(process_exists(&pid), Some(true));
-        assert_eq!(greeter.call("hello", json!(null)).unwrap_err().to_string(), "the guest instance is disposed");
+        let error = greeter.call("hello", json!(null)).unwrap_err();
+        assert_eq!(error.to_string(), "the guest instance is disposed");
+        assert!(GuestFailure::of(&error).is_none());
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(*exits.lock(), 0);
@@ -259,4 +271,115 @@ async fn serves_a_guest_speaking_protocol_version_1() {
     app.loader.remove(&entry.id()).unwrap();
     app.loader.settled().await;
     assert_eq!(handle.exit().unwrap().cause, ExitCause::Disposed);
+}
+
+#[tokio::test]
+async fn an_error_of_the_guest_is_not_a_failure_of_its_instance() {
+    let dir = scratch("process-guest-error");
+    let (_, greeter) = start(&Context::new(), &ProcessGuest::new(GuestCommand::new(executable(&dir)))).await;
+    let error = greeter.call("fail", json!(null)).unwrap_err();
+    assert!(GuestFailure::of(&error).is_none(), "{error}");
+    assert!(greeter.is_available());
+}
+
+/// The pipe of a guest whose thread panics once the test arms it.
+#[derive(Clone, Copy, PartialEq)]
+enum Pipe {
+    Stdin,
+    Stdout,
+    Stderr,
+}
+
+/// Spawns the guest with one pipe wrapped in a [`Tripwire`].
+struct Tripping {
+    pipe: Pipe,
+    wire: Tripwire<()>,
+}
+
+impl Spawner for Tripping {
+    fn spawn(&self, command: &GuestCommand) -> io::Result<GuestProcess> {
+        let mut child = command.to_std().stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+        let (stdin, stdout, stderr) = (child.stdin.take().unwrap(), child.stdout.take().unwrap(), child.stderr.take());
+        let (wire, stderr) = (&self.wire, stderr.unwrap());
+        Ok(match self.pipe {
+            Pipe::Stdin => GuestProcess::new(wire.wrap(stdin), stdout, child).stderr(stderr),
+            Pipe::Stdout => GuestProcess::new(stdin, wire.wrap(stdout), child).stderr(stderr),
+            Pipe::Stderr => GuestProcess::new(stdin, stdout, child).stderr(wire.wrap(stderr)),
+        })
+    }
+}
+
+/// A pipe that panics on its next read or write once armed, recording
+/// whether kardia-hmr contains the panic.
+#[derive(Clone, Default)]
+struct Tripwire<P> {
+    pipe: P,
+    armed: Arc<AtomicBool>,
+    contained: Arc<AtomicBool>,
+}
+
+impl Tripwire<()> {
+    fn wrap<P>(&self, pipe: P) -> Tripwire<P> {
+        Tripwire { pipe, armed: self.armed.clone(), contained: self.contained.clone() }
+    }
+}
+
+impl<P> Tripwire<P> {
+    fn trip(&self) {
+        if self.armed.load(Ordering::Acquire) {
+            self.contained.store(is_panic_contained(), Ordering::Release);
+            panic!("tripped");
+        }
+    }
+}
+
+impl<P: Read> Read for Tripwire<P> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let read = self.pipe.read(buf)?;
+        self.trip();
+        Ok(read)
+    }
+}
+
+impl<P: Write> Write for Tripwire<P> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.trip();
+        self.pipe.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.pipe.flush()
+    }
+}
+
+#[tokio::test]
+async fn a_panic_in_an_io_thread_kills_the_guest_with_the_panic_as_its_reason() {
+    let dir = scratch("process-io-panic");
+    assert!(!is_panic_contained());
+    for (pipe, thread) in [(Pipe::Stdin, "guest-stdin"), (Pipe::Stdout, "guest-stdout"), (Pipe::Stderr, "guest-stderr")]
+    {
+        let wire = Tripwire::default();
+        let spawner = Tripping { pipe, wire: wire.clone() };
+        let guest = ProcessGuest::new(GuestCommand::new(executable(&dir))).spawner(spawner);
+        let (fiber, greeter) = start(&Context::new(), &guest).await;
+        let handle = greeter.handle().unwrap();
+        wire.armed.store(true, Ordering::Release);
+        let reason = format!("the {thread} thread panicked: tripped");
+
+        // the stderr thread trips on what the call writes there, maybe after the call is answered
+        let called = greeter.call_timeout("stderr", json!("trip"), Duration::from_secs(5));
+        if pipe != Pipe::Stderr {
+            let error = called.unwrap_err();
+            assert_eq!(error.to_string(), reason);
+            assert_eq!(GuestFailure::of(&error).unwrap().kind, GuestFailureKind::Killed);
+        }
+        let exit = tokio::time::timeout(Duration::from_secs(5), handle.exited()).await.unwrap();
+        assert_eq!(exit.cause, ExitCause::Killed(reason.clone()));
+        assert!(wire.contained.load(Ordering::Acquire), "{thread}");
+        assert!(failed(&fiber).await.contains(&reason));
+        assert_eq!(GuestFailure::of(&fiber.error().unwrap()).unwrap().kind, GuestFailureKind::Killed);
+        // the reason, if the instance has not heard it yet, else that the process exited
+        let error = greeter.call("hello", json!(null)).unwrap_err();
+        assert!(GuestFailure::of(&error).is_some(), "{error}");
+    }
 }

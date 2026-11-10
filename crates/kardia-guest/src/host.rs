@@ -26,6 +26,8 @@ impl Host {
 
     /// Provides the service `key`, whose JSON view is `value`; calls to it
     /// arrive at [`Guest::call`](crate::Guest::call). It is withdrawn when the fiber is disposed.
+    /// The key must be declared in [`PluginMeta::provide`](crate::PluginMeta::provide): a
+    /// kardia-hmr 0.2.3 host refuses any other, and provides nothing.
     pub fn provide(&self, key: &str, value: &Value) -> Result<()> {
         let status = self.raw_provide(key.as_bytes(), &serde_json::to_vec(value)?);
         self.reply(status).map(drop)

@@ -12,7 +12,7 @@ use kardia_core::{Error, Event, Fiber, Result};
 use serde_json::json;
 use tokio::sync::{oneshot, watch};
 
-use crate::guest::exited;
+use crate::guest::{GuestFailure, GuestFailureKind, exited};
 use crate::process::pipes::Shared;
 
 /// A running process guest, for its host: its process, a watch on its exit
@@ -127,6 +127,17 @@ impl fmt::Display for GuestExit {
             Some(status) => write!(f, " ({status})"),
             None => Ok(()),
         }
+    }
+}
+
+impl GuestExit {
+    /// The report as the failure of the guest's fiber.
+    pub(crate) fn failure(&self) -> GuestFailure {
+        let kind = match self.cause {
+            ExitCause::Exited => GuestFailureKind::Exited,
+            _ => GuestFailureKind::Killed,
+        };
+        GuestFailure::new(kind, self.to_string())
     }
 }
 

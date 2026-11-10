@@ -4,6 +4,7 @@
 
 mod bridge;
 mod control;
+mod failure;
 mod host;
 mod meta;
 mod service;
@@ -14,6 +15,7 @@ pub(crate) use bridge::Slot;
 pub(crate) use bridge::{cancelled, exited, timed_out};
 pub use bridge::{guest_module, guest_plugin};
 pub use control::CallControl;
+pub use failure::{GuestFailure, GuestFailureKind};
 pub use host::GuestHost;
 #[cfg(feature = "process")]
 pub(crate) use host::level;

@@ -15,8 +15,22 @@
 //! the instance when the fiber is disposed. A host can run guests over a
 //! transport of its own ([`GuestCode`], [`GuestInstance`]), and give a
 //! plugin's metadata itself instead of reading it from the guest
-//! ([`guest_plugin`]). The `kardia-guest` crate writes such guests in Rust,
-//! for every backend.
+//! ([`guest_plugin`]); [`WasmGuest`] and [`ProcessGuest`] are the WASM and
+//! process backends' guest code, with a `plugin(meta)` of their own. The
+//! `kardia-guest` crate writes such guests in Rust, for every backend.
+//!
+//! # Failures
+//!
+//! A guest instance that fails (a WASM trap, fuel, time or memory used up, a
+//! process that ended or was killed, a panic on a thread running the guest)
+//! fails its call with a [`GuestFailure`], whose [`GuestFailureKind`] says
+//! how; [`GuestFailure::of`] finds it in a [`kardia_core::Error`]. An error
+//! the guest reports itself is not one: its instance keeps running. The
+//! threads kardia-hmr starts (a process guest's I/O threads, the WASM epoch
+//! thread) catch their panics, which become the failure of the guest they
+//! serve; [`is_panic_contained`] tells a panic hook so. wasmtime's trap
+//! handling on macOS is process-wide: [`set_macos_mach_ports`] sets it for
+//! every engine kardia-hmr makes.
 //!
 //! # Guest ABI
 //!
@@ -57,7 +71,9 @@
 //! * `write(ptr, len)` sets the result of the current export.
 //! * `log(level, ptr, len)` logs as the plugin (`0` error … `3` debug).
 //! * `provide(key, key_len, value, value_len) -> i32` provides the service
-//!   `key` as a [`GuestService`] whose JSON view is `value`.
+//!   `key` as a [`GuestService`] whose JSON view is `value`. A key the
+//!   plugin's metadata does not declare in `provide` is refused, and nothing
+//!   is provided.
 //! * `view(key, key_len) -> i32` reads the JSON view of a service, with the
 //!   checked access of the plugin's declared `inject`.
 //! * `invoke(key, key_len, method, method_len, args, args_len) -> i32` calls
@@ -95,6 +111,8 @@
 //! that is not JSON or longer than the frame limit; a process that ends
 //! fails its fiber ([`GuestExited`]).
 
+#[cfg(any(feature = "wasm", feature = "process"))]
+mod contained;
 mod graph;
 #[cfg(any(feature = "wasm", feature = "dylib", feature = "process"))]
 mod guest;
@@ -108,12 +126,15 @@ mod process;
 #[cfg(feature = "wasm")]
 mod wasm;
 
+#[cfg(any(feature = "wasm", feature = "process"))]
+pub use contained::is_panic_contained;
 #[cfg(feature = "dylib")]
 pub use dylib::DylibSource;
 pub use graph::{Exports, Imports, ModuleCode, ModuleGraph, ModuleId, ModuleSource};
 #[cfg(any(feature = "wasm", feature = "dylib", feature = "process"))]
 pub use guest::{
-    CallControl, Export, GuestCode, GuestHost, GuestInstance, GuestMeta, GuestService, guest_module, guest_plugin,
+    CallControl, Export, GuestCode, GuestFailure, GuestFailureKind, GuestHost, GuestInstance, GuestMeta, GuestService,
+    guest_module, guest_plugin,
 };
 pub use hmr::{Hmr, HmrConfig, HmrExt, ImportFailure, ReconcileResult};
 #[cfg(feature = "process")]
@@ -122,5 +143,5 @@ pub use process::{
     ProcessSource, Spawner, StdSpawner,
 };
 #[cfg(feature = "wasm")]
-pub use wasm::{WasmLimits, WasmSource};
+pub use wasm::{WasmGuest, WasmLimits, WasmSource, set_macos_mach_ports};
 pub use watch::WatchConfig;

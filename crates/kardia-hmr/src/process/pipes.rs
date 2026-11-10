@@ -2,9 +2,10 @@
 //! its stdout, a tail of its stderr) and the state they share. Blocking I/O
 //! on threads of their own keeps calls bounded by their deadline, whether a
 //! caller waits on a Tokio worker, a blocking thread or no runtime at all.
+//! A thread that panics kills the guest, with the panic as the reason.
 
 use std::collections::HashMap;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::ExitStatus;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64};
@@ -17,6 +18,7 @@ use parking_lot::{Condvar, Mutex};
 use serde_json::Value;
 use tokio::sync::{oneshot, watch};
 
+use crate::contained::spawn;
 use crate::guest::level;
 use crate::process::{ExitCause, GuestChild, GuestExit, GuestProcess};
 
@@ -114,6 +116,12 @@ impl Shared {
         }
     }
 
+    /// Marks stderr as read to its end, or abandoned.
+    fn stderr_done(&self) {
+        *self.stderr_open.lock() = false;
+        self.stderr_closed.notify_all();
+    }
+
     fn pong(&self, id: u64) {
         if let Some(pong) = self.pongs.lock().remove(&id) {
             let _ = pong.send(());
@@ -152,23 +160,41 @@ pub(crate) fn start(
         pings: AtomicU64::new(0),
     });
     let started = (|| {
-        spawn("guest-stdin", move || write_lines(stdin, lines))?;
+        spawn("guest-stdin", move || write_lines(stdin, lines), broken(&shared, &incoming))?;
         if let Some(stderr) = stderr {
-            let (shared, logger) = (shared.clone(), logger.clone());
-            spawn("guest-stderr", move || read_stderr(stderr, &shared, logger))?;
+            let (reader, logger, broken) = (shared.clone(), logger.clone(), broken(&shared, &incoming));
+            let closed = shared.clone();
+            let failed = move |reason| {
+                closed.stderr_done();
+                broken(reason);
+            };
+            spawn("guest-stderr", move || read_stderr(stderr, &reader, logger), failed)?;
         }
-        let (shared, incoming) = (shared.clone(), incoming.clone());
-        spawn("guest-stdout", move || read_messages(stdout, limit, &incoming, &shared, logger))
+        let (reader, sender) = (shared.clone(), incoming.clone());
+        let body = move || read_messages(stdout, limit, &sender, &reader, logger);
+        spawn("guest-stdout", body, broken(&shared, &incoming))
     })();
     if let Err(error) = started {
         shared.kill(ExitCause::Killed(format!("cannot start the guest's threads: {error}")));
+        // ends the threads that started, which hold the shared state
+        shared.reap();
         return Err(error.into());
     }
     Ok((shared, receiver, incoming))
 }
 
-fn spawn(name: &str, body: impl FnOnce() + Send + 'static) -> io::Result<()> {
-    thread::Builder::new().name(name.into()).spawn(body).map(drop)
+/// What a thread of the guest does when it panics: it kills the guest, whose
+/// calls then fail with the reason, and reaps it.
+fn broken(shared: &Arc<Shared>, incoming: &Sender<Incoming>) -> impl FnOnce(String) + Send + 'static {
+    let (shared, incoming) = (shared.clone(), incoming.clone());
+    move |reason| {
+        let cause = ExitCause::Killed(reason.clone());
+        shared.mark(cause.clone());
+        // before the kill, so that the instance hears the reason before the reader's end of stdout
+        let _ = incoming.send(Incoming::Closed(Some(reason)));
+        shared.kill(cause);
+        shared.reap();
+    }
 }
 
 /// Writes queued lines until the instance is gone or the pipe breaks.
@@ -255,6 +281,5 @@ fn read_stderr(stderr: Box<dyn Read + Send>, shared: &Shared, logger: Option<Log
             }
         }
     }
-    *shared.stderr_open.lock() = false;
-    shared.stderr_closed.notify_all();
+    shared.stderr_done();
 }
