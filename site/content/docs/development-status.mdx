@@ -93,11 +93,11 @@ hmr 的 `index` 用例“waits for a second re-enable init”在 Rust 中没有�
 |---|---|
 | `WasmSource` | 在 wasmtime 上运行核心 WASM 模块（每个纤程一个 store），而不是 WIT 组件，因此访客不需要组件工具链（测试用 WAT 编写）。 |
 | `DylibSource` | 使用 C ABI，而不是传递 Rust 类型：cdylib 带有自己的一份 `kardia-core` 和 tokio，有独立的静态变量，也没有运行时上下文。每个版本都从一份唯一的副本加载，且永不卸载。 |
-| `ProcessSource` | 运行可执行文件，每个纤程一个子进程，通过 stdin 和 stdout 上的 JSON 行使用同一套 ABI（重新启动进程 = 重载；崩溃的访客只会使它自己的调用失败，破坏协议的访客会被杀死）。没有单独的代理服务：每个纤程的 `GuestService` 就是 RPC 端点。 |
+| `ProcessSource` | 运行可执行文件，每个纤程一个子进程，通过 stdin 和 stdout 上的 JSON 行使用同一套 ABI，协议为版本 1 或 `kardia-guest/2`（请求 id、取消、ping）。重新启动进程 = 重载；进程结束的访客会使它自己的纤程失败（`Fiber::fail`，附带退出报告），破坏协议、超过帧上限或错过调用截止时间的访客会被杀死。`ProcessGuest` 增加了命令行参数、`Spawner`、超时以及由宿主给出的元数据。没有单独的代理服务：每个纤程的 `GuestService` 就是 RPC 端点。 |
 
-与其他后端一样，进程后端的调用是同步的，而不是[论文 §6.2](/docs/concepts-related-work) 中的异步 RPC 约定：它们会阻塞调用者直到访客应答，因此挂起的访客也会阻塞调用者。`kardia` 二进制按文件扩展名选择后端，并且不加载进程访客。
+`GuestService::call` 会阻塞调用者直到访客应答；`call_async` 更接近[论文 §6.2](/docs/concepts-related-work) 中的异步 RPC 约定：它在异步工作线程之外执行，带有截止时间和取消，桥接插件也以同样的方式执行 `apply` 和 `dispose`。进程访客的 I/O 在各自的线程上进行，因此无论哪个线程在等待，截止时间都能生效。传输 trait（`GuestCode`、`GuestInstance`）是公开的，供宿主实现自己的传输。`kardia` 二进制按文件扩展名选择后端，并且不加载进程访客。
 
-访客服务是带 JSON 调用的 JSON 视图（`GuestService`）。`kardia-guest` 是 Rust 访客 SDK：一个 `Guest` trait 和 `export!`，后者在 wasm32 上生成 WASM 导出，在其他平台上生成 C 符号，因此同一份源码可以为两种后端构建。
+访客服务是带 JSON 调用的 JSON 视图（`GuestService`）。`kardia-guest` 是 Rust 访客 SDK：一个 `Guest` trait 和 `export!`，后者在 wasm32 上生成 WASM 导出，在其他平台上生成 C 符号，因此同一份源码可以为两种后端构建；`serve` 用于进程传输。与其他 crate（GPL-3.0-only）不同，它采用 MIT OR Apache-2.0 许可证。
 
 监视模式（`HmrConfig { base, watch: { enabled, files, debounce } }`）遵循 TS 代码：它通过 `fs` 监视 `base`，把每个防抖窗口内的变化作为一批重载，每次只处理一批。导入失败的文件会随下一批重试，而宿主模块的变化只会被报告。`base` 相对于 hmr 条目所在配置文件的目录解析（与 TS 代码使用 `ctx.baseUrl` 的方式相同），没有配置文件时则相对于工作目录解析。
 

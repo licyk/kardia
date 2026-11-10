@@ -4,7 +4,8 @@
 //! source builds as a WASM module (`--target wasm32-unknown-unknown`) or as
 //! a dynamic library for the host platform. For the process backend, a
 //! binary's `main` calls [`serve::<G>()`](serve) instead; its stdout carries
-//! the protocol, so it logs through [`Host::log`] or stderr.
+//! the protocol (version 1, or `kardia-guest/2` with hosts that offer it), so
+//! it logs through [`Host::log`] or stderr.
 //!
 //! Unlike the rest of kardia, this crate is licensed under MIT OR Apache-2.0,
 //! so a guest that links it chooses its own licence.
@@ -49,6 +50,8 @@ mod ffi;
 mod guest;
 mod host;
 mod meta;
+#[cfg(not(target_family = "wasm"))]
+mod serve;
 
 pub use error::{Error, Result};
 pub use guest::{Guest, Request};
@@ -58,7 +61,7 @@ pub use serde_json::{Map, Value, json};
 
 pub use ffi::Host;
 #[cfg(not(target_family = "wasm"))]
-pub use ffi::serve;
+pub use serve::serve;
 
 #[doc(hidden)]
 pub mod __private {

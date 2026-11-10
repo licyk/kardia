@@ -20,18 +20,31 @@ icon: Container
 |---|---|---|---|
 | 文件 | `.wasm`，或 `.wat` 文本 | `.so` / `.dylib` / `.dll` | 可执行文件 |
 | 运行方式 | 在 wasmtime 上，每个纤程一个 store | 在宿主（host）进程内 | 每个纤程一个子进程 |
-| 隔离 | 沙箱 | 无：库中的崩溃会使整个应用崩溃 | 崩溃的访客只会让它自己的调用失败 |
+| 隔离 | 沙箱，可选燃料、时间和内存限制 | 无：库中的崩溃会使整个应用崩溃 | 崩溃的访客只会让它自己的插件失败 |
 | 重载 | 每个版本编译一次；新旧实例并存，丢弃实例会释放其全部内存 | 每个版本从一份新副本加载，**永不卸载**；一直保留到进程退出 | 重载模块会重新启动其进程 |
 | 适用于 | 生产环境的访客 | 开发：同一套工具链，无需 WASM 目标 | 任意语言编写的访客，或不能让宿主崩溃的访客 |
 | `kardia` 二进制 | 支持 | 支持 | 暂不支持（仅限库） |
 
-**WebAssembly。** `WasmSource` 在 wasmtime 上运行核心 WebAssembly 模块，而不是 WIT 组件，因此访客不需要组件工具链（测试用 WAT 编写）。模块每个版本编译一次，并为每个纤程在各自的 store 中实例化。
+**WebAssembly。** `WasmSource` 在 wasmtime 上运行核心 WebAssembly 模块，而不是 WIT 组件，因此访客不需要组件工具链（测试用 WAT 编写）。模块每个版本编译一次，并为每个纤程在各自的 store 中实例化。`WasmSource::with_limits` 为每个实例设置上限：
+
+```rust
+use kardia::hmr::{WasmLimits, WasmSource};
+
+let source = WasmSource::with_limits(
+    WasmLimits::new()
+        .fuel(10_000_000)                    // per export, about one unit per instruction
+        .timeout(Duration::from_secs(5))     // per export, by epoch interruption
+        .memory(64 << 20),                   // the most linear memory, in bytes
+);
+```
+
+燃料或时间耗尽的导出会触发陷阱（trap），该实例之后的调用以 `the guest was stopped: …` 失败；内存增长超过上限也会触发陷阱。设置了时间上限时，调用者自己的截止时间（[`call_timeout`、`call_async`](#guest-service)）同样生效。`WasmSource::new()` 不设置任何上限。
 
 **动态库。** `DylibSource` 使用 C ABI，而不是传递 Rust 类型：`cdylib` 自带一份 `kardia-core` 和 tokio，静态变量各自独立，也没有运行时上下文。每次加载都会把库复制到一个新路径（位于临时目录下的 `kardia-dylib-<pid>` 目录中），因为平台加载器对已知路径会直接交出已加载的那个库。库永不卸载：一旦 Rust 代码注册了线程局部析构函数或交出了 `'static` 引用，卸载它就是不健全的。
 
-**子进程。** `ProcessSource` 把每个插件实例作为独立进程运行，通过 stdin 和 stdout 以 JSON 行的形式使用访客 ABI（见[进程传输](#process)）。崩溃的访客只会让它自己的调用失败，破坏协议的访客会被杀死。替换可执行文件时，请把新文件重命名覆盖到原路径：正在运行的可执行文件不能被写入，而以写方式打开着的文件不能被启动。
+**子进程。** `ProcessSource` 把每个插件实例作为独立进程运行，通过 stdin 和 stdout 以 JSON 行的形式使用访客 ABI（见[进程传输](#process)）。进程结束的访客只会让它自己的插件失败；破坏协议或超过调用截止时间的访客会被杀死。命令行参数、spawner、超时和退出报告见[进程访客](#process-guests)。替换可执行文件时，请把新文件重命名覆盖到原路径：正在运行的可执行文件不能被写入，而以写方式打开着的文件不能被启动。
 
-**三者的共同点。** 调用是同步的，而不是论文 §6.2 中的异步 RPC：调用会阻塞调用者直到访客应答，所以挂起的访客也会阻塞其调用者。没有单独的代理（broker）服务：每个纤程的 `GuestService` 就是 RPC 端点。这些后端是 `kardia-hmr` 的 cargo 特性（`wasm`、`dylib`、`process`，默认全部开启）。
+**三者的共同点。** `GuestService::call` 会阻塞调用者直到访客应答；`call_async` 则在异步工作线程之外执行调用，桥接插件执行 `apply` 和 `dispose` 时也是如此。截止时间可以终止进程访客（将其杀死）和设置了时间上限的 WASM 访客（触发陷阱）；dylib 访客运行在调用者的线程上，无法被终止。没有单独的代理（broker）服务：每个纤程的 `GuestService` 就是 RPC 端点。这些后端是 `kardia-hmr` 的 cargo 特性（`wasm`、`dylib`、`process`，默认全部开启）。
 
 `kardia` 二进制按文件扩展名选择后端：`.wasm` 和 `.wat` 交给 `WasmSource`，其他一律交给 `DylibSource`。基于库构建的应用可以自行选择：
 
@@ -73,11 +86,101 @@ let view = ctx.view("counter")?;                          // the JSON view alone
 | `GuestService` | |
 |---|---|
 | `value()` | 访客提供该服务时给出的 JSON 值 |
-| `call(method, args)` | 以 `{ key, method, args }` 调用访客的 `cordis_call`，返回其 JSON 结果 |
+| `call(method, args)` | 以 `{ key, method, args }` 调用访客的 `cordis_call`，返回其 JSON 结果；阻塞直到访客应答，或直到访客的默认超时 |
+| `call_timeout(method, args, timeout)` | 与 `call` 相同，但超过 `timeout` 后以 `the guest did not answer in time` 失败；此时进程访客会被杀死，之后的调用也会失败 |
+| `call_async(method, args, timeout)` | 在异步工作线程之外执行调用，可设置超时；丢弃该 future 即取消调用（`kardia-guest/2` 访客会收到通知，其结果被丢弃） |
+| `is_available()` | 实例是否仍能应答：未被释放，且其进程没有退出 |
+| `handle()` | 进程访客的 [`GuestHandle`](#exit) |
 
-提供该服务的纤程消失后，调用以 `the guest instance is disposed` 失败；访客返回的不是 JSON 时，以 `invalid result of <key>.<method>: …` 失败。访客回调到一个已在同一线程上运行的实例（直接或经由其他访客）时，会以 `re-entrant call into a guest instance` 失败，而不会死锁。与任何服务一样，访客的纤程被释放时，访客服务随之撤回。
+提供该服务的纤程消失后，调用以 `the guest instance is disposed` 失败；进程访客自行结束后，以 `the guest process exited` 失败；访客返回的不是 JSON 时，以 `invalid result of <key>.<method>: …` 失败。访客回调到一个已在同一线程上运行的实例（直接或经由其他访客）时，会以 `re-entrant call into a guest instance` 失败，而不会死锁。与任何服务一样，访客的纤程被释放时，访客服务随之撤回。
+
+## 进程访客 [#process-guests]
+
+`ProcessSource` 把模块 id 当作程序运行，不带参数。`ProcessGuest` 描述一条访客命令及其选项；可以直接使用，也可以在你自己的 `ModuleSource` 中使用：
+
+```rust
+use kardia::hmr::{GuestCommand, GuestMeta, ProcessGuest};
+
+let guest = ProcessGuest::new(
+    GuestCommand::new("python3").arg("plugin.py").env("PLUGIN_ROOT", &root).current_dir(&data),
+)
+.spawner(MySpawner)                          // default: StdSpawner
+.timeout(Duration::from_secs(30))            // each export, unless its caller sets a deadline
+.frame_limit(1 << 20);                       // the longest line the guest may send
+
+// metadata from the caller: building the plugin starts nothing
+let plugin = guest.plugin(GuestMeta::new("jira").provide("jira"));
+let fiber = ctx.plugin_def(&plugin, config)?;
+
+// or metadata from the guest, as ProcessSource reads it
+let module = guest.module("plugins/jira")?;
+```
+
+| `ProcessGuest` | |
+|---|---|
+| `new(command)` | 运行 `command` 的访客（`GuestCommand`：程序、`arg`/`args`、`env`、`current_dir`） |
+| `spawner(spawner)` | 由谁启动它的进程（见下文）；默认为 `StdSpawner` |
+| `timeout(duration)` | 调用者未设置截止时间时，每次导出可用的时长；超过后进程被杀死。默认没有，但此时 `dispose` 限定为 5 秒 |
+| `handshake_timeout(duration)` | 访客应答[握手](#process)的时限（默认 10 秒） |
+| `frame_limit(bytes)` | 访客可发送的最长一行（默认 16 MiB）；更长的一行会使访客被杀死 |
+| `plugin(meta)` | 访客的插件，其 `GuestMeta`（`new(name)`、`.inject(key)`、`.provide(key)`）由调用者给出。每个进程启动时必须声明相同的元数据（相同的名称，以及顺序不限的相同服务），否则其纤程失败 |
+| `module(id)` | 访客的模块，其元数据从为此启动的进程中读取 |
+
+### Spawner [#spawner]
+
+`Spawner` 负责启动进程，由应用决定访客如何运行（沙箱、进程组、拥有它的进程管理器）：
+
+```rust
+pub trait Spawner: Send + Sync + 'static {
+    fn spawn(&self, command: &GuestCommand) -> io::Result<GuestProcess>;
+}
+```
+
+它得到命令的程序、参数、环境变量和工作目录（`get_program`、`get_args`、`get_envs`、`get_current_dir`，或用 `to_std()` 得到 `std::process::Command`），并返回一个 `GuestProcess`：进程的 stdin 和 stdout，可选的 stderr（`.stderr(…)`，用于[退出报告](#exit)），以及一个 `GuestChild`，即实例在进程结束前一直持有的控制句柄（`id`、`kill`、`try_wait`、`wait`，与 `std::process::Child` 相同）。`GuestProcess::from_child` 接受以管道方式启动 stdio 的 `std::process::Child`。默认的 `StdSpawner` 用 `std::process` 在应用的环境加上命令的变量中运行命令。实例用完进程时（释放时，或访客失败时）会杀死它。
+
+### 退出报告 [#exit]
+
+每个进程访客都有一个 `GuestHandle`，可从 `GuestService::handle()` 或 `GuestStarted` 事件获得：
+
+| `GuestHandle` | |
+|---|---|
+| `id()` | spawner 报告的进程 id |
+| `protocol()` | 访客使用的协议：`1` 或 `2`（`kardia-guest/2`） |
+| `exit()` | 进程结束后的 `GuestExit` 报告 |
+| `subscribe()` | 报告的 `tokio::sync::watch` 接收端（进程运行期间为 `None`） |
+| `exited()` | 以报告完成的 future |
+| `stderr_tail()` | 进程迄今写入 stderr 的最后 16 KiB |
+| `kill()` | 杀死进程；其报告注明 `killed by the host` |
+| `ping(timeout)` | 检查 `kardia-guest/2` 访客是否应答，即使它正在执行调用；以往返时间完成 |
+
+`GuestExit` 包含退出状态 `status`、原因 `cause`（`ExitCause::Exited` 为自行退出，`Killed(reason)` 为错过截止时间、违反协议或 `kill()`，`Disposed` 为被其纤程释放）以及 `stderr_tail`（16 KiB）。stderr 的每一行也会以插件的身份在 `debug` 级别记录。
+
+桥接插件会在访客的纤程上发出两个事件：进程启动后、`apply` 之前发出 `GuestStarted { fiber, handle }`；进程在纤程释放它之前结束时发出 `GuestExited { fiber, exit }`。随后纤程以该报告为错误失败（`Fiber::fail`），撤回它的服务，其使用者会重新等待这些服务。与任何失败的纤程一样，`restart` 会让它保持失败；`fiber.update(config)` 会启动一个新进程。
+
+```rust
+use kardia::hmr::GuestExited;
+
+ctx.on(|event: &GuestExited| {
+    let tail = String::from_utf8_lossy(&event.exit.stderr_tail);
+    eprintln!("{} ended: {}\n{tail}", event.fiber.name(), event.exit);
+})?;
+```
+
+## 自定义传输 [#transports]
+
+各后端实现了两个公开 trait，宿主可以为自己的传输实现它们：
+
+| | |
+|---|---|
+| `GuestCode::instantiate(&self, host: GuestHost) -> Result<Box<dyn GuestInstance>>` | 启动一个实例，其宿主调用作用于 `host`（`log`、`provide`、`view`、`invoke`）；在异步工作线程之外调用 |
+| `GuestInstance::call(&mut self, export, input, control: &CallControl) -> Result<Vec<u8>>` | 以 UTF-8 JSON 输入调用一个 `Export`（`Meta`、`Apply`、`Call`、`Dispose`），返回访客的输出或错误；应在 `control.deadline()` 时停止，并在 `control.is_cancelled()` 后丢弃结果（`on_cancel` 会唤醒它） |
+| `GuestInstance::handle(&self) -> Option<GuestHandle>` | 背后的进程（如有；默认为 `None`） |
+
+`kardia::hmr::guest_module(id, code)` 把一个 `GuestCode` 变为模块代码，元数据从一个新实例中读取；`guest_plugin(code, meta)` 把它变为元数据由调用者给出的插件。
 
 ## 用 Rust 编写访客 [#sdk]
+
+与 kardia 的其余部分（GPL-3.0-only）不同，`kardia-guest` 采用 MIT OR Apache-2.0 许可证，因此链接它的访客可以自行选择许可证。
 
 创建一个依赖 `kardia-guest` 的 `cdylib` crate：
 
@@ -157,6 +260,7 @@ kardia_guest::export!(Counter);
 | `provide(key, &value)` | 提供服务 `key`，其 JSON 视图为 `value`；对它的调用会到达 `Guest::call`。纤程被释放时撤回。 |
 | `view(key)` | 用 `Meta::inject` 声明的服务（或由本插件及其祖先提供的服务）的 JSON 视图，按插件所声明 `inject` 的受检访问规则读取 |
 | `invoke(key, method, &args)` | 调用另一个访客提供的服务 |
+| `cancelled()` | 宿主是否已取消正在运行的导出，以便耗时的调用提前结束；只有以 `kardia-guest/2` 服务的进程访客会收到通知 |
 
 在 Rust 宿主代码中，通过 `GuestService` 调用访客的服务（见[上文](#guest-service)）。
 
@@ -191,7 +295,7 @@ fn main() {
 cargo build --release --bin my-guest-process            # target/release/my-guest-process
 ```
 
-`serve` 应答宿主通过 stdin 以 JSON 行发来的导出调用，直到宿主释放该实例或 stdin 关闭。stdout 用于承载协议，因此进程访客不得向它打印；应通过 `Host::log` 或 stderr 记录日志。
+`serve` 应答宿主通过 stdin 以 JSON 行发来的导出调用，直到宿主释放该实例或 stdin 关闭。宿主提供 `kardia-guest/2` 时它使用该协议，否则使用协议版本 1：前一种情况下由一个线程读取 stdin，因此导出运行期间也能应答 ping，`Host::cancelled` 也能看到取消。stdout 用于承载协议，因此进程访客不得向它打印；应通过 `Host::log` 或 stderr 记录日志。
 
 ### 带依赖的模块 [#deps]
 
@@ -232,12 +336,12 @@ impl Guest for Greeter {
 | 后端 | 访客 panic 时 | 访客消失时 |
 |---|---|---|
 | dylib | SDK 捕获它并作为错误返回：`the guest panicked: <message>` | 崩溃会使宿主崩溃 |
-| process | SDK 捕获它并作为错误返回：`the guest panicked: <message>` | 已退出的进程会让之后的调用以 `the guest process exited` 失败；破坏协议的进程（`invalid message from guest: …`）会被杀死，结果相同 |
-| WebAssembly | 访客中止（abort），宿主把中止报告为一次失败的调用 | – |
+| process | SDK 捕获它并作为错误返回：`the guest panicked: <message>` | 已退出的进程会以其[退出报告](#exit)使插件的纤程失败，其调用以 `the guest process exited` 失败；破坏协议（`invalid message from guest: …`）、发送超过帧上限的一行或超过调用截止时间（`the guest did not answer in time`）的进程会被杀死，结果相同 |
+| WebAssembly | 访客中止（abort），宿主把中止报告为一次失败的调用 | 设置上限时，燃料或时间耗尽的导出触发陷阱，该实例之后的调用失败 |
 
 - `apply` 返回的错误会使插件的纤程失败（`Failed`）；`call` 返回的错误只让该次调用失败，实例继续运行。
 - `dispose` 中的 panic 会被吞下，因为宿主没有可报告的对象。
-- 已释放或已失败实例的进程绝不会继续运行；`dispose` 之后宿主会杀死它。宿主消失时，进程访客会退出。
+- 已释放或已失败实例的进程绝不会继续运行；`dispose` 之后宿主会杀死它，`dispose` 本身也受访客超时的限制（未设置时为 5 秒）。宿主消失时，进程访客会退出。
 - 读取模块元数据（`meta`）期间没有插件上下文：宿主调用以 `host calls are unavailable while reading module metadata` 失败。
 
 ## 访客 ABI [#abi]
@@ -273,7 +377,11 @@ impl Guest for Greeter {
 
 ### 进程传输 [#process]
 
-进程访客通过 stdin 和 stdout 每行交换一个 JSON 对象（stdout 专用于此；访客通过 `log` 或 stderr 记录日志）。
+进程访客通过 stdin 和 stdout 每行交换一个 JSON 对象（stdout 专用于此；访客通过 `log` 或 stderr 记录日志）。协议有两个版本：版本 1，以及增加了握手、请求 id、取消和 ping 的 `kardia-guest/2`。
+
+**握手。** 宿主的第一行以导出的形式提供版本 2：`{"export":"hello","input":{"protocol":"kardia-guest/2"}}`。版本 2 的访客应答 `{"ready":"kardia-guest/2"}`。版本 1 的访客应答 `{"done":1}`（它对任何不认识的导出都这样应答），宿主随后按版本 1 为它服务。因此两种访客都能立即启动，版本 2 的访客在从不提供它的宿主上也能运行。在握手时限内没有应答的访客会被杀死。
+
+**版本 1：**
 
 | 方向 | 消息 | 含义 |
 |---|---|---|
@@ -284,6 +392,13 @@ impl Guest for Greeter {
 | 访客 → 宿主 | `{ call: "invoke", key, method, args }` | 以 `{ result }` 或 `{ error }` 应答 |
 | 访客 → 宿主 | `{ output }` | 设置导出的结果文本 |
 | 访客 → 宿主 | `{ done: status }` | 结束这次导出 |
+
+**`kardia-guest/2`** 发送相同的消息，但每条都带有 `id`：每次导出带一个新的 `id`，与它有关的每条消息都带同一个 `id`（`{"id":3,"call":"view","key":"db"}`、`{"id":3,"result":…}`、`{"id":3,"output":…}`、`{"id":3,"done":0}`）。宿主一次只调用一个导出。另有两条消息不需要正在运行的导出：
+
+| 方向 | 消息 | 含义 |
+|---|---|---|
+| 宿主 → 访客 | `{ cancel: id }` | 调用者不再需要导出 `id`：访客可以提前结束；宿主丢弃其结果，并以错误应答它之后的宿主调用 |
+| 宿主 → 访客 | `{ ping: n }` | 以 `{ pong: n }` 应答，即使有导出正在运行 |
 
 `dispose` 之后进程会被杀死；stdin 关闭时访客退出。
 
@@ -298,6 +413,21 @@ impl Guest for Greeter {
 → {"export":"call","input":{"key":"counter","method":"increment","args":null}}
 ← {"output":"1"}
 ← {"done":0}
+```
+
+在 `kardia-guest/2` 下相同的过程：
+
+```text
+→ {"export":"hello","input":{"protocol":"kardia-guest/2"}}
+← {"ready":"kardia-guest/2"}
+→ {"id":1,"export":"apply","input":{"config":null,"imports":{}}}
+← {"id":1,"call":"provide","key":"counter","value":{"config":null}}
+→ {"id":1,"result":null}
+← {"id":1,"call":"log","level":2,"text":"counting"}
+← {"id":1,"done":0}
+→ {"id":2,"export":"call","input":{"key":"counter","method":"increment","args":null}}
+← {"id":2,"output":"1"}
+← {"id":2,"done":0}
 ```
 
 ## 手写访客：`hello.wat` [#hello]

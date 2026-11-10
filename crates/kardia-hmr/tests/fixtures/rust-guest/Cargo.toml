@@ -14,8 +14,14 @@ crate-type = ["cdylib", "rlib"]
 name = "rust-guest-process"
 path = "src/main.rs"
 
+# a guest speaking protocol version 1 by hand, as guests built with kardia-guest 0.2.0 do
+[[bin]]
+name = "rust-guest-v1"
+path = "src/v1.rs"
+
 [dependencies]
 kardia-guest = { path = "../../../../kardia-guest" }
+serde_json = "1"
 
 [features]
 v2 = []

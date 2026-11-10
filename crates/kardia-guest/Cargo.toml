@@ -12,6 +12,6 @@ rust-version.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
-# the exports and host calls are FFI; only `ffi.rs` uses `unsafe`
+# the exports and host calls are FFI; only `ffi.rs` and `serve.rs` use `unsafe`
 [lints.rust]
 unsafe_code = "deny"

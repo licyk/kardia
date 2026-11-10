@@ -12,7 +12,7 @@ use kardia_core::{Error, Result};
 use libloading::Library;
 
 use crate::graph::{ModuleCode, ModuleSource};
-use crate::guest::{self, Code, Export, Host, Instance};
+use crate::guest::{CallControl, Export, GuestCode, GuestHost, GuestInstance, guest_module};
 
 /// Loads dynamic libraries exporting the C guest ABI; module ids are their
 /// paths.
@@ -27,7 +27,7 @@ pub struct DylibSource;
 
 impl ModuleSource for DylibSource {
     fn load(&self, id: &str) -> Result<ModuleCode> {
-        guest::module(id, Arc::new(DylibCode(open(Path::new(id))?)))
+        guest_module(id, Arc::new(DylibCode(open(Path::new(id))?)))
     }
 }
 
@@ -83,8 +83,8 @@ struct HostApi {
 
 struct DylibCode(Symbols);
 
-impl Code for DylibCode {
-    fn instantiate(&self, host: Host) -> Result<Box<dyn Instance>> {
+impl GuestCode for DylibCode {
+    fn instantiate(&self, host: GuestHost) -> Result<Box<dyn GuestInstance>> {
         // SAFETY: see `open`.
         let state = unsafe { (self.0.new)() };
         Ok(Box::new(DylibInstance { symbols: self.0, state, host: Box::new(host) }))
@@ -94,22 +94,20 @@ impl Code for DylibCode {
 struct DylibInstance {
     symbols: Symbols,
     state: State,
-    host: Box<Host>,
+    host: Box<GuestHost>,
 }
 
 // SAFETY: the guest state is only used by calls into the guest, which the
 // owning slot's mutex serializes; guests must not tie it to a thread.
 unsafe impl Send for DylibInstance {}
 
-impl Instance for DylibInstance {
-    fn host(&mut self) -> &mut Host {
-        &mut self.host
-    }
-
-    fn call(&mut self, export: Export) -> Result<i32> {
+impl GuestInstance for DylibInstance {
+    /// A dylib guest runs in the host's own thread: `control` cannot stop it.
+    fn call(&mut self, export: Export, input: Vec<u8>, _: &CallControl) -> Result<Vec<u8>> {
+        self.host.begin(input);
         let len = self.host.message.len();
         let api = HostApi {
-            host: std::ptr::from_mut::<Host>(&mut self.host).cast(),
+            host: std::ptr::from_mut::<GuestHost>(&mut self.host).cast(),
             read,
             write,
             log,
@@ -120,7 +118,7 @@ impl Instance for DylibInstance {
         let (symbols, state) = (self.symbols, self.state);
         // SAFETY: see `open`; `api` and the host outlive the call, and
         // `Dispose` is the last call on `state`.
-        Ok(unsafe {
+        let status = unsafe {
             match export {
                 Export::Meta => (symbols.meta)(state, &api),
                 Export::Apply => (symbols.apply)(state, &api, len),
@@ -130,7 +128,8 @@ impl Instance for DylibInstance {
                     0
                 }
             }
-        })
+        };
+        self.host.finish(status)
     }
 }
 
@@ -146,7 +145,7 @@ unsafe extern "C" fn write(host: *mut c_void, ptr: *const u8, len: usize) {
 }
 
 unsafe extern "C" fn log(host: *mut c_void, level: i32, ptr: *const u8, len: usize) {
-    unsafe { host_ref(host).log(level, bytes(ptr, len)) }
+    unsafe { host_ref(host).log_raw(level, bytes(ptr, len)) }
 }
 
 unsafe extern "C" fn provide(
@@ -156,11 +155,11 @@ unsafe extern "C" fn provide(
     value: *const u8,
     value_len: usize,
 ) -> i32 {
-    unsafe { host_ref(host).provide(bytes(key, key_len), bytes(value, value_len)) }
+    unsafe { host_ref(host).provide_raw(bytes(key, key_len), bytes(value, value_len)) }
 }
 
 unsafe extern "C" fn view(host: *mut c_void, key: *const u8, key_len: usize) -> i32 {
-    unsafe { host_ref(host).view(bytes(key, key_len)) }
+    unsafe { host_ref(host).view_raw(bytes(key, key_len)) }
 }
 
 unsafe extern "C" fn invoke(
@@ -172,11 +171,11 @@ unsafe extern "C" fn invoke(
     args: *const u8,
     args_len: usize,
 ) -> i32 {
-    unsafe { host_ref(host).invoke(bytes(key, key_len), bytes(method, method_len), bytes(args, args_len)) }
+    unsafe { host_ref(host).invoke_raw(bytes(key, key_len), bytes(method, method_len), bytes(args, args_len)) }
 }
 
-unsafe fn host_ref<'a>(host: *mut c_void) -> &'a mut Host {
-    unsafe { &mut *host.cast::<Host>() }
+unsafe fn host_ref<'a>(host: *mut c_void) -> &'a mut GuestHost {
+    unsafe { &mut *host.cast::<GuestHost>() }
 }
 
 unsafe fn bytes<'a>(ptr: *const u8, len: usize) -> &'a [u8] {

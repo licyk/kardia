@@ -189,8 +189,9 @@ Plugins compiled into the binary can be reconfigured live, but changing their co
 
 A third kind, **child processes**, is available to apps built on the library (`kardia::hmr::ProcessSource`), but not yet to the `kardia` binary, which picks a backend by file extension:
 - Each plugin instance is its own process, speaking the guest interface as JSON lines over stdin and stdout.
-- A crashing guest fails only its own calls.
+- A crashing guest fails only its own plugin, with an exit report that keeps the tail of its stderr; a call that outlives its deadline kills the guest.
 - Reloading a module respawns its processes.
+- `kardia::hmr::ProcessGuest` adds arguments, a `Spawner` of the app's own, timeouts and a frame limit, and can take the plugin's metadata from the app instead of the guest.
 - Replace an executable by renaming a new file over it, since a running executable can't be written to.
 
 To reload guest modules as they change, add an `hmr` entry with watch mode:

@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 
 use common::{App, fiber, scratch};
 use kardia_core::{FiberState, PluginDef};
-use kardia_hmr::WasmSource;
+use std::time::{Duration, Instant};
+
+use kardia_hmr::{WasmLimits, WasmSource};
 use serde_json::{Value, json};
 
 /// A guest module whose metadata is `meta`. `@N` in `body` stands for the
@@ -211,4 +213,72 @@ async fn passes_dependency_values_and_reloads_dependents() {
     write(&dir, "data.wat", &data(2));
     app.reconcile(&[&data_path]).await.unwrap();
     assert_eq!(app.view("greeter")["imports"], json!({ id: { "n": 2 } }));
+}
+
+/// A plugin whose apply never returns, and whose calls loop forever after the
+/// first one.
+fn looping() -> String {
+    wat(
+        json!({ "plugin": { "provide": ["looping"] } }),
+        &["looping", "{}"],
+        r#"
+  (global $calls (mut i32) (i32.const 0))
+  (func (export "cordis_apply") (param i32) (result i32)
+    (drop (call $provide @0 @1))
+    (i32.const 0))
+  (func (export "cordis_call") (param i32) (result i32)
+    (global.set $calls (i32.add (global.get $calls) (i32.const 1)))
+    (if (i32.gt_s (global.get $calls) (i32.const 1)) (then (loop $forever (br $forever))))
+    (call $write @1)
+    (i32.const 0))"#,
+    )
+}
+
+#[tokio::test]
+async fn fuel_stops_an_infinite_loop_and_the_guest() {
+    let dir = scratch("wasm-fuel");
+    let app = App::setup(WasmSource::with_limits(WasmLimits::new().fuel(1_000_000))).await;
+    app.load(&write(&dir, "looping.wat", &looping()), json!({})).await;
+    let looping = app.service("looping");
+    assert_eq!(looping.call("go", json!(null)).unwrap(), json!({}));
+    let error = looping.call("go", json!(null)).unwrap_err().to_string();
+    assert!(error.contains("fuel"), "{error}");
+    let error = looping.call("go", json!(null)).unwrap_err().to_string();
+    assert!(error.starts_with("the guest was stopped"), "{error}");
+}
+
+#[tokio::test]
+async fn a_timeout_stops_an_infinite_loop() {
+    let dir = scratch("wasm-epoch");
+    let app = App::setup(WasmSource::with_limits(WasmLimits::new().timeout(Duration::from_secs(10)))).await;
+    app.load(&write(&dir, "looping.wat", &looping()), json!({})).await;
+    let looping = app.service("looping");
+    looping.call("go", json!(null)).unwrap();
+    // the caller's own deadline is shorter than the limit's
+    let start = Instant::now();
+    let error = looping.call_timeout("go", json!(null), Duration::from_millis(100)).unwrap_err().to_string();
+    assert!(error.contains("interrupt"), "{error}");
+    assert!(start.elapsed() < Duration::from_secs(5));
+}
+
+#[tokio::test]
+async fn caps_the_memory_of_an_instance() {
+    let dir = scratch("wasm-memory");
+    let growing = wat(
+        json!({ "plugin": {} }),
+        &[],
+        r#"(func (export "cordis_apply") (param i32) (result i32)
+    (drop (memory.grow (i32.const 32)))
+    (i32.const 0))"#,
+    );
+    let path = write(&dir, "growing.wat", &growing);
+    let app = App::setup(WasmSource::with_limits(WasmLimits::new().memory(1 << 20))).await;
+    let entry = app.load(&path, json!({})).await;
+    assert_eq!(fiber(&entry).state(), FiberState::Failed);
+    let error = fiber(&entry).error().unwrap().to_string();
+    assert!(error.contains("grow"), "{error}");
+
+    let app = App::setup(WasmSource::new()).await;
+    let entry = app.load(&path, json!({})).await;
+    assert_eq!(fiber(&entry).state(), FiberState::Active);
 }

@@ -3,26 +3,75 @@
 //! by side and dropping an instance releases all of its memory.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use kardia_core::{Error, Result};
-use wasmtime::{Caller, Engine, Extern, Linker, Module, Store};
+use wasmtime::{Caller, Config, Engine, Extern, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, Trap};
 
 use crate::graph::{ModuleCode, ModuleSource};
-use crate::guest::{self, Code, Export, Host, Instance};
+use crate::guest::{CallControl, Export, GuestCode, GuestHost, GuestInstance, guest_module};
+
+/// How often the engine's epoch advances when calls have a time limit.
+const TICK: Duration = Duration::from_millis(10);
+
+/// Limits of each WASM guest instance. None is set by default.
+#[derive(Debug, Clone, Default)]
+pub struct WasmLimits {
+    fuel: Option<u64>,
+    timeout: Option<Duration>,
+    memory: Option<usize>,
+}
+
+impl WasmLimits {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The fuel each export may consume (about one unit per instruction).
+    pub fn fuel(mut self, fuel: u64) -> Self {
+        self.fuel = Some(fuel);
+        self
+    }
+
+    /// How long each export may run (by epoch interruption); a caller's own
+    /// deadline is then honoured too.
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
+    /// The most linear memory an instance may have, in bytes; growing past it
+    /// traps.
+    pub fn memory(mut self, bytes: usize) -> Self {
+        self.memory = Some(bytes);
+        self
+    }
+}
 
 /// Loads `.wasm` (or `.wat`) files exporting the guest ABI; module ids are
-/// their paths.
+/// their paths. An export that runs out of fuel or time traps, and the
+/// instance fails its later calls.
 pub struct WasmSource {
     engine: Engine,
-    linker: Arc<Linker<Host>>,
+    linker: Arc<Linker<State>>,
+    limits: Arc<WasmLimits>,
 }
 
 impl WasmSource {
     pub fn new() -> Self {
-        let engine = Engine::default();
+        Self::with_limits(WasmLimits::default())
+    }
+
+    pub fn with_limits(limits: WasmLimits) -> Self {
+        let mut config = Config::new();
+        config.consume_fuel(limits.fuel.is_some()).epoch_interruption(limits.timeout.is_some());
+        let engine = Engine::new(&config).expect("the engine's settings are supported");
+        if limits.timeout.is_some() {
+            tick(&engine);
+        }
         let mut linker = Linker::new(&engine);
         define(&mut linker).expect("host functions have distinct names");
-        Self { engine, linker: Arc::new(linker) }
+        Self { engine, linker: Arc::new(linker), limits: Arc::new(limits) }
     }
 }
 
@@ -35,37 +84,81 @@ impl Default for WasmSource {
 impl ModuleSource for WasmSource {
     fn load(&self, id: &str) -> Result<ModuleCode> {
         let module = Module::from_file(&self.engine, id).map_err(wasm_error)?;
-        guest::module(id, Arc::new(WasmCode { module, linker: self.linker.clone() }))
+        let code = WasmCode { module, linker: self.linker.clone(), limits: self.limits.clone() };
+        guest_module(id, Arc::new(code))
     }
+}
+
+/// Advances the engine's epoch every tick, until the engine is dropped.
+fn tick(engine: &Engine) {
+    let engine = engine.weak();
+    std::thread::Builder::new()
+        .name("wasm-epoch".into())
+        .spawn(move || {
+            while let Some(engine) = engine.upgrade() {
+                engine.increment_epoch();
+                drop(engine);
+                std::thread::sleep(TICK);
+            }
+        })
+        .expect("the epoch thread starts");
+}
+
+/// What a store holds: the instance's host and its memory limit.
+struct State {
+    host: GuestHost,
+    limits: StoreLimits,
 }
 
 struct WasmCode {
     module: Module,
-    linker: Arc<Linker<Host>>,
+    linker: Arc<Linker<State>>,
+    limits: Arc<WasmLimits>,
 }
 
-impl Code for WasmCode {
-    fn instantiate(&self, host: Host) -> Result<Box<dyn Instance>> {
-        let mut store = Store::new(self.module.engine(), host);
-        let instance = self.linker.instantiate(&mut store, &self.module).map_err(wasm_error)?;
-        Ok(Box::new(WasmInstance { store, instance }))
+impl GuestCode for WasmCode {
+    fn instantiate(&self, host: GuestHost) -> Result<Box<dyn GuestInstance>> {
+        let mut limits = StoreLimitsBuilder::new().trap_on_grow_failure(true);
+        if let Some(memory) = self.limits.memory {
+            limits = limits.memory_size(memory);
+        }
+        let mut store = Store::new(self.module.engine(), State { host, limits: limits.build() });
+        store.limiter(|state| &mut state.limits);
+        let mut instance = WasmInstance { store, instance: None, limits: self.limits.clone(), stopped: None };
+        instance.budget(&CallControl::default()).map_err(wasm_error)?;
+        instance.instance = Some(self.linker.instantiate(&mut instance.store, &self.module).map_err(wasm_error)?);
+        Ok(Box::new(instance))
     }
 }
 
 struct WasmInstance {
-    store: Store<Host>,
-    instance: wasmtime::Instance,
+    store: Store<State>,
+    instance: Option<wasmtime::Instance>,
+    limits: Arc<WasmLimits>,
+    /// Why the guest was stopped: it fails every later call.
+    stopped: Option<String>,
 }
 
-impl Instance for WasmInstance {
-    fn host(&mut self) -> &mut Host {
-        self.store.data_mut()
+impl WasmInstance {
+    /// Gives the next export its fuel and its deadline.
+    fn budget(&mut self, control: &CallControl) -> wasmtime::Result<()> {
+        if let Some(fuel) = self.limits.fuel {
+            self.store.set_fuel(fuel)?;
+        }
+        if let Some(timeout) = self.limits.timeout {
+            let now = Instant::now();
+            let deadline = control.deadline().map_or(now + timeout, |deadline| deadline.min(now + timeout));
+            let ticks = deadline.saturating_duration_since(now).as_nanos().div_ceil(TICK.as_nanos()).max(1);
+            self.store.set_epoch_deadline(ticks as u64);
+            self.store.epoch_deadline_trap();
+        }
+        Ok(())
     }
 
-    fn call(&mut self, export: Export) -> Result<i32> {
-        let len = self.store.data().message.len() as i32;
-        let (instance, store) = (self.instance, &mut self.store);
-        let result = match export {
+    fn export(&mut self, export: Export) -> wasmtime::Result<i32> {
+        let len = self.store.data().host.message.len() as i32;
+        let (instance, store) = (self.instance.expect("instantiated"), &mut self.store);
+        match export {
             Export::Meta => {
                 instance.get_typed_func::<(), i32>(&mut *store, "cordis_meta").and_then(|f| f.call(store, ()))
             }
@@ -79,45 +172,65 @@ impl Instance for WasmInstance {
                 Some(dispose) => dispose.typed::<(), ()>(&*store).and_then(|f| f.call(store, ())).map(|()| 0),
                 None => Ok(0),
             },
-        };
-        result.map_err(wasm_error)
+        }
+    }
+}
+
+impl GuestInstance for WasmInstance {
+    fn call(&mut self, export: Export, input: Vec<u8>, control: &CallControl) -> Result<Vec<u8>> {
+        if let Some(reason) = &self.stopped {
+            return Err(Error::msg(reason.clone()));
+        }
+        self.store.data_mut().host.begin(input);
+        let status = self.budget(control).and_then(|()| self.export(export));
+        match status {
+            Ok(status) => self.store.data_mut().host.finish(status),
+            Err(error) => {
+                let stopped = matches!(error.downcast_ref::<Trap>(), Some(Trap::OutOfFuel | Trap::Interrupt));
+                let error = wasm_error(error);
+                if stopped {
+                    self.stopped = Some(format!("the guest was stopped: {error}"));
+                }
+                Err(error)
+            }
+        }
     }
 }
 
 /// The host functions, imported from the module `cordis`.
-fn define(linker: &mut Linker<Host>) -> wasmtime::Result<()> {
-    linker.func_wrap("cordis", "read", |mut caller: Caller<'_, Host>, ptr: i32| {
+fn define(linker: &mut Linker<State>) -> wasmtime::Result<()> {
+    linker.func_wrap("cordis", "read", |mut caller: Caller<'_, State>, ptr: i32| {
         let (memory, host) = memory(&mut caller)?;
         let start = ptr as u32 as usize;
         memory.get_mut(start..start + host.message.len()).ok_or_else(out_of_bounds)?.copy_from_slice(&host.message);
         Ok(())
     })?;
-    linker.func_wrap("cordis", "write", |mut caller: Caller<'_, Host>, ptr: i32, len: i32| {
+    linker.func_wrap("cordis", "write", |mut caller: Caller<'_, State>, ptr: i32, len: i32| {
         let (memory, host) = memory(&mut caller)?;
         host.write(bytes(memory, ptr, len)?);
         Ok(())
     })?;
-    linker.func_wrap("cordis", "log", |mut caller: Caller<'_, Host>, level: i32, ptr: i32, len: i32| {
+    linker.func_wrap("cordis", "log", |mut caller: Caller<'_, State>, level: i32, ptr: i32, len: i32| {
         let (memory, host) = memory(&mut caller)?;
-        host.log(level, bytes(memory, ptr, len)?);
+        host.log_raw(level, bytes(memory, ptr, len)?);
         Ok(())
     })?;
     linker.func_wrap(
         "cordis",
         "provide",
-        |mut caller: Caller<'_, Host>, key: i32, key_len: i32, value: i32, value_len: i32| {
+        |mut caller: Caller<'_, State>, key: i32, key_len: i32, value: i32, value_len: i32| {
             let (memory, host) = memory(&mut caller)?;
-            Ok(host.provide(bytes(memory, key, key_len)?, bytes(memory, value, value_len)?))
+            Ok(host.provide_raw(bytes(memory, key, key_len)?, bytes(memory, value, value_len)?))
         },
     )?;
-    linker.func_wrap("cordis", "view", |mut caller: Caller<'_, Host>, key: i32, key_len: i32| {
+    linker.func_wrap("cordis", "view", |mut caller: Caller<'_, State>, key: i32, key_len: i32| {
         let (memory, host) = memory(&mut caller)?;
-        Ok(host.view(bytes(memory, key, key_len)?))
+        Ok(host.view_raw(bytes(memory, key, key_len)?))
     })?;
     linker.func_wrap(
         "cordis",
         "invoke",
-        |mut caller: Caller<'_, Host>,
+        |mut caller: Caller<'_, State>,
          key: i32,
          key_len: i32,
          method: i32,
@@ -126,18 +239,19 @@ fn define(linker: &mut Linker<Host>) -> wasmtime::Result<()> {
          args_len: i32| {
             let (memory, host) = memory(&mut caller)?;
             let (key, method) = (bytes(memory, key, key_len)?, bytes(memory, method, method_len)?);
-            Ok(host.invoke(key, method, bytes(memory, args, args_len)?))
+            Ok(host.invoke_raw(key, method, bytes(memory, args, args_len)?))
         },
     )?;
     Ok(())
 }
 
-fn memory<'a>(caller: &'a mut Caller<'_, Host>) -> wasmtime::Result<(&'a mut [u8], &'a mut Host)> {
+fn memory<'a>(caller: &'a mut Caller<'_, State>) -> wasmtime::Result<(&'a mut [u8], &'a mut GuestHost)> {
     let memory = caller
         .get_export("memory")
         .and_then(Extern::into_memory)
         .ok_or_else(|| wasmtime::Error::msg("the guest exports no memory"))?;
-    Ok(memory.data_and_store_mut(caller))
+    let (memory, state) = memory.data_and_store_mut(caller);
+    Ok((memory, &mut state.host))
 }
 
 fn bytes(memory: &[u8], ptr: i32, len: i32) -> wasmtime::Result<&[u8]> {

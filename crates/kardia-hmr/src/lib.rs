@@ -8,10 +8,15 @@
 //! Besides custom sources, three backends load guest modules from files:
 //! [`WasmSource`] (WebAssembly on wasmtime, sandboxed), [`DylibSource`]
 //! (dynamic libraries, for development) and [`ProcessSource`] (executables,
-//! one child process per instance). All speak the guest ABI below and run
-//! each guest plugin through a bridge plugin that instantiates the guest
-//! once per fiber and drops the instance when the fiber is disposed. The
-//! `kardia-guest` crate writes such guests in Rust, for either backend.
+//! one child process per instance; [`ProcessGuest`] configures one, with
+//! arguments, a [`Spawner`], timeouts and a frame limit). All speak the guest
+//! ABI below and run each guest plugin through a bridge plugin that
+//! instantiates the guest once per fiber, off the async workers, and drops
+//! the instance when the fiber is disposed. A host can run guests over a
+//! transport of its own ([`GuestCode`], [`GuestInstance`]), and give a
+//! plugin's metadata itself instead of reading it from the guest
+//! ([`guest_plugin`]). The `kardia-guest` crate writes such guests in Rust,
+//! for every backend.
 //!
 //! # Guest ABI
 //!
@@ -56,14 +61,30 @@
 //!
 //! A process guest exchanges one JSON object per line over its stdin and
 //! stdout (stdout is reserved for this; a guest logs through `log` or
-//! stderr). Each export arrives as `{ export, input }`, with `export` one of
-//! `meta`, `apply`, `call`, `dispose` and `input` the message (`null` if
-//! empty). While it runs, the guest may send `{ call: "log", level, text }`
+//! stderr, whose last 16 KiB the exit report keeps).
+//!
+//! **Version 1.** Each export arrives as `{ export, input }`, with `export`
+//! one of `meta`, `apply`, `call`, `dispose` and `input` the message (`null`
+//! if empty). While it runs, the guest may send `{ call: "log", level, text }`
 //! (no reply), or `{ call: "provide", key, value }`, `{ call: "view", key }`,
 //! `{ call: "invoke", key, method, args }`, each answered with `{ result }`
 //! or `{ error }`; `{ output }` sets the result text of the export, and
 //! `{ done: status }` ends it. After `dispose` the process is killed; a
 //! guest exits when its stdin closes.
+//!
+//! **`kardia-guest/2`.** The host's first line offers it as an export:
+//! `{ export: "hello", input: { protocol: "kardia-guest/2" } }`. A version 2
+//! guest answers `{ ready: "kardia-guest/2" }`; a version 1 guest answers
+//! `{ done: 1 }`, as it does to any export it does not know, and is served
+//! version 1. Under version 2, every export carries an `id`, and every
+//! message about it (host calls, their replies, `output`, `done`) carries the
+//! same `id`. The host may also send `{ cancel: id }` (the guest may stop the
+//! export early; its result is dropped) and `{ ping: n }`, which the guest
+//! answers with `{ pong: n }` even while an export runs.
+//!
+//! An export that outlives its deadline kills the process, as does a line
+//! that is not JSON or longer than the frame limit; a process that ends
+//! fails its fiber ([`GuestExited`]).
 
 mod graph;
 #[cfg(any(feature = "wasm", feature = "dylib", feature = "process"))]
@@ -82,10 +103,15 @@ mod wasm;
 pub use dylib::DylibSource;
 pub use graph::{Exports, Imports, ModuleCode, ModuleGraph, ModuleId, ModuleSource};
 #[cfg(any(feature = "wasm", feature = "dylib", feature = "process"))]
-pub use guest::GuestService;
+pub use guest::{
+    CallControl, Export, GuestCode, GuestHost, GuestInstance, GuestMeta, GuestService, guest_module, guest_plugin,
+};
 pub use hmr::{Hmr, HmrConfig, HmrExt, ImportFailure, ReconcileResult};
 #[cfg(feature = "process")]
-pub use process::ProcessSource;
+pub use process::{
+    ExitCause, GuestChild, GuestCommand, GuestExit, GuestExited, GuestHandle, GuestProcess, GuestStarted, ProcessGuest,
+    ProcessSource, Spawner, StdSpawner,
+};
 #[cfg(feature = "wasm")]
-pub use wasm::WasmSource;
+pub use wasm::{WasmLimits, WasmSource};
 pub use watch::WatchConfig;

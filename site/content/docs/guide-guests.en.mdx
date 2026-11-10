@@ -20,18 +20,31 @@ All backends speak one JSON-based **guest ABI** (below) and run each guest plugi
 |---|---|---|---|
 | Files | `.wasm`, or `.wat` text | `.so` / `.dylib` / `.dll` | executables |
 | Runs | on wasmtime, one store per fiber | in the host process | one child process per fiber |
-| Isolation | sandboxed | none: a crash in the library brings down the app | a crashing guest fails only its own calls |
+| Isolation | sandboxed, with optional fuel, time and memory limits | none: a crash in the library brings down the app | a crashing guest fails only its own plugin |
 | Reload | compiles once per version; old and new instances run side by side, and dropping an instance releases all of its memory | each version is loaded from a fresh copy and **never unloaded**; it stays loaded until the process exits | reloading a module respawns its processes |
 | Use for | production guests | development: same toolchain, no WASM target needed | guests in any language, or that must not crash the host |
 | `kardia` binary | yes | yes | not yet (library only) |
 
-**WebAssembly.** `WasmSource` runs core WebAssembly modules on wasmtime rather than WIT components, so guests need no component toolchain (the tests are written in WAT). A module compiles once per version and instantiates in its own store per fiber.
+**WebAssembly.** `WasmSource` runs core WebAssembly modules on wasmtime rather than WIT components, so guests need no component toolchain (the tests are written in WAT). A module compiles once per version and instantiates in its own store per fiber. `WasmSource::with_limits` bounds each instance:
+
+```rust
+use kardia::hmr::{WasmLimits, WasmSource};
+
+let source = WasmSource::with_limits(
+    WasmLimits::new()
+        .fuel(10_000_000)                    // per export, about one unit per instruction
+        .timeout(Duration::from_secs(5))     // per export, by epoch interruption
+        .memory(64 << 20),                   // the most linear memory, in bytes
+);
+```
+
+An export that runs out of fuel or time traps, and the instance fails its later calls with `the guest was stopped: …`; growing memory past the cap traps. With a timeout, a caller's own deadline ([`call_timeout`, `call_async`](#guest-service)) is honoured too. None of the limits is set by `WasmSource::new()`.
 
 **Dynamic libraries.** `DylibSource` speaks a C ABI instead of passing Rust types: a `cdylib` carries its own copies of `kardia-core` and tokio, with separate statics and no runtime context. Each load copies the library to a fresh path (in a `kardia-dylib-<pid>` directory under the temp directory), because the platform loader hands out the library it already loaded for a known path. Libraries are never unloaded: unloading Rust code is unsound once it registered thread-local destructors or handed out `'static` references.
 
-**Child processes.** `ProcessSource` runs each plugin instance as its own process, speaking the guest ABI as JSON lines over stdin and stdout (see [Process transport](#process)). A crashing guest fails only its own calls, and a guest that breaks the protocol is killed. Replace an executable by renaming a new file over it: a running executable cannot be written to, and one held open for writing cannot be started.
+**Child processes.** `ProcessSource` runs each plugin instance as its own process, speaking the guest ABI as JSON lines over stdin and stdout (see [Process transport](#process)). A guest whose process ends fails only its own plugin; one that breaks the protocol or outlives a call's deadline is killed. [Process guests](#process-guests) covers arguments, spawners, timeouts and exit reports. Replace an executable by renaming a new file over it: a running executable cannot be written to, and one held open for writing cannot be started.
 
-**Common to all three.** Calls are synchronous rather than the asynchronous RPC of paper §6.2: they block the caller until the guest answers, so a hung guest blocks its caller too. There is no separate broker service: each fiber's `GuestService` is the RPC endpoint. The backends are cargo features of `kardia-hmr` (`wasm`, `dylib`, `process`, all on by default).
+**Common to all three.** `GuestService::call` blocks its caller until the guest answers; `call_async` runs the call off the async workers, as the bridge does with `apply` and `dispose`. A deadline stops a process guest (it is killed) and a WASM guest with a time limit (it traps); a dylib guest runs on the caller's thread and cannot be stopped. There is no separate broker service: each fiber's `GuestService` is the RPC endpoint. The backends are cargo features of `kardia-hmr` (`wasm`, `dylib`, `process`, all on by default).
 
 The `kardia` binary picks a backend by file extension: `.wasm` and `.wat` go to `WasmSource`, anything else to `DylibSource`. An app built on the library chooses its own:
 
@@ -73,11 +86,101 @@ let view = ctx.view("counter")?;                          // the JSON view alone
 | `GuestService` | |
 |---|---|
 | `value()` | the JSON value the guest provided the service with |
-| `call(method, args)` | calls the guest's `cordis_call` with `{ key, method, args }` and returns its JSON result |
+| `call(method, args)` | calls the guest's `cordis_call` with `{ key, method, args }` and returns its JSON result; blocks until the guest answers, or until the guest's default timeout |
+| `call_timeout(method, args, timeout)` | like `call`, failing after `timeout` with `the guest did not answer in time`; a process guest is then killed, and its later calls fail |
+| `call_async(method, args, timeout)` | the call off the async workers, with an optional timeout; dropping the future cancels the call (a `kardia-guest/2` guest is told, and its result is dropped) |
+| `is_available()` | whether the instance can still answer: it is not disposed, and its process has not exited |
+| `handle()` | the [`GuestHandle`](#exit) of a process guest |
 
-A call fails with `the guest instance is disposed` once the providing fiber is gone, and with `invalid result of <key>.<method>: …` if the guest returns something that is not JSON. A guest calling back into an instance that is already running on the same thread (directly or through other guests) fails with `re-entrant call into a guest instance` instead of deadlocking. Like any service, a guest service is withdrawn when the guest's fiber is disposed.
+A call fails with `the guest instance is disposed` once the providing fiber is gone, with `the guest process exited` once a process guest has ended on its own, and with `invalid result of <key>.<method>: …` if the guest returns something that is not JSON. A guest calling back into an instance that is already running on the same thread (directly or through other guests) fails with `re-entrant call into a guest instance` instead of deadlocking. Like any service, a guest service is withdrawn when the guest's fiber is disposed.
+
+## Process guests [#process-guests]
+
+`ProcessSource` runs a module id as a program with no arguments. `ProcessGuest` describes one guest command with its options; use it directly, or in a `ModuleSource` of your own:
+
+```rust
+use kardia::hmr::{GuestCommand, GuestMeta, ProcessGuest};
+
+let guest = ProcessGuest::new(
+    GuestCommand::new("python3").arg("plugin.py").env("PLUGIN_ROOT", &root).current_dir(&data),
+)
+.spawner(MySpawner)                          // default: StdSpawner
+.timeout(Duration::from_secs(30))            // each export, unless its caller sets a deadline
+.frame_limit(1 << 20);                       // the longest line the guest may send
+
+// metadata from the caller: building the plugin starts nothing
+let plugin = guest.plugin(GuestMeta::new("jira").provide("jira"));
+let fiber = ctx.plugin_def(&plugin, config)?;
+
+// or metadata from the guest, as ProcessSource reads it
+let module = guest.module("plugins/jira")?;
+```
+
+| `ProcessGuest` | |
+|---|---|
+| `new(command)` | a guest running `command` (a `GuestCommand`: program, `arg`/`args`, `env`, `current_dir`) |
+| `spawner(spawner)` | who starts its processes (below); `StdSpawner` by default |
+| `timeout(duration)` | how long each export may take when its caller sets no deadline; past it the process is killed. None by default, but `dispose` is then bounded to 5 seconds |
+| `handshake_timeout(duration)` | how long the guest has to answer the [handshake](#process) (10 seconds by default) |
+| `frame_limit(bytes)` | the longest line the guest may send (16 MiB by default); a longer one kills the guest |
+| `plugin(meta)` | the guest's plugin, with a `GuestMeta` (`new(name)`, `.inject(key)`, `.provide(key)`) from the caller. Each process must declare the same metadata (name, and the same services in any order) when it starts, or its fiber fails |
+| `module(id)` | the guest's module, with its metadata read from a process started for it |
+
+### Spawners [#spawner]
+
+A `Spawner` starts the processes, so the app decides how a guest runs (a sandbox, a process group, a process manager that owns it):
+
+```rust
+pub trait Spawner: Send + Sync + 'static {
+    fn spawn(&self, command: &GuestCommand) -> io::Result<GuestProcess>;
+}
+```
+
+It gets the command's program, arguments, environment variables and working directory (`get_program`, `get_args`, `get_envs`, `get_current_dir`, or `to_std()` for a `std::process::Command`), and returns a `GuestProcess`: its stdin and stdout, optionally its stderr (`.stderr(…)`, for the [exit report](#exit)), and a `GuestChild`, the control the instance keeps until the process has ended (`id`, `kill`, `try_wait`, `wait`, as `std::process::Child` has them). `GuestProcess::from_child` takes a `std::process::Child` spawned with piped stdio. `StdSpawner`, the default, runs the command with `std::process` in the app's environment plus the command's variables. The instance kills its process when it is done with it, on dispose or when the guest fails.
+
+### Exit reports [#exit]
+
+Each process guest has a `GuestHandle`, from `GuestService::handle()` or the `GuestStarted` event:
+
+| `GuestHandle` | |
+|---|---|
+| `id()` | the process id the spawner reported |
+| `protocol()` | the protocol the guest speaks: `1` or `2` (`kardia-guest/2`) |
+| `exit()` | the `GuestExit` report, once the process has ended |
+| `subscribe()` | a `tokio::sync::watch` receiver of the report (`None` while the process runs) |
+| `exited()` | a future resolving with the report |
+| `stderr_tail()` | the last 16 KiB the process wrote to stderr so far |
+| `kill()` | kills the process; its report says `killed by the host` |
+| `ping(timeout)` | checks that a `kardia-guest/2` guest answers, even while it runs a call; resolves with the round trip |
+
+A `GuestExit` has the exit `status`, its `cause` (`ExitCause::Exited` on its own, `Killed(reason)` for a missed deadline, a protocol violation or `kill()`, `Disposed` by its fiber) and the `stderr_tail` (16 KiB). stderr lines are also logged as the plugin at `debug`.
+
+The bridge emits two events on the guest's fiber: `GuestStarted { fiber, handle }` once the process has started, before `apply`, and `GuestExited { fiber, exit }` when it ends before the fiber disposes it. The fiber then fails with the report as its error (`Fiber::fail`), which withdraws its services, so their consumers wait for them again. As for any failed fiber, `restart` keeps it failed; `fiber.update(config)` starts a new process.
+
+```rust
+use kardia::hmr::GuestExited;
+
+ctx.on(|event: &GuestExited| {
+    let tail = String::from_utf8_lossy(&event.exit.stderr_tail);
+    eprintln!("{} ended: {}\n{tail}", event.fiber.name(), event.exit);
+})?;
+```
+
+## Custom transports [#transports]
+
+The backends implement two public traits, which a host can implement for a transport of its own:
+
+| | |
+|---|---|
+| `GuestCode::instantiate(&self, host: GuestHost) -> Result<Box<dyn GuestInstance>>` | starts an instance whose host calls act on `host` (`log`, `provide`, `view`, `invoke`); called off the async workers |
+| `GuestInstance::call(&mut self, export, input, control: &CallControl) -> Result<Vec<u8>>` | calls an `Export` (`Meta`, `Apply`, `Call`, `Dispose`) with UTF-8 JSON input, returning the guest's output or its error; it should stop at `control.deadline()` and drop a result once `control.is_cancelled()` (`on_cancel` wakes it) |
+| `GuestInstance::handle(&self) -> Option<GuestHandle>` | the process behind it, if any (`None` by default) |
+
+`kardia::hmr::guest_module(id, code)` turns a `GuestCode` into module code, reading its metadata from a fresh instance; `guest_plugin(code, meta)` turns it into a plugin with metadata from the caller.
 
 ## Writing a guest in Rust [#sdk]
+
+`kardia-guest` is licensed under MIT OR Apache-2.0, unlike the rest of kardia (GPL-3.0-only), so a guest that links it chooses its own licence.
 
 Create a `cdylib` crate that depends on `kardia-guest`:
 
@@ -157,6 +260,7 @@ Each fiber running the plugin gets its own instance of the type.
 | `provide(key, &value)` | provides the service `key`, whose JSON view is `value`; calls to it arrive at `Guest::call`. It is withdrawn when the fiber is disposed. |
 | `view(key)` | the JSON view of a service declared with `Meta::inject` (or provided by this plugin or its ancestors), with the checked access of the plugin's declared `inject` |
 | `invoke(key, method, &args)` | calls a service provided by another guest |
+| `cancelled()` | whether the host cancelled the running export, so a long call may stop early; only a process guest served under `kardia-guest/2` is told |
 
 From Rust host code, a guest's services are called through `GuestService` (see [above](#guest-service)).
 
@@ -191,7 +295,7 @@ fn main() {
 cargo build --release --bin my-guest-process            # target/release/my-guest-process
 ```
 
-`serve` answers the exports the host sends as JSON lines on stdin, until the host disposes the instance or stdin closes. stdout carries the protocol, so a process guest must not print to it; it logs through `Host::log` or to stderr.
+`serve` answers the exports the host sends as JSON lines on stdin, until the host disposes the instance or stdin closes. It speaks `kardia-guest/2` with a host that offers it, and protocol version 1 with any other: a thread then reads stdin, so pings are answered while an export runs and `Host::cancelled` sees a cancellation. stdout carries the protocol, so a process guest must not print to it; it logs through `Host::log` or to stderr.
 
 ### Modules with dependencies [#deps]
 
@@ -232,12 +336,12 @@ An error or a panic in a guest fails only that plugin or call:
 | Backend | A panic in a guest | The guest goes away |
 |---|---|---|
 | dylib | the SDK catches it and returns it as an error: `the guest panicked: <message>` | a crash brings down the host |
-| process | the SDK catches it and returns it as an error: `the guest panicked: <message>` | a process that exits fails its later calls with `the guest process exited`; one that breaks the protocol (`invalid message from guest: …`) is killed, with the same result |
-| WebAssembly | the guest aborts, and the host reports the abort as a failed call | – |
+| process | the SDK catches it and returns it as an error: `the guest panicked: <message>` | a process that exits fails its plugin's fiber with its [exit report](#exit), and its calls fail with `the guest process exited`; one that breaks the protocol (`invalid message from guest: …`), sends a line over the frame limit or outlives a call's deadline (`the guest did not answer in time`) is killed, with the same result |
+| WebAssembly | the guest aborts, and the host reports the abort as a failed call | with limits, an export out of fuel or time traps, and the instance fails its later calls |
 
 - An error returned from `apply` fails the plugin's fiber (`Failed`); an error returned from `call` fails that call, and the instance keeps running.
 - A panic in `dispose` is contained, as the host has nothing to report it to.
-- The process of a disposed or failed instance is never left running; after `dispose`, the host kills it. If the host goes away, a process guest exits.
+- The process of a disposed or failed instance is never left running; after `dispose`, the host kills it, and `dispose` itself is bounded by the guest's timeout (5 seconds without one). If the host goes away, a process guest exits.
 - While the module's metadata is read (`meta`), there is no plugin context: host calls fail with `host calls are unavailable while reading module metadata`.
 
 ## The guest ABI [#abi]
@@ -273,7 +377,11 @@ Host functions returning `i32` set the message to their result and return its le
 
 ### Process transport [#process]
 
-A process guest exchanges one JSON object per line over its stdin and stdout (stdout is reserved for this; a guest logs through `log` or stderr).
+A process guest exchanges one JSON object per line over its stdin and stdout (stdout is reserved for this; a guest logs through `log` or stderr). There are two versions: version 1, and `kardia-guest/2`, which adds a handshake, request ids, cancellation and pings.
+
+**Handshake.** The host's first line offers version 2 as an export: `{"export":"hello","input":{"protocol":"kardia-guest/2"}}`. A version 2 guest answers `{"ready":"kardia-guest/2"}`. A version 1 guest answers `{"done":1}`, as it does to any export it does not know, and the host serves it version 1, so either starts without a delay, and a version 2 guest still runs on a host that never offers it. A guest that does not answer within the handshake timeout is killed.
+
+**Version 1:**
 
 | Direction | Message | Meaning |
 |---|---|---|
@@ -284,6 +392,13 @@ A process guest exchanges one JSON object per line over its stdin and stdout (st
 | guest → host | `{ call: "invoke", key, method, args }` | answered with `{ result }` or `{ error }` |
 | guest → host | `{ output }` | sets the result text of the export |
 | guest → host | `{ done: status }` | ends the export |
+
+**`kardia-guest/2`** sends the same messages, each with an `id`: an export carries a new `id`, and every message about it carries the same one (`{"id":3,"call":"view","key":"db"}`, `{"id":3,"result":…}`, `{"id":3,"output":…}`, `{"id":3,"done":0}`). The host calls one export at a time. Two more messages need no running export:
+
+| Direction | Message | Meaning |
+|---|---|---|
+| host → guest | `{ cancel: id }` | the caller no longer wants export `id`: the guest may stop early; the host drops its result and answers its later host calls with an error |
+| host → guest | `{ ping: n }` | answered with `{ pong: n }`, even while an export runs |
 
 After `dispose` the process is killed; a guest exits when its stdin closes.
 
@@ -298,6 +413,21 @@ For example, the `Counter` guest above, applied without configuration and then c
 → {"export":"call","input":{"key":"counter","method":"increment","args":null}}
 ← {"output":"1"}
 ← {"done":0}
+```
+
+The same under `kardia-guest/2`:
+
+```text
+→ {"export":"hello","input":{"protocol":"kardia-guest/2"}}
+← {"ready":"kardia-guest/2"}
+→ {"id":1,"export":"apply","input":{"config":null,"imports":{}}}
+← {"id":1,"call":"provide","key":"counter","value":{"config":null}}
+→ {"id":1,"result":null}
+← {"id":1,"call":"log","level":2,"text":"counting"}
+← {"id":1,"done":0}
+→ {"id":2,"export":"call","input":{"key":"counter","method":"increment","args":null}}
+← {"id":2,"output":"1"}
+← {"id":2,"done":0}
 ```
 
 ## A guest by hand: `hello.wat` [#hello]
