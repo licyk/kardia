@@ -187,6 +187,7 @@ A transition in flight is never cut short (inertia): if the fiber's target chang
 | `fiber.update(config)` | `Result<Settle>`: replaces the configuration (below) |
 | `fiber.update_with(config, no_save)` | the same; `no_save` suppresses `ConfigCommitted` |
 | `fiber.restart()` | `Settle`: unloads and loads again |
+| `fiber.fail(error)` | `Settle`: fails the fiber from outside (below) |
 | `fiber.dispose()` | `Disposal`: retires the fiber |
 | `fiber.config()` | the source configuration, as last given |
 | `fiber.inject()`, `fiber.def()`, `fiber.runtime()`, `fiber.name()` | its declaration, plugin definition, registry key, and plugin name (or its nearest named ancestor's) |
@@ -214,6 +215,8 @@ ctx.on_update::<DbConfig>(move |next| {
 ```
 
 **`restart()`** bumps the fiber's revision, so it unloads and loads again with the same configuration. It fails on a retired fiber, and it does not recover a `Failed` fiber: the failure stays (and `settled()` keeps returning it) until `update` or `registry.replace` clears it.
+
+**`fail(error)`** fails the fiber from outside, as a load returning `error` would: it unloads, reverting its effects and provisions, and settles as `Failed` with that error until `update` or `registry.replace` clears it. A load in flight finishes first; a fiber that has already failed keeps its first error. It is how a host reports a failure that happens after `apply`, such as a [guest process](/docs/guide-guests#exit) that exits.
 
 **`dispose()`** retires the fiber: it is marked removed, its live provisions are unbound at once, it unloads and settles to `Disposed`. For the root fiber, `dispose()` restarts the root, reverting everything registered on it; this is how an app shuts down:
 

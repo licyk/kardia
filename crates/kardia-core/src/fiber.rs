@@ -166,6 +166,24 @@ impl Fiber {
         }
     }
 
+    /// Fails the fiber from outside, as a load returning `error` would: it
+    /// unloads, reverting its effects and provisions, and settles as
+    /// `Failed` until `update` or `registry().replace` clears the error. A
+    /// load in flight finishes first. A fiber that has already failed keeps
+    /// its first error.
+    pub fn fail(&self, error: Error) -> Settle {
+        let id = self.ctx.fiber;
+        let started = self.ctx.root.run(|st| {
+            st.assert_active(id)?;
+            st.fail(id, error);
+            Ok::<_, Error>(())
+        });
+        match started {
+            Ok(()) => self.settled(),
+            Err(error) => futures::future::ready(Err(error)).boxed(),
+        }
+    }
+
     /// Replaces the configuration. If the fiber is loaded, the new config is
     /// validated first (a rejected config leaves the running instance
     /// untouched) and offered to the fiber's update hooks; if none takes it

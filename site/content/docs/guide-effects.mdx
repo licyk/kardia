@@ -187,6 +187,7 @@ ctx.effect_sync("server", |scope| {
 | `fiber.update(config)` | `Result<Settle>`：替换配置（见下文） |
 | `fiber.update_with(config, no_save)` | 同上；`no_save` 抑制 `ConfigCommitted` |
 | `fiber.restart()` | `Settle`：卸载后重新加载 |
+| `fiber.fail(error)` | `Settle`：从外部使纤程失败（见下文） |
 | `fiber.dispose()` | `Disposal`：让纤程退役 |
 | `fiber.config()` | 最近一次给出的源配置 |
 | `fiber.inject()`、`fiber.def()`、`fiber.runtime()`、`fiber.name()` | 其依赖声明、插件定义、注册表键，以及插件名（或其最近的有名祖先的插件名） |
@@ -214,6 +215,8 @@ ctx.on_update::<DbConfig>(move |next| {
 ```
 
 **`restart()`** 递增纤程的修订号，使它以相同配置卸载并重新加载。对已退役的纤程会失败；它也不能恢复 `Failed` 的纤程：在 `update` 或 `registry.replace` 清除错误之前，失败一直保留（`settled()` 也一直返回它）。
+
+**`fail(error)`** 从外部使纤程失败，效果与加载返回 `error` 相同：纤程卸载，撤销其副作用和提供的服务，并以该错误停留在 `Failed`，直到 `update` 或 `registry.replace` 清除它。正在进行的加载会先完成；已经失败的纤程保留它的第一个错误。宿主用它报告 `apply` 之后发生的失败，例如退出的[访客进程](/docs/guide-guests#exit)。
 
 **`dispose()`** 让纤程退役：它被标为已移除，现存的提供立即解除绑定，然后卸载并稳定为 `Disposed`。对根纤程而言，`dispose()` 会重启根，撤销登记在其上的一切；应用就是这样关闭的：
 

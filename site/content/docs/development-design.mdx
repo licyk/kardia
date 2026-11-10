@@ -294,7 +294,7 @@ impl Fiber {
 ```
 
 <Callout type="info">
-在代码中（`fiber.rs`）：`context()` 返回 `&Context`。`settled()` 和 `restart()` 返回一个 `Settle`（`kardia_core::Result<()>` 的装箱 future），`dispose()` 返回一个 `Disposal`（`Result<()>` 的 future；释放根纤程会重启它，撤销其上注册的所有内容），`update(config)` / `update_with(config, no_save)` 返回 `Result<Settle>`。此外还有 `config()`、`inject()`、`error()`、`runtime()`、`def()`、`name()`、`parent()`、`is_removed()`、`is_root()`、`effect_handle()` 和 `effect_count()`。`ctx.fiber()` 返回某个上下文所属的纤程。
+在代码中（`fiber.rs`）：`context()` 返回 `&Context`。`settled()`、`restart()` 和 `fail(error)` 返回一个 `Settle`（`kardia_core::Result<()>` 的装箱 future），`dispose()` 返回一个 `Disposal`（`Result<()>` 的 future；释放根纤程会重启它，撤销其上注册的所有内容），`update(config)` / `update_with(config, no_save)` 返回 `Result<Settle>`。此外还有 `config()`、`inject()`、`error()`、`runtime()`、`def()`、`name()`、`parent()`、`is_removed()`、`is_root()`、`effect_handle()` 和 `effect_count()`。`ctx.fiber()` 返回某个上下文所属的纤程。
 </Callout>
 
 ## 事件、日志器与内置服务 [#events]

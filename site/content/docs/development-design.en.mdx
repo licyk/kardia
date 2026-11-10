@@ -294,7 +294,7 @@ impl Fiber {
 ```
 
 <Callout type="info">
-In the code (`fiber.rs`): `context()` returns `&Context`. `settled()` and `restart()` return a `Settle` (a boxed future of `kardia_core::Result<()>`), `dispose()` a `Disposal` (a future of `Result<()>`; disposing the root fiber restarts it, reverting everything registered on it), and `update(config)` / `update_with(config, no_save)` a `Result<Settle>`. There are also `config()`, `inject()`, `error()`, `runtime()`, `def()`, `name()`, `parent()`, `is_removed()`, `is_root()`, `effect_handle()` and `effect_count()`. `ctx.fiber()` returns the fiber of a context.
+In the code (`fiber.rs`): `context()` returns `&Context`. `settled()`, `restart()` and `fail(error)` return a `Settle` (a boxed future of `kardia_core::Result<()>`), `dispose()` a `Disposal` (a future of `Result<()>`; disposing the root fiber restarts it, reverting everything registered on it), and `update(config)` / `update_with(config, no_save)` a `Result<Settle>`. There are also `config()`, `inject()`, `error()`, `runtime()`, `def()`, `name()`, `parent()`, `is_removed()`, `is_root()`, `effect_handle()` and `effect_count()`. `ctx.fiber()` returns the fiber of a context.
 </Callout>
 
 ## Events, logger and built-in services [#events]

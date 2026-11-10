@@ -839,3 +839,77 @@ async fn warns_about_declared_dependency_cycles() {
     assert_eq!(warnings.get(), vec!["dependency cycle: b -> a -> b"]);
     assert_eq!((a.state(), b.state()), (FiberState::Pending, FiberState::Pending));
 }
+
+fn providing(applied: &Arc<AtomicUsize>) -> PluginDef {
+    let applied = applied.clone();
+    PluginDef::new(move |ctx, _| {
+        applied.fetch_add(1, Ordering::SeqCst);
+        async move {
+            ctx.provide_as("foo", 1i32)?;
+            Ok(())
+        }
+    })
+    .provides(["foo"])
+}
+
+#[tokio::test]
+async fn fail_unloads_a_fiber_from_outside_until_update() {
+    let root = Context::new();
+    let applied = Arc::new(AtomicUsize::new(0));
+    let provider = root.plugin_def(&providing(&applied), Value::Null).unwrap();
+    let consumer = root.inject(["foo"], |_| async { Ok(()) }).unwrap();
+    settle().await;
+    assert_eq!(consumer.state(), FiberState::Active);
+
+    let error = provider.fail(Error::msg("gone")).await.unwrap_err();
+    assert_eq!(error.to_string(), "gone");
+    settle().await;
+    assert_eq!(provider.state(), FiberState::Failed);
+    assert_eq!(provider.error().unwrap().to_string(), "gone");
+    assert!(root.get_as::<i32>("foo").is_err());
+    assert_eq!(consumer.state(), FiberState::Pending);
+
+    // a restart keeps it failed; an update recovers it
+    let _ = provider.restart().await;
+    assert_eq!(provider.state(), FiberState::Failed);
+    provider.update(Value::Null).unwrap().await.unwrap();
+    settle().await;
+    assert_eq!(applied.load(Ordering::SeqCst), 2);
+    assert_eq!(consumer.state(), FiberState::Active);
+}
+
+#[tokio::test]
+async fn fail_keeps_the_first_error() {
+    let root = Context::new();
+    let applied = Arc::new(AtomicUsize::new(0));
+    let fiber = root.plugin_def(&providing(&applied), Value::Null).unwrap();
+    fiber.settled().await.unwrap();
+    let _ = fiber.fail(Error::msg("first")).await;
+    assert_eq!(fiber.fail(Error::msg("second")).await.unwrap_err().to_string(), "first");
+    assert_eq!(fiber.state(), FiberState::Failed);
+}
+
+#[tokio::test]
+async fn fail_during_a_load_unloads_it_when_it_finishes() {
+    let root = Context::new();
+    let gate = Gate::new();
+    let g = gate.clone();
+    let def = PluginDef::new(move |ctx, _| {
+        let gate = g.clone();
+        async move {
+            ctx.provide_as("foo", 1i32)?;
+            gate.wait().await;
+            Ok(())
+        }
+    });
+    let fiber = root.plugin_def(&def, Value::Null).unwrap();
+    settle().await;
+    assert_eq!(fiber.state(), FiberState::Loading);
+    let failed = tokio::spawn(fiber.fail(Error::msg("gone")));
+    settle().await;
+    assert_eq!(fiber.state(), FiberState::Loading);
+    gate.open();
+    assert_eq!(failed.await.unwrap().unwrap_err().to_string(), "gone");
+    assert_eq!(fiber.state(), FiberState::Failed);
+    assert!(root.get_as::<i32>("foo").is_err());
+}

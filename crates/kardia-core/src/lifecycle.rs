@@ -164,6 +164,28 @@ impl State {
         }
     }
 
+    /// [`Fiber::fail`]: a transition in flight sees the inactive target when
+    /// it finishes, and unloads then.
+    pub(crate) fn fail(&mut self, id: FiberId, error: Error) {
+        let fiber = self.fibers.get_mut(&id).expect("fiber exists");
+        if fiber.error.is_some() || fiber.removed {
+            return;
+        }
+        fiber.error = Some(error.clone());
+        let old = std::mem::replace(&mut fiber.target, Target::Inactive);
+        let inertia = fiber.inertia;
+        self.log(id, Level::Error, error);
+        if inertia {
+            return;
+        }
+        if old == Target::Inactive {
+            self.update_state(id, None);
+        } else {
+            self.begin_unload(id);
+            self.update_state(id, Some(FiberState::Unloading));
+        }
+    }
+
     fn start_drain(&mut self, id: FiberId) -> Vec<Arc<crate::effect::EffectCell>> {
         let fiber = self.fibers.get_mut(&id).expect("fiber exists");
         fiber.draining = true;
