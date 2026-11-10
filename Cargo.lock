@@ -613,7 +613,7 @@ dependencies = [
 
 [[package]]
 name = "kardia"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "futures",
  "kardia-core",
@@ -631,7 +631,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-bridge"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "futures",
  "indexmap",
@@ -645,7 +645,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "futures",
  "indexmap",
@@ -660,7 +660,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-fs"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "globset",
  "kardia-core",
@@ -672,7 +672,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-guest"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -680,7 +680,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-hmr"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "futures",
  "indexmap",
@@ -697,7 +697,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-include"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "futures",
  "indexmap",
@@ -714,7 +714,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-loader"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "futures",
  "kardia-core",
@@ -727,7 +727,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-logger-console"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "chrono",
  "kardia-core",
@@ -739,7 +739,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-macros"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "kardia-core",
  "proc-macro2",
@@ -752,7 +752,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-timer"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "futures",
  "kardia-core",
