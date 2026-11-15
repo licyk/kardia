@@ -22,7 +22,7 @@ if (execFileSync("git", ["rev-parse", "HEAD"], { cwd: types, encoding: "utf8" })
 run("corepack", ["yarn", "install", "--immutable"]);
 run("corepack", ["yarn", "build", "core"]);
 run("corepack", ["yarn", "build"]);
-run("corepack", ["yarn", "test", "server", "server-acl", "server-proxy", "server-static"]);
+run("corepack", ["yarn", "test", "server", "server-acl", "server-proxy", "server-static", "fs"]);
 
 function run(command: string, args: string[], cwd = upstream) {
   const result = spawnSync(command, args, { cwd, stdio: "inherit", shell: process.platform === "win32" && command === "corepack" });

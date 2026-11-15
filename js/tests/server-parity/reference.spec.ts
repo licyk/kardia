@@ -11,7 +11,7 @@ describe("fixed Cordis reference over real sockets", () => {
     ["/hello", "HEAD", 405, "", "get"],
     ["/hello", "OPTIONS", 204, "", "get"],
     ["/missing", "GET", 404, "", null],
-    ["/params/a+b", "GET", 200, "a b", null],
+    ["/params/a+b", "GET", 200, "a+b", null],
     ["/params/a%2Fb", "GET", 200, "a/b", null],
     ["/HELLO/", "GET", 200, "world", null],
     ["/status", "GET", 204, "", null],

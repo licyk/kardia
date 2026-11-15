@@ -8,7 +8,7 @@
 - [x] 路由保留路径中的 `+`；Proxy 按段编码、限制目标目录、正确处理 target 查询和片段；覆盖 HTTP/WS 实际请求。
 - [x] Rust effect 重复 disposal 等待同一次清理并共享结果；保留同步清理和异步任务不因句柄丢弃而取消的语义。
 - [x] FS base/intercept 统一为目录 URL，移除查询/片段，拒绝 opaque base；Windows 盘符入口转换；Static、include、HMR、CLI 模块解析使用作用域 FS 目录。
-- [ ] 更新固定上游基线、支持参数化用例的清单生成器、真实对照与回归测试。
+- [x] 更新固定上游基线、支持参数化用例的清单生成器、真实对照与回归测试。
 - [ ] 更新双语网站说明，完成架构/格式/相关测试和原生 CI 验证，删除计划书。
 
 强制验收：故障隔离始终有效；手动（默认）、限速自动重试、宿主自定义三种恢复策略均保留；清理完成后才替换实例，显式销毁取消恢复，无关插件持续运行。Linux 本地结果与 Windows/macOS 原生 CI 分开记录。
@@ -20,3 +20,5 @@
 阶段 2：`cargo test -p kardia-core` 通过，覆盖重复等待、同步/异步 setup、共享清理错误、丢弃首个句柄后继续清理，以及现有 recovery 故障注入测试。
 
 阶段 3：FS/HMR/include/loader/Static/CLI 全部相关 Rust 测试通过；真实嵌套 include + WASM 加载验证完成；`cargo xtask arch`、workspace/all-targets clippy 通过。Resolver 接收调用作用域，删除旧 TreeBackend/TreeHandle base_dir 和 HmrConfig.base；Windows 专项已加入原生 CI。
+
+阶段 4：固定 Cordis 36dc7fb，原始 Server 111 用例及 FS 34 用例（Linux 144 通过/Windows 专项 1 跳过）；清单生成器展开 it.each，MIME 生成检查通过。Rust/Cordis 真实对照 224/224 通过，新增 FS 与路径约束用例；Windows 另有 2 个 FS 对照。类型检查和 workspace clippy 通过。

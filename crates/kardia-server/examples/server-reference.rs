@@ -9,6 +9,8 @@ use serde_json::json;
 
 #[path = "support/client.rs"]
 mod client;
+#[path = "support/fs.rs"]
+mod fs;
 
 #[tokio::main]
 async fn main() -> kardia_core::Result<()> {
@@ -21,6 +23,7 @@ async fn main() -> kardia_core::Result<()> {
     match std::env::args().nth(1).as_deref().unwrap_or("core") {
         "core" => core(&root, &server)?,
         "client" => client::install(&root).await?,
+        "fs" => fs::install(&root).await?,
         "static" => {
             use kardia_fs::FsExt;
             root.plugin::<kardia_fs::FsPlugin>(Default::default())?.settled().await?;

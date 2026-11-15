@@ -1,5 +1,5 @@
 {
-  "upstream": "f6290dbbf1558cb3a870a58b1f97bacc0d3a9960",
+  "upstream": "36dc7fb5e271143039e6b8b6df59840fc0886c1b",
   "tests": [
     {
       "source": "packages/server/core/tests/index.spec.ts",
@@ -35,6 +35,11 @@
       "source": "packages/server/core/tests/index.spec.ts",
       "name": "should decode path params",
       "rustName": "should_decode_path_params"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should keep plus signs in path params",
+      "rustName": "should_keep_plus_signs_in_path_params"
     },
     {
       "source": "packages/server/core/tests/index.spec.ts",
@@ -407,9 +412,34 @@
       "rustName": "should_correctly_join_with_target_path"
     },
     {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "should forward reserved characters as part of the path",
+      "rustName": "should_forward_reserved_characters_as_part_of_the_path"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "should reject a path outside the target",
+      "rustName": "should_reject_a_path_outside_the_target"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "should forward under the path of a target with ?key=value",
+      "rustName": "should_forward_under_the_path_of_a_target_with_key_value"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "should forward under the path of a target with #fragment",
+      "rustName": "should_forward_under_the_path_of_a_target_with_fragment"
+    },
+    {
       "source": "packages/server/static/tests/index.spec.ts",
       "name": "should resolve a relative root against the base URL of fs",
       "rustName": "should_resolve_a_relative_root_against_the_base_url_of_fs"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should take a root without a trailing slash as a directory",
+      "rustName": "should_take_a_root_without_a_trailing_slash_as_a_directory"
     },
     {
       "source": "packages/server/static/tests/index.spec.ts",

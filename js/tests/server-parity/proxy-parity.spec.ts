@@ -7,7 +7,9 @@ import { startHost } from './host.ts';
 import { upstream } from './upstream.ts';
 const {WebSocket,WebSocketServer}=createRequire(join(upstream,'package.json'))('ws');
 describe('Cordis and Rust reverse proxy parity',()=>{
-  const target=createServer((req,res)=>{const chunks:Buffer[]=[];req.on('data',c=>chunks.push(c));req.on('end',()=>{
+  let requests = 0;
+  let upgrades = 0;
+  const target=createServer((req,res)=>{requests++;const chunks:Buffer[]=[];req.on('data',c=>chunks.push(c));req.on('end',()=>{
     const path=new URL(req.url!,'http://target').pathname;
     if(path.endsWith('/gzip')){const body=gzipSync('compressed 中文');res.setHeader('content-encoding','gzip');res.setHeader('content-length',body.length);res.setHeader('x-custom','compressed');res.end(body);return;}
     if(path.endsWith('/redirect')){res.writeHead(302,{location:'/redirected?q=a%20b&q=2'});res.end();return;}
@@ -18,7 +20,8 @@ describe('Cordis and Rust reverse proxy parity',()=>{
   });});
   const wss=new WebSocketServer({server:target,perMessageDeflate:false});
   const closed:{code:number,reason:string}[]=[];
-  wss.on('connection',(ws:any,req:any)=>{const url=new URL(req.url,'http://target');ws.on('close',(code:number,reason:Buffer)=>closed.push({code,reason:reason.toString()}));ws.on('message',(data:Buffer,binary:boolean)=>{
+  wss.on('connection',(ws:any,req:any)=>{upgrades++;const url=new URL(req.url,'http://target');ws.on('close',(code:number,reason:Buffer)=>closed.push({code,reason:reason.toString()}));ws.on('message',(data:Buffer,binary:boolean)=>{
+    if(data.toString()==='path'){ws.send(req.url);return;}
     if(data.toString()==='close'){ws.close(Number(url.searchParams.get('code')),'reason 中文');return;}
     if(data.toString()==='break'){ws.terminate();return;}
     ws.send(data,{binary});
@@ -31,8 +34,46 @@ describe('Cordis and Rust reverse proxy parity',()=>{
       const req=request(h.url+path,{method,headers:{'x-request':'sent',...(body?{'content-length':Buffer.byteLength(body),'content-type':'application/json'}:{})}},res=>{const chunks:Buffer[]=[];res.on('data',c=>chunks.push(c));res.on('error',reject);res.on('end',()=>resolve({status:res.statusCode,reason:res.statusMessage,headers:Object.fromEntries(['content-type','content-encoding','content-length','x-custom','set-cookie'].map(k=>[k,res.headers[k]??null])),body:Buffer.concat(chunks).toString()}));});req.on('error',reject);req.end(body);
     })));expect(results[1]).toEqual(results[0]);return results[0];
   }
-  it.each(['/proxy','/proxy/','/proxy/api/users/42','/proxy/search?q=a%20b&q=x%2By&blank','/proxy/a%2Fb','/proxy/%E4%B8%AD%E6%96%87','/proxy/status','/proxy/absent','/proxy/headers','/proxy/gzip','/proxy/redirect'])('HTTP %s',async path=>{await compare(path);});
+  it.each(['/proxy','/proxy/','/proxy/api/users/42','/proxy/search?q=a%20b&q=x%2By&blank','/proxy/a%2Fb','/proxy/%E4%B8%AD%E6%96%87','/proxy/status','/proxy/absent','/proxy/headers','/proxy/gzip','/proxy/redirect','/proxy/a%3Fb%23c+d','/proxy/a%25b','/proxy/http:%2F%2Fevil.test/x','/proxy/%2F%2Fevil.test/x','/proxy/a%2F..%2Fb','/proxy/..%5Csecret'])('HTTP %s',async path=>{await compare(path);});
   it.each(['POST','PUT','PATCH','DELETE','OPTIONS','HEAD'])('method/body %s',async method=>{await compare('/proxy/echo',method,method==='HEAD'?undefined:'{"foo":"bar"}');});
+  it('rejects HTTP paths outside the target without contacting it', async()=>{
+    const before=requests;
+    for(const path of ['/proxy/..%2Fsecret','/proxy/%2e%2e%2fsecret','/proxy/..%2Fbase-other/secret']) {
+      const result=await compare(path) as {status:number};expect(result.status).toBe(400);
+    }
+    expect(requests).toBe(before);
+    await compare('/proxy/healthy');
+  });
+  it.each(['?key=value','#fragment'])('target directory with %s',async suffix=>{
+    const pair:typeof hosts=[];
+    const port=(target.address() as {port:number}).port;
+    try {
+      for(const implementation of ['upstream','rust'] as const) pair.push(await startHost('proxy',implementation,{KARDIA_PROXY_TARGET:'http://127.0.0.1:'+port+'/api/v1'+suffix}));
+      for(const host of pair) {
+        const response=await fetch(host.url+'/users?q=a+b');expect(response.status).toBe(200);
+        expect((await response.json()).path).toBe('/api/v1/users?q=a+b');
+      }
+    } finally {await Promise.all(pair.map(host=>host.stop()));}
+  });
+  it('confines WS paths before connecting and preserves encoded segments',async()=>{
+    const before=upgrades;
+    for(const host of hosts) {
+      await new Promise<void>((resolve,reject)=>{
+        const ws=new WebSocket(host.url.replace('http','ws')+'/proxy/..%2Fsecret');
+        ws.on('open',()=>{ws.close();reject(Error('unexpected acceptance'));});
+        ws.on('error',()=>{});ws.on('close',()=>resolve());
+      });
+    }
+    expect(upgrades).toBe(before);
+    for(const host of hosts) {
+      await new Promise<void>((resolve,reject)=>{
+        const ws=new WebSocket(host.url.replace('http','ws')+'/proxy/a%3Fb%23c+d?q=a+b');
+        ws.on('error',reject);ws.on('open',()=>ws.send('path'));
+        ws.on('message',(data:Buffer)=>{try {expect(data.toString()).toBe('/base/a%3Fb%23c+d?q=a+b');ws.close();} catch(error){ws.terminate();reject(error);}});
+        ws.on('close',()=>resolve());
+      });
+    }
+  });
   it('public URL resolves the providing context',async()=>{await compare('/__proxy_url');});
   async function websocket(host:typeof hosts[number],suffix:string,action:string){return new Promise((resolve,reject)=>{
     const ws=new WebSocket(host.url.replace('http','ws')+'/proxy/ws'+suffix,['alpha','beta']);const messages:any[]=[];

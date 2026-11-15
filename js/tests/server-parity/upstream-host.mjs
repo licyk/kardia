@@ -10,7 +10,20 @@ const scenario = process.argv[3];
 const ctx = new Context();
 await ctx.use(Server, { port: 0 });
 let target;
-if (scenario === 'client') {
+if (scenario === 'fs') {
+  const Fs = (await load('fs')).default;
+  ctx.server.post('/resolve', async (req, res) => {
+    const { config = {}, intercepts = [], path } = await req.json();
+    const root = new Context();
+    try {
+      await root.use(Fs, config);
+      let scoped = root;
+      for (const baseUrl of intercepts) scoped = scoped.intercept('fs', { baseUrl });
+      res.json({ base: scoped.fs.baseUrl.href, url: scoped.fs.resolve(path).href });
+    } catch { res.json({ error: true }); }
+    finally { await root.fiber.dispose(); }
+  });
+} else if (scenario === 'client') {
   await ctx.use((await load('http')).default, JSON.parse(process.env.KARDIA_HTTP_CONFIG || '{}'));
   ctx.server.post('/request', async (req, res) => {
     const args = await req.json();

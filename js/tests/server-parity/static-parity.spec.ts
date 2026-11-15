@@ -34,6 +34,11 @@ describe("Static real files and configuration parity",()=>{
     for(const [name,body] of Object.entries({"hello.html":"<h1>Hello</h1>\n","noext":"plain text\n","page":"exact","page.html":"extension","index.htm":"second","index.html":"first","sub/index.html":"sub index","errors/404.html":"missing",".secret":"hidden","中文 (a)!.txt":"unicode","empty":"","html":"plain"})) await writeFile(join(directory,name),body);
   });
   afterAll(async()=>{await rm(directory,{recursive:true,force:true});});
+  it.each(['?ignored=yes','#fragment'])('treats static root with %s as a directory',async suffix=>{
+    const hosts=await pair({root:pathToFileURL(directory).href+suffix});
+    try {await compare(hosts,'/hello.html');await compare(hosts,'/sub/');}
+    finally {await Promise.all(hosts.map(host=>host.stop()));}
+  });
   it("compares native FS failure codes", async()=>{
     const hosts=await pair({root:pathToFileURL(directory).href});
     try {for(const path of ["missing","hello.html/child","hello.html/","./","%2Fbad"]) await compare(hosts,"/__file-error?path="+encodeURIComponent(path));}
