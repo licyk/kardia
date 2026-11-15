@@ -83,7 +83,7 @@ enum Token {
     Group(Vec<Token>),
 }
 
-// The token grammar and backtracking exclusions follow path-to-regexp 8.3 (MIT).
+// The token grammar and backtracking exclusions follow path-to-regexp 8.4.2 (MIT).
 fn parse(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, group: bool) -> Result<Vec<Token>> {
     static START: LazyLock<Regex> = LazyLock::new(|| Regex::with_flags(r"^[$_\p{ID_Start}]$", "u").unwrap());
     static CONTINUE: LazyLock<Regex> =

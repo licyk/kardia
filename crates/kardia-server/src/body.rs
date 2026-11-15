@@ -13,17 +13,17 @@ use tokio::sync::Mutex;
 pub type ByteStream = BoxStream<'static, Result<Bytes>>;
 
 /// A pull-driven body. Forks retain unread chunks only for live readers.
-pub struct Body(ByteStream);
+pub struct Body(ByteStream, pub(crate) Option<String>);
 
 impl Default for Body {
     fn default() -> Self {
-        Self(stream::empty().boxed())
+        Self(stream::empty().boxed(), None)
     }
 }
 
 impl Body {
     pub fn stream(stream: impl futures::Stream<Item = Result<Bytes>> + Send + 'static) -> Self {
-        Self(stream.boxed())
+        Self(stream.boxed(), None)
     }
 
     pub fn into_stream(self) -> ByteStream {
@@ -41,11 +41,13 @@ impl Body {
 
     /// Splits this reader without eagerly draining its source.
     pub fn fork(&mut self) -> Self {
-        let source = std::mem::take(self).0;
+        let original = std::mem::take(self);
+        let source = original.0;
+        let content_type = original.1;
         let state = Arc::new(Mutex::new(Tee { source, queues: Default::default(), ended: false }));
         let alive = Arc::new([AtomicBool::new(true), AtomicBool::new(true)]);
         let reader = |index| {
-            Self::stream(stream::unfold(
+            let mut body = Self::stream(stream::unfold(
                 Reader { index, state: state.clone(), alive: alive.clone() },
                 |reader| async move {
                     let item = {
@@ -70,7 +72,9 @@ impl Body {
                     };
                     item.map(|item| (item, reader))
                 },
-            ))
+            ));
+            body.1 = content_type.clone();
+            body
         };
         *self = reader(0);
         reader(1)
@@ -89,12 +93,14 @@ impl From<Vec<u8>> for Body {
 }
 impl From<String> for Body {
     fn from(text: String) -> Self {
-        Bytes::from(text).into()
+        let mut body: Self = Bytes::from(text).into();
+        body.1 = Some("text/plain;charset=UTF-8".into());
+        body
     }
 }
 impl From<&'static str> for Body {
     fn from(text: &'static str) -> Self {
-        Bytes::from_static(text.as_bytes()).into()
+        text.to_owned().into()
     }
 }
 

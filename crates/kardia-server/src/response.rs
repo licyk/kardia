@@ -7,14 +7,14 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::Body;
+use crate::{Blob, Body, FormData};
 
 #[derive(Clone, Default)]
 pub struct Response(Arc<Mutex<ResponseData>>);
 
 pub(crate) struct ResponseData {
     pub status: StatusCode,
-    pub status_text: Option<String>,
+    pub status_text: Option<hyper::ext::ReasonPhrase>,
     pub headers: HeaderMap,
     pub body: Body,
     claimed: bool,
@@ -44,10 +44,11 @@ impl Response {
         data.claimed = true;
     }
     pub fn status_text(&self) -> Option<String> {
-        self.0.lock().status_text.clone()
+        self.0.lock().status_text.as_ref().map(|text| String::from_utf8_lossy(text.as_bytes()).into_owned())
     }
-    pub fn set_status_text(&self, text: String) {
-        self.0.lock().status_text = Some(text);
+    pub fn set_status_text(&self, text: String) -> Result<()> {
+        self.0.lock().status_text = Some(hyper::ext::ReasonPhrase::try_from(text)?);
+        Ok(())
     }
     pub fn ok(&self) -> bool {
         self.status().is_success()
@@ -91,7 +92,23 @@ impl Response {
         self.body().bytes().await
     }
     pub async fn text(&self) -> Result<String> {
-        Ok(String::from_utf8_lossy(&self.bytes().await?).trim_start_matches('\u{feff}').into())
+        Ok(crate::form::text(&self.bytes().await?))
+    }
+    pub fn set_blob(&self, blob: Blob) {
+        self.write_typed(blob.into());
+    }
+    pub fn set_form_data(&self, form: FormData) {
+        self.write_typed(form.into());
+    }
+    pub async fn blob(&self) -> Result<Blob> {
+        let body = self.body();
+        let content_type = body.1.clone().unwrap_or_default().to_ascii_lowercase();
+        Ok(Blob { bytes: body.bytes().await?, content_type })
+    }
+    pub async fn form_data(&self) -> Result<FormData> {
+        let body = self.body();
+        let content_type = body.1.clone().unwrap_or_default();
+        FormData::read(body, &content_type).await
     }
     pub async fn json(&self) -> Result<Value> {
         Ok(serde_json::from_str(&self.text().await?)?)
@@ -112,5 +129,15 @@ impl Response {
     }
     fn content_type(&self, value: &'static str) {
         self.0.lock().headers.entry(http::header::CONTENT_TYPE).or_insert(HeaderValue::from_static(value));
+    }
+    fn write_typed(&self, body: Body) {
+        if let Some(content_type) = &body.1 {
+            self.0
+                .lock()
+                .headers
+                .entry(http::header::CONTENT_TYPE)
+                .or_insert(HeaderValue::from_str(content_type).expect("body content type"));
+        }
+        self.set_body(body);
     }
 }

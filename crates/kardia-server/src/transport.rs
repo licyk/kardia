@@ -70,5 +70,8 @@ async fn serve(
     let mut response = hyper::Response::new(StreamBody::new(stream).boxed_unsync());
     *response.status_mut() = data.status;
     *response.headers_mut() = data.headers;
+    if let Some(text) = data.status_text {
+        response.extensions_mut().insert(text);
+    }
     Ok(response)
 }

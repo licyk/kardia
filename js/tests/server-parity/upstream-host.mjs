@@ -26,6 +26,24 @@ if (scenario === 'echo' || scenario === 'proxy') {
   ctx.server.get('/hello', async (_, res) => { res.text('world'); });
   ctx.server.get('/params/:name', async (req, res) => { res.text(req.params.name); });
   ctx.server.get('/query', async (req, res) => { res.json([...req.query]); });
+  ctx.server.get('/accept', async (req, res) => { res.json({ all: req.accepts(), chosen: req.accepts(req.query.getAll('type')) }); });
+  ctx.server.post('/form', async (req, res) => {
+    const form = await req.formData();
+    res.json(await Promise.all([...form].map(async ([name, value]) => [name, typeof value === 'string' ? value : { filename: value.name, type: value.type, bytes: [...new Uint8Array(await value.arrayBuffer())] }])));
+  });
+  ctx.server.post('/consumption', async (req, res) => {
+    const before = req.bodyUsed; const value = await req.text(); const after = req.bodyUsed;
+    let rejected = false; try { await req.text(); } catch { rejected = true; }
+    res.json({ before, after, value, rejected });
+  });
+  ctx.server.post('/json', async (req, res) => { res.json(await req.json()); });
+  ctx.server.get('/reason', async (_, res) => { res.statusText = 'Greeting'; res.text('hello'); });
+  ctx.server.get('/raw', async (_, res) => { res.body = 'raw'; });
+  ctx.server.get('/blob', async (_, res) => { res.text('hello'); res.headers.set('content-type', 'text/custom'); const blob = await res.blob(); res.json({ type: blob.type, text: await blob.text() }); });
+  for (const path of ['/optional{/:id}', '/wild/*path', '/mix/:a-:b', '/wildext/*name.:ext', '/two/*a/*b', '/quoted/:"x-y"', '/unicode/:名字']) {
+    ctx.server.get(path, async (req, res) => { res.json(req.params); });
+  }
+  ctx.server.get(/^\/regex\/(?<id>\d+)(?=\.json)/, async (req, res) => { res.json([...req.params]); });
   ctx.server.post('/body', async (req, res) => { res.body = req.body; });
   ctx.server.get('/status', async (_, res) => { res.status = 204; });
   ctx.server.get('/error', async () => { throw new Error('fixture error'); });

@@ -6,7 +6,7 @@ use kardia_core::{Error, Result};
 use parking_lot::Mutex;
 use serde_json::Value;
 
-use crate::Body;
+use crate::{Blob, Body, FormData};
 
 #[derive(Debug, thiserror::Error)]
 #[error("Validation failed")]
@@ -43,7 +43,16 @@ impl Request {
         self.take_body()?.bytes().await
     }
     pub async fn text(&self) -> Result<String> {
-        Ok(String::from_utf8_lossy(&self.bytes().await?).trim_start_matches('\u{feff}').into())
+        Ok(crate::form::text(&self.bytes().await?))
+    }
+    pub async fn blob(&self) -> Result<Blob> {
+        let content_type =
+            self.headers.get("content-type").and_then(|v| v.to_str().ok()).unwrap_or_default().to_ascii_lowercase();
+        Ok(Blob { bytes: self.bytes().await?, content_type })
+    }
+    pub async fn form_data(&self) -> Result<FormData> {
+        let content_type = self.headers.get("content-type").and_then(|v| v.to_str().ok()).unwrap_or_default();
+        FormData::read(self.take_body()?, content_type).await
     }
     pub async fn json(&self) -> Result<Value> {
         Ok(serde_json::from_str(&self.text().await?)?)
