@@ -17,12 +17,23 @@ kardia-timer.workspace = true
 kardia-logger-console.workspace = true
 kardia-loader = { workspace = true, features = ["preserve-order"] }
 kardia-fs.workspace = true
+kardia-http.workspace = true
+kardia-server.workspace = true
+kardia-server-acl.workspace = true
+kardia-server-echo.workspace = true
+kardia-server-static.workspace = true
+kardia-server-proxy.workspace = true
 kardia-include.workspace = true
 kardia-hmr.workspace = true
 futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
+
+[dev-dependencies]
+reqwest = { version = "0.13.5", default-features = false, features = ["stream"] }
+tempfile = "3"
+tokio-tungstenite = "0.30"
 
 [lints]
 workspace = true

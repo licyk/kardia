@@ -1,0 +1,37 @@
+# Run from the repository root: cargo run -p kardia -- examples/server.yml
+# POST /echo, WS /echo, GET /static/, and POST/WS /proxy/echo.
+- id: server
+  name: server
+  config:
+    host: 127.0.0.1
+    port: 5140
+  recovery:
+    mode: retry
+    delayMs: 1000
+- id: http
+  name: http
+- id: acl
+  name: server:acl
+  config:
+    allowedHosts: false
+- id: echo
+  name: server:echo
+  intercept:
+    server:
+      path: /echo
+- id: static
+  name: server:static
+  config:
+    root: examples/server-public
+  intercept:
+    server:
+      path: /static
+- id: proxy
+  name: server:proxy
+  config:
+    target: http://127.0.0.1:5140/
+  intercept:
+    server:
+      path: /proxy
+  recovery:
+    mode: manual

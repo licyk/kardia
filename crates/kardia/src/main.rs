@@ -12,7 +12,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
-use kardia::fs::FsPlugin;
+use kardia::fs::{FsPlugin, LocalFsPlugin};
 use kardia::hmr::{DylibSource, Hmr, ModuleCode, ModuleGraph, ModuleSource, WasmSource};
 use kardia::loader::{Catalog, Resolver};
 use kardia::logger_console::{ConsoleConfig, ConsoleExporter};
@@ -31,7 +31,8 @@ async fn main() -> ExitCode {
 
 async fn run(root: &Context, path: &str) -> Result<()> {
     root.add_exporter(Arc::new(ConsoleExporter::new(ConsoleConfig::default())))?;
-    root.plugin::<FsPlugin>(Default::default())?;
+    root.plugin::<FsPlugin>(Default::default())?.settled().await?;
+    root.plugin::<LocalFsPlugin>(Default::default())?.settled().await?;
     let catalog = kardia::catalog();
     let graph = ModuleGraph::new(GuestFiles { wasm: WasmSource::new() });
     catalog.register_def("hmr", Hmr::plugin(graph.clone()));
