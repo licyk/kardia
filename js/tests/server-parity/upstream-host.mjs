@@ -10,7 +10,39 @@ const scenario = process.argv[3];
 const ctx = new Context();
 await ctx.use(Server, { port: 0 });
 let target;
-if (scenario === 'static') {
+if (scenario === 'client') {
+  await ctx.use((await load('http')).default, JSON.parse(process.env.KARDIA_HTTP_CONFIG || '{}'));
+  ctx.server.post('/request', async (req, res) => {
+    const args = await req.json();
+    const config = { method: args.method, headers: args.headers, timeout: args.timeout, redirect: args.redirect };
+    for (const key of Object.keys(config)) if (config[key] === undefined) delete config[key];
+    if (args.data !== undefined) {
+      const bytes = new TextEncoder().encode(args.data);
+      config.data = args.stream ? new ReadableStream({ start(c) { c.enqueue(bytes); c.close(); } }) : bytes;
+    }
+    try {
+      const response = await ctx.intercept('http', args.intercept || {}).http(args.url, config);
+      res.json({ status: response.status, reason: response.statusText, headers: Object.fromEntries(['content-type','content-encoding','content-length','x-custom','location'].map(k => [k, response.headers.get(k)])), body: [...new Uint8Array(await response.arrayBuffer())] });
+    } catch (error) { res.json({ error: true, timeout: error.code === 'TIMEOUT' }); }
+  });
+  ctx.server.post('/socket', async (req, res) => {
+    const args = await req.json();
+    const config = args.headers ? { headers: args.headers } : {};
+    const socket = ctx.intercept('http', args.intercept || {}).http.ws(args.url, config);
+    try {
+      await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });
+      const messages = [];
+      for (const message of ['hello 中文', new Uint8Array([0, 255])]) {
+        const incoming = new Promise((resolve, reject) => { socket.addEventListener('message', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });
+        socket.send(message);
+        const { data } = await incoming;
+        messages.push({ type: typeof data === 'string' ? 'text' : 'binary', bytes: [...(typeof data === 'string' ? new TextEncoder().encode(data) : new Uint8Array(await data.arrayBuffer()))] });
+      }
+      socket.close(1000);
+      res.json({ messages });
+    } catch { socket.close(); res.json({ error: true }); }
+  });
+} else if (scenario === 'static') {
   await ctx.use((await load('fs')).default);
   await ctx.use((await load('fs-node')).default);
   const config = JSON.parse(process.env.KARDIA_STATIC_CONFIG);

@@ -7,13 +7,20 @@ use kardia_server::{
 };
 use serde_json::json;
 
+#[path = "support/client.rs"]
+mod client;
+
 #[tokio::main]
 async fn main() -> kardia_core::Result<()> {
+    if std::env::args().nth(1).as_deref() == Some("cert") {
+        return client::certificate();
+    }
     let root = Context::new();
     root.plugin::<ServerPlugin>(ServerConfig::local(0))?.settled().await?;
     let server = root.get::<Server>()?;
     match std::env::args().nth(1).as_deref().unwrap_or("core") {
         "core" => core(&root, &server)?,
+        "client" => client::install(&root).await?,
         "static" => {
             use kardia_fs::FsExt;
             root.plugin::<kardia_fs::FsPlugin>(Default::default())?.settled().await?;
