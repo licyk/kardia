@@ -10,7 +10,17 @@ const scenario = process.argv[3];
 const ctx = new Context();
 await ctx.use(Server, { port: 0 });
 let target;
-if (scenario === 'echo' || scenario === 'proxy') {
+if (scenario === 'acl' || scenario === 'acl-list') {
+  await ctx.use(await load('server/acl'), { allowedHosts: scenario === 'acl-list' ? ['.example.com'] : false });
+  for (const [path, options, body] of [
+    ['/default', {}, 'default'], ['/public', { allowedHosts: true }, 'public'],
+    ['/local', { allowedHosts: false }, 'local'], ['/list', { allowedHosts: ['partner.com'] }, 'list'],
+    ['/fallthrough', { allowedHosts: false }, 'local'], ['/fallthrough', { allowedHosts: true }, 'public'],
+  ]) {
+    ctx.server.get(path, async (_, res) => { res.body = body; }, options);
+    ctx.server.ws(path, undefined, options);
+  }
+} else if (scenario === 'echo' || scenario === 'proxy') {
   if (scenario === 'proxy') {
     const { default: Http } = await load('http');
     const Proxy = await load('server/proxy');

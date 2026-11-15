@@ -1071,6 +1071,7 @@ dependencies = [
  "hyper-util",
  "kardia-core",
  "kardia-loader",
+ "kardia-server-acl",
  "kardia-server-echo",
  "mime_guess",
  "multer",
@@ -1084,6 +1085,20 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "url",
+]
+
+[[package]]
+name = "kardia-server-acl"
+version = "0.2.3"
+dependencies = [
+ "futures",
+ "kardia-core",
+ "kardia-server",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]

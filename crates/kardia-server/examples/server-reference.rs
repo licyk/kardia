@@ -17,6 +17,12 @@ async fn main() -> kardia_core::Result<()> {
         "echo" => {
             root.plugin::<kardia_server_echo::EchoPlugin>(json!({}))?.settled().await?;
         }
+        "acl" | "acl-list" => {
+            let list = std::env::args().nth(1).as_deref() == Some("acl-list");
+            let config = if list { json!({"allowedHosts":[".example.com"]}) } else { json!({"allowedHosts":false}) };
+            root.plugin_value::<kardia_server_acl::AclPlugin>(config)?.settled().await?;
+            acl(&server)?;
+        }
         scenario => return Err(Error::msg(format!("unknown scenario {scenario}"))),
     }
     println!("{}", json!({"url":server.public_url()}));
@@ -155,5 +161,29 @@ fn core(root: &Context, server: &kardia_core::Svc<Server>) -> kardia_core::Resul
         res.set_text("scoped");
         Ok(None)
     })?;
+    Ok(())
+}
+
+fn acl(server: &kardia_core::Svc<Server>) -> kardia_core::Result<()> {
+    use kardia_server::{WsExt, handler};
+    for (path, options, body) in [
+        ("/default", json!({}), "default"),
+        ("/public", json!({"allowedHosts":true}), "public"),
+        ("/local", json!({"allowedHosts":false}), "local"),
+        ("/list", json!({"allowedHosts":["partner.com"]}), "list"),
+        ("/fallthrough", json!({"allowedHosts":false}), "local"),
+        ("/fallthrough", json!({"allowedHosts":true}), "public"),
+    ] {
+        server.route(
+            "get",
+            path,
+            handler(move |_, res, _| async move {
+                res.set_body(body);
+                Ok(None)
+            }),
+            options.clone(),
+        )?;
+        server.ws(path, None, options)?;
+    }
     Ok(())
 }
