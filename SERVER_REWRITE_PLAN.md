@@ -15,9 +15,9 @@
 | P2 Server HTTP 核心与恢复监督 | HTTP 与恢复基础已推送，补充行为和 loader 集成待完成 | `b010642` / `4ac53b9`；50 HTTP 用例、4 故障用例及 18 双端对照通过，新代码原生 CI 待验收 |
 | P3 WebSocket 与 Echo | 阶段验收通过 | `d2a1bc3`；迁移、隔离、双端及三平台 CI 通过，最终集成见 P9 |
 | P4 ACL | 阶段验收通过 | `f907283`；15 个迁移用例、三种策略隔离、26 项双端场景及三平台 CI 通过 |
-| P5 Static 所需文件服务能力 | 实现已推送，原生 CI 待验收 | `98711c3`；6 项读流/挂载/隔离测试及 watch/include/hmr 回归通过 |
-| P6 Static | 实现已推送，原生 CI 待验收 | `f6e4e9e`；24 个迁移用例、流故障/三种恢复策略、完整 MIME 清单和共享配置对照通过 |
-| P7 Proxy 所需 HTTP 客户端能力 | 未开始 | — |
+| P5 Static 所需文件服务能力 | 阶段验收通过 | `98711c3`；6 项读流/挂载/隔离测试及 watch/include/hmr 回归通过 |
+| P6 Static | 阶段验收通过 | `f6e4e9e`；24 个迁移用例、流故障/三种恢复策略、完整 MIME 清单和共享配置对照通过 |
+| P7 Proxy 所需 HTTP 客户端能力 | 实现已推送，原生 CI 待验收 | `ac87dd9`；28 项客户端双端及三种恢复策略通过 |
 | P8 Proxy | 未开始 | — |
 | P9 集成、全量实机对照与故障验收 | 未开始 | — |
 | P10 正式文档、站点发布与计划删除 | 未开始 | — |
@@ -333,3 +333,11 @@
 - MIME 按固定 `file-type` 20.5.0 识别顺序生成简单规则，复杂容器使用 Rust 流读取；固定样本库 SHA `7fc6d9ff7cc01987aa73006757792a5ca198023a` 的 254 个文件加两个补充样本，通过真实双端 Static 覆盖全部 171 种 MIME。测试去除扩展名，比较状态、header 和完整 body 摘要；1,180 个扩展名映射从固定依赖生成，CI 检查生成结果。
 - picomatch-rs 0.1.0 经过 26 组配置、每组 15 个路径的共享对照；发现并修复上游默认 POSIX 选项对 `[!...]` 的差异。空文件重复轮询造成连接中断也已修复；错误页路径与普通路径的不同解析规则另有真实对照。
 - 本机 JS 全套 123 项通过，随后新增错误页解析对照单项通过（当前清单共 124 项）；Static Rust 26 项、相关 clippy、格式、架构、类型、生成检查及差异检查通过。Native FS 错误码已加入双端场景。新提交三平台 CI 待验收，尚未完成 HTTP 客户端、Proxy 和最终集成。
+
+### P5/P6 原生验收与 P7 HTTP 客户端
+
+- FS 修订 `931a8a9` 的 [CI #43700024799](https://github.com/licyk/kardia/actions/runs/43700024799) 全部成功。Static `f6e4e9e` 的 [CI #43700396222](https://github.com/licyk/kardia/actions/runs/43700396222) 第二次运行成功，JS CI 成功；首次运行全部三平台对照及 Linux/Windows Rust 成功，macOS 的既有 include rename watcher 测试超时，仅重跑失败任务后通过，未修改实现来掩盖该失败。
+- `ac87dd9fe8296f6e0cec6667233482befc04a64f` 已提交推送并核实远端 SHA。新增 `kardia-http` 原始 HTTP(S)/WS(S) 客户端、调用者效应归属、TLS 平台验证及附加根证书、流式 body、五种解压格式、重定向和配置拦截。保留原始压缩 header，由 Proxy 在转发时移除。
+- 本机客户端 7 项 Rust 测试、Server 67 项回归通过；客户端新增 28 项真实双端对照，包括 HTTPS/WSS 证书夹具、header、方法大小写、stream redirect、timeout 和子协议，完整 JS 对照共 152 项通过。类型、clippy、格式、架构与差异检查通过。
+- HTTP provider 三种恢复策略各三轮故障：依赖消费者重建、活动操作归零，独立插件持续正常响应。另验证未知证书/错误主机名拒绝、调用方释放和失败握手的清理。辅助服务不声明完整 decoder/file/data/SOCKS 生态；WS 不协商 permessage-deflate，文本/二进制应用语义已对照。
+- P7 原生 CI 待验收；继续 P8 Proxy，完成前不关闭最终集成。
