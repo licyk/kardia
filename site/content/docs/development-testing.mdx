@@ -82,3 +82,7 @@ bun run --cwd js test:e2e
 - bridge 新增 5 项：实际 Rust 提供者分别执行三轮 manual/retry/host 恢复，JS 消费者随服务撤销/重新暴露停止和启动；独立 Rust/JS 调用及定时进展不中断，不重启 bridge；另测 retry/host 的移除取消。
 
 既有部分单元测试使用假定时器；新增故障测试使用真实计时器和实现，E2E 使用真实子进程通信。原生 CI 不等于用户个人设备、浏览器或 Tauri webview 的独立实机验收。恢复策略与同线程隔离限制见[使用指南](/docs/guide-typescript#recovery)。
+
+本轮原生验收：[JS #43707771734](https://github.com/licyk/kardia/actions/runs/43707771734) 在提交 `3b67c40` 的六个任务全部通过（三平台各 155 项包测试、五包构建及 10 项 E2E）。[Rust CI #43707335399](https://github.com/licyk/kardia/actions/runs/43707335399) 在 `fd1a6e3` 的三平台任务通过；之后只修改 JS 监督、测试与文档，Rust 源码未变。[网站 #43707771760](https://github.com/licyk/kardia/actions/runs/43707771760) 完成类型检查、41 项测试、全量构建与发布。本轮没有升级版本或发布 npm/crates 包。
+
+原生验证曾发现 Windows 构建脚本手工拼接路径导致 LICENSE 复制失败，现已使用系统路径与可移植编译器启动方式。跨端夹具也修正了 Windows 退出请求未排空导致的 EPIPE，以及 macOS 将初次就绪前重试误计入故障观察的问题；故障期间不重连、独立进展和资源清理断言仍保留。被后续推送取消的中间运行不计为验收通过。
