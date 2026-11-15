@@ -13,7 +13,7 @@
 | P0 分析、规范与计划 | 已完成并推送 | `b1da534`；[站点 CI 通过](https://github.com/licyk/kardia/actions/runs/43693689368)；详细验证见第 11 节 |
 | P1 上游基准、对照框架与恢复契约 | 原生基准通过，WS 最小证明待完成 | `a3feda0` / `804782a`；三平台基准通过，HTTP 双端对照已接入 |
 | P2 Server HTTP 核心与恢复监督 | HTTP 与恢复基础已推送，补充行为和 loader 集成待完成 | `b010642` / `4ac53b9`；50 HTTP 用例、4 故障用例及 18 双端对照通过，新代码原生 CI 待验收 |
-| P3 WebSocket 与 Echo | 未开始 | — |
+| P3 WebSocket 与 Echo | 实现已推送，原生 CI 待验收 | `d2a1bc3`；7 个迁移 WS 用例、panic/三种策略隔离及双端消息对照通过 |
 | P4 ACL | 未开始 | — |
 | P5 Static 所需文件服务能力 | 未开始 | — |
 | P6 Static | 未开始 | — |
@@ -302,3 +302,11 @@
 - HTTP 双端对照扩大至 42 项，加原有 22 项上游补充基准共 64 项，本机全部通过；新增路径可选组/混合通配符/引号与 Unicode 参数/正则前瞻、表单文件、协商和错误 JSON 场景。保留逐字节对照并修复 JSON 字段顺序、Blob MIME 小写差异。
 - Rust 当前为 50 个 HTTP、5 个隔离、3 个流测试通过；类型检查、clippy、格式、架构和差异检查通过。路径编译依赖的实际锁定版本为 path-to-regexp **8.4.2**，已修正代码注释与 NOTICE 的错误版本标注。
 - 较早 HTTP 提交的 CI 被后续实现提交取消，不能作为成功证据；最终原生验收继续跟踪较新实现。P2 的完整监听故障矩阵与集成验收仍需收尾，随后继续 WS/Echo。
+- `5a4615a` 的 [CI #43696501141](https://github.com/licyk/kardia/actions/runs/43696501141) 已成功完成：三平台 Rust、上游原始 105 项、补充基准和 HTTP 双端对照全部通过；同提交 JS CI 也通过。
+
+### P3 WebSocket 与 Echo
+
+- `d2a1bc3` 已提交推送并核实远端 SHA。加入延迟 accept、upgrade 钩子、路由级连接归属和释放，新增 `kardia-server-echo` 的流式 POST 与 WS 文本/二进制回显。使用 tokio-tungstenite 0.30，协议帧由库处理；保留默认 100 MiB 上限和首个子协议选择。
+- 本机 7 个原始 WS 对应用例全部通过；新增接收前/后 panic 隔离及 Echo 三种策略、各三轮故障测试通过。测试期间健康 HTTP 路由及同一健康 WS 连接持续交换数据，恢复后路由数量回归，释放后连接清理。
+- 本机 Server 共 67 项 Rust 测试通过；69 项 JS 网络测试通过（22 上游补充基准、42 HTTP 双端、5 WS/Echo 双端）；WS 对比消息类型、字节、子协议、关闭码和原因。格式、相关 clippy、架构、类型及差异检查通过。
+- 此提交原生 CI 待验收；P9 继续补完整集成矩阵。尚未完成 ACL、Static、HTTP 客户端及 Proxy，计划保留。
