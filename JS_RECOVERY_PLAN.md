@@ -35,3 +35,8 @@
 - 首轮 E2E 仅状态事件断言有误：bridge 初始状态即 connecting，不重复发 connecting 事件。按现有实现修正为只有 connected，未修改生产 bridge 行为。
 - 全量 JS 14 文件、154 项测试及五包构建通过；真实 E2E 10 项通过。Rust bridge 11 项测试、clippy 和 arch 通过。
 - 现有 JS workflow 扩为 Linux/Windows/macOS 的包检查与 E2E，固定 Node 24；core Rust 变更亦触发跨端回归。独立 Server reference 工作流仍仅手动触发。等待推送后原生 CI。
+
+### 原生 CI 修正
+
+- JS #43707223999：Linux/macOS 包检查通过；Windows 154 项测试全部通过，但既有 `build.ts` 的手工斜杠拼接在 Bun Windows 复制 LICENSE 时产生 ENOENT。
+- 改用 `node:path.join`，由当前 JS 运行时启动实际 TypeScript CLI，避免依赖平台专属 `.bin` 启动包装；本地类型检查与五包构建通过。后续 CI 继续验证真实 Windows 构建。
