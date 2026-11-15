@@ -107,6 +107,18 @@ describe("instance failure and recovery", () => {
     expect(loads).toBe(1);
   });
 
+  it("a failed restart keeps supervision active for the new revision", async () => {
+    const { root } = setup();
+    let loads = 0;
+    const fiber = root.plugin(() => { if (++loads === 1) throw new Error("once"); });
+    fiber.setRecovery({ type: "retry", delay: 15 });
+    await expect(fiber.settled()).rejects.toThrow("once");
+    await expect(fiber.restart()).rejects.toThrow("once");
+    expect(loads).toBe(1);
+    await until(() => fiber.state === "active");
+    expect(loads).toBe(2);
+  });
+
   for (const mode of ["retry", "host"] as const) {
     it(`${mode} does not retry invalid configuration`, async () => {
       const { root } = setup();

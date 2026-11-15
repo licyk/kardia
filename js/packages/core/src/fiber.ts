@@ -136,6 +136,7 @@ export class Fiber {
       st.assertActive(this.id);
       st.fiber(this.id)!.revision++;
       refresh(st, this.id);
+      if (st.fiber(this.id)!.error) st.actions.push({ type: "recovery", fiber: this.id });
     });
     return handled(this.settled());
   }
