@@ -47,7 +47,10 @@ async fn serve(
     server: Arc<Server>,
     mut request: hyper::Request<Incoming>,
 ) -> std::io::Result<hyper::Response<WireBody>> {
-    let websocket = request.headers().get("upgrade").is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"websocket"));
+    let websocket = request.headers().contains_key("upgrade")
+        && request.headers().get("connection").is_some_and(|v| {
+            v.as_bytes().split(|b| *b == b',').any(|token| token.trim_ascii().eq_ignore_ascii_case(b"upgrade"))
+        });
     let upgrade = websocket.then(|| hyper::upgrade::on(&mut request));
     let (parts, body) = request.into_parts();
     let req = Request::new(
@@ -61,38 +64,7 @@ async fn serve(
         *handshake.method_mut() = parts.method.clone();
         *handshake.uri_mut() = parts.uri;
         *handshake.headers_mut() = parts.headers;
-        if handshake.headers().get("sec-websocket-version").is_some_and(|v| v == "8") {
-            handshake.headers_mut().insert("sec-websocket-version", http::HeaderValue::from_static("13"));
-        }
-        let res = match tokio_tungstenite::tungstenite::handshake::server::create_response(&handshake) {
-            Ok(handshake) => {
-                let res = crate::Response::new();
-                res.set_status(handshake.status());
-                for (name, value) in handshake.headers() {
-                    res.append_header(name.clone(), value.clone());
-                }
-                if let Some(protocol) = req
-                    .headers
-                    .get("sec-websocket-protocol")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.split(',').next())
-                {
-                    if let Ok(protocol) = http::HeaderValue::from_str(protocol.trim()) {
-                        res.set_header(http::HeaderName::from_static("sec-websocket-protocol"), protocol);
-                    }
-                }
-                res
-            }
-            Err(_) => {
-                let res = crate::Response::new();
-                res.set_status(if parts.method == http::Method::GET {
-                    http::StatusCode::BAD_REQUEST
-                } else {
-                    http::StatusCode::METHOD_NOT_ALLOWED
-                });
-                res
-            }
-        };
+        let res = crate::handshake::response(handshake);
         server
             .upgrade(req, upgrade, res)
             .await

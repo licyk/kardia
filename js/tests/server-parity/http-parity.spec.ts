@@ -1,4 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createRequire } from "node:module";
+import { join } from "node:path";
+import { upstream } from "./upstream.ts";
 import { startHost } from "./host.ts";
 
 describe("Cordis and Rust HTTP socket parity", () => {
@@ -51,5 +54,22 @@ describe("Cordis and Rust HTTP socket parity", () => {
   it("handles malformed JSON as an unclaimed server error", async () => {
     const outputs = await Promise.all(hosts.map(async (host) => { const res = await fetch(host.url + "/json", { method: "POST", body: "{" }); return [res.status, await res.text()]; }));
     expect(outputs[1]).toEqual(outputs[0]);
+  });
+  it.each(['g','y','gy','i','iu'])('ECMAScript regexp flags %s',async flags=>{
+    const path=flags.includes('i')?'/fold/'+flags+'/K':'/state/'+flags+'/123';
+    const results=[];
+    for(const host of hosts){const output=[];for(let i=0;i<6;i++){const res=await fetch(host.url+path);output.push([res.status,await res.text()]);}results.push(output);}
+    expect(results[1]).toEqual(results[0]);
+  });
+  it('negotiates every fixed upstream MIME extension',async()=>{
+    const mime=createRequire(join(upstream,'package.json'))('mime-types');
+    const entries=Object.entries(mime.types) as [string,string][];
+    for(let offset=0;offset<entries.length;offset+=20){await Promise.all(entries.slice(offset,offset+20).map(async([extension,type])=>{
+      const results=await Promise.all(hosts.map(async host=>(await fetch(host.url+'/accept?type='+encodeURIComponent(extension),{headers:{accept:type}})).json()));
+      expect(results[1],extension).toEqual(results[0]);
+    }));}
+  });
+  it.each(['[1.0,-0.0,1e-7,1e21,9007199254740993,1e400]','{"2":"b","1":"a","x":1}'])('JSON number and property encoding %s',async body=>{
+    const results=await Promise.all(hosts.map(async host=>{const response=await fetch(host.url+'/json',{method:'POST',body});return [response.status,await response.text()];}));expect(results[1]).toEqual(results[0]);
   });
 });

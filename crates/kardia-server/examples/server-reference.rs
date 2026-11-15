@@ -112,6 +112,21 @@ fn core(root: &Context, server: &kardia_core::Svc<Server>) -> kardia_core::Resul
         })),
         json!({}),
     )?;
+    for flags in ["g", "y", "gy"] {
+        server.get(
+            kardia_server::Path::regex(&format!("^/state/{flags}/(\\d+)"), flags)?,
+            |req, res, _| async move {
+                res.set_json(&req.params)?;
+                Ok(None)
+            },
+        )?;
+    }
+    for flags in ["i", "iu"] {
+        server.get(kardia_server::Path::regex(&format!("^/fold/{flags}/(K)$"), flags)?, |req, res, _| async move {
+            res.set_json(&req.params)?;
+            Ok(None)
+        })?;
+    }
     server.get("/hello", |_, res, _| async move {
         res.set_text("world");
         Ok(None)

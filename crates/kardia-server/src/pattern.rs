@@ -1,4 +1,5 @@
-use std::sync::LazyLock;
+use parking_lot::Mutex;
+use std::sync::{Arc, LazyLock};
 
 use kardia_core::{Error, Result};
 use regress::Regex;
@@ -7,12 +8,33 @@ use serde_json::{Map, Value};
 #[derive(Clone)]
 pub enum Path {
     String(String),
-    Regex(Regex),
+    Regex(Arc<RegexPath>),
 }
 
+pub struct RegexPath {
+    expression: Regex,
+    stateful: bool,
+    sticky: bool,
+    last_index: Mutex<usize>,
+}
 impl Path {
     pub fn regex(source: &str, flags: &str) -> Result<Self> {
-        Ok(Self::Regex(Regex::with_flags(source, flags)?))
+        let mut seen = String::new();
+        for flag in flags.chars() {
+            if !"dgimsuvy".contains(flag) || seen.contains(flag) {
+                return Err(Error::msg("invalid regular expression flags"));
+            }
+            seen.push(flag);
+        }
+        if flags.contains('u') && flags.contains('v') {
+            return Err(Error::msg("incompatible regular expression flags"));
+        }
+        Ok(Self::Regex(Arc::new(RegexPath {
+            expression: Regex::with_flags(source, flags)?,
+            stateful: flags.contains('g') || flags.contains('y'),
+            sticky: flags.contains('y'),
+            last_index: Mutex::new(0),
+        })))
     }
 }
 impl From<&str> for Path {
@@ -29,32 +51,47 @@ impl From<String> for Path {
 pub(crate) struct Pattern {
     regex: Regex,
     keys: Option<Vec<String>>,
+    state: Option<Arc<RegexPath>>,
 }
 
 impl Pattern {
     pub fn new(path: &Path) -> Result<Self> {
         let Path::String(path) = path else {
             let Path::Regex(regex) = path else { unreachable!() };
-            return Ok(Self { regex: regex.clone(), keys: None });
+            return Ok(Self { regex: regex.expression.clone(), keys: None, state: Some(regex.clone()) });
         };
         let tokens = parse(&mut path.chars().peekable(), false)?;
         let mut keys = Vec::new();
         let sources = flatten(&tokens)?.iter().map(|tokens| source(tokens, &mut keys)).collect::<Result<Vec<_>>>()?;
         let regex = Regex::with_flags(&format!("^(?:{})(?:/$)?$", sources.join("|")), "i")?;
-        Ok(Self { regex, keys: Some(keys) })
+        Ok(Self { regex, keys: Some(keys), state: None })
     }
 
     pub fn check(&self, path: &str) -> Result<Option<Value>> {
-        let Some(capture) = self.regex.find(path) else { return Ok(None) };
+        let text: Vec<u16> = path.encode_utf16().collect();
+        let mut last_index = self.state.as_ref().map(|state| state.last_index.lock());
+        let start =
+            if self.state.as_ref().is_some_and(|state| state.stateful) { **last_index.as_ref().unwrap() } else { 0 };
+        let capture =
+            self.regex.find_from_utf16(&text, start).next().filter(|capture| {
+                !self.state.as_ref().is_some_and(|state| state.sticky) || capture.range().start == start
+            });
+        if self.state.as_ref().is_some_and(|state| state.stateful) {
+            **last_index.as_mut().unwrap() = capture.as_ref().map_or(0, |capture| capture.range().end);
+        }
+        let Some(capture) = capture else { return Ok(None) };
         let Some(keys) = &self.keys else {
             return Ok(Some(Value::Array(
-                capture.groups().map(|range| range.map_or(Value::Null, |r| Value::String(path[r].into()))).collect(),
+                capture
+                    .groups()
+                    .map(|range| range.map_or(Value::Null, |r| Value::String(String::from_utf16_lossy(&text[r]))))
+                    .collect(),
             )));
         };
         let mut params = Map::new();
         for (index, name) in keys.iter().enumerate() {
             if let Some(range) = capture.group(index + 1) {
-                let raw = path[range].replace('+', " ");
+                let raw = String::from_utf16_lossy(&text[range]).replace('+', " ");
                 let bytes = raw.as_bytes();
                 for (i, byte) in bytes.iter().enumerate() {
                     if *byte == b'%'

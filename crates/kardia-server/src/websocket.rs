@@ -148,11 +148,31 @@ impl WsExt for Svc<Server> {
     fn on_upgrade(&self, hook: UpgradeHook) -> Result<EffectHandle> {
         let server = self.arc().clone();
         let id = self.next_id();
+        let calls = crate::ownership::Calls::new();
+        let owner = calls.clone();
+        let hook: UpgradeHook = Arc::new(move |req, next| {
+            let calls = owner.clone();
+            let hook = hook.clone();
+            async move {
+                let owner = calls.clone();
+                calls
+                    .run(async move {
+                        let result = hook(req, next).await?;
+                        if let Some(response) = &result {
+                            owner.response(response)?;
+                        }
+                        Ok(result)
+                    })
+                    .await
+            }
+            .boxed()
+        });
         self.caller().effect_sync("server upgrade hook", |scope| {
             server.upgrades.lock().push((id, hook));
-            scope.defer_fn(move || {
+            scope.defer(Disposer::future(move || {
                 server.upgrades.lock().retain(|(key, _)| *key != id);
-            });
+                calls.close()
+            }));
             Ok(())
         })
     }

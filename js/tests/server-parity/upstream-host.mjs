@@ -76,6 +76,8 @@ if (scenario === 'client') {
     await ctx.use(await load('server/echo'));
   }
 } else {
+  for (const flags of ['g','y','gy']) ctx.server.get(new RegExp('^/state/'+flags+'/(\\d+)',flags), (req,res)=>res.json([...req.params]));
+  for (const flags of ['i','iu']) ctx.server.get(new RegExp('^/fold/'+flags+'/(K)$',flags), (req,res)=>res.json([...req.params]));
   ctx.server.get('/hello', async (_, res) => { res.text('world'); });
   ctx.server.get('/params/:name', async (req, res) => { res.text(req.params.name); });
   ctx.server.get('/query', async (req, res) => { res.json([...req.query]); });

@@ -133,3 +133,39 @@ async fn disposed_middleware_and_hooks_drop_their_pending_calls() {
         root.fiber().dispose().await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn disposing_an_upgrade_hook_cancels_its_pending_handshake() {
+    use kardia_server::WsExt;
+    let root = Context::new();
+    root.plugin::<ServerPlugin>(ServerConfig::local(0)).unwrap().settled().await.unwrap();
+    let server = root.get::<Server>().unwrap();
+    server.ws("/", None, serde_json::json!({})).unwrap();
+    let active = Arc::new(AtomicUsize::new(0));
+    let counter = active.clone();
+    let hook = server
+        .on_upgrade(Arc::new(move |_, _| {
+            let guard = Guard::new(&counter);
+            Box::pin(async move {
+                let _guard = guard;
+                futures::future::pending().await
+            })
+        }))
+        .unwrap();
+    let url = server.public_url().replace("http:", "ws:");
+    let request_url = url.clone();
+    let connect = tokio::spawn(async move { tokio_tungstenite::connect_async(request_url).await });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while active.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    hook.dispose().await.unwrap();
+    assert_eq!(active.load(Ordering::SeqCst), 0);
+    assert!(connect.await.unwrap().is_err());
+    let (mut ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+    ws.close(None).await.unwrap();
+    root.fiber().dispose().await.unwrap();
+}

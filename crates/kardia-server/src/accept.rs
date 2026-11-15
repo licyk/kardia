@@ -26,7 +26,7 @@ impl Request {
             let mime = if candidate.contains('/') {
                 (*candidate).to_owned()
             } else {
-                let Some(mime) = mime_guess::from_ext(candidate).first_raw() else { continue };
+                let Some(mime) = crate::mime::lookup(candidate) else { continue };
                 mime.to_owned()
             };
             let Some(media) = parse(&mime, index) else { continue };

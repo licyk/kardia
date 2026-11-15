@@ -85,7 +85,7 @@ impl Response {
     }
     pub fn set_json(&self, value: &impl Serialize) -> Result<()> {
         self.content_type("application/json");
-        self.set_body(serde_json::to_string(value)?);
+        self.set_body(crate::json::stringify(value)?);
         Ok(())
     }
     pub async fn bytes(&self) -> Result<Bytes> {
