@@ -354,6 +354,7 @@ bun run build
 **仓库任务**通过 `cargo xtask <command>` 执行：
 
 - **`arch`：** 检查模块结构。
+- **`publish-check`：** 离线检查本地 workspace crate 的发布依赖环，报告循环路径及对应 manifest 声明；发布前可手动运行。
 - **`version <patch|minor|major>`：** 更新工作区版本号及其所有引用。
 - **`tag [--push]`：** 创建（并推送）发布标签 `v<version>`。
 - **`js-version <patch|minor|major>`** 与 **`js-tag [--push]`：** 对 npm 包执行同样的操作；npm 包有自己的版本和 `js-v<version>` 标签。

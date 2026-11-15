@@ -3,6 +3,7 @@
 mod arch;
 mod git;
 mod js;
+mod publish_check;
 mod tag;
 mod version;
 
@@ -14,6 +15,7 @@ Usage: cargo xtask <command>
 
 Commands:
   arch                                 Check that lib.rs and mod.rs files only declare and re-export modules
+  publish-check                        Check workspace publishing dependencies for cycles (offline)
   version <patch|minor|major>          Bump the workspace version everywhere it is named
           [--dry-run]
   tag [--version X.Y.Z | --name NAME]  Create an annotated tag on HEAD (default: v<workspace version>)
@@ -37,6 +39,8 @@ fn run(root: &Path, args: &[String]) -> Result<(), String> {
     let (command, rest) = args.split_first().ok_or_else(|| USAGE.to_string())?;
     match command.as_str() {
         "arch" => arch::run(root),
+        "publish-check" if rest.is_empty() => publish_check::run(root),
+        "publish-check" => Err("usage: cargo xtask publish-check".into()),
         "version" => version::run(root, &version::Options::parse(rest)?),
         "tag" => tag::run(root, &tag::Options::parse(rest)?, &tag::Release::crates(root)?),
         "js-version" => js::run(root, &version::Options::parse(rest)?),

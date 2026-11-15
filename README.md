@@ -347,6 +347,7 @@ bun run build
 
 **Repository tasks** run as `cargo xtask <command>`:
 - **`arch`:** checks the module structure.
+- **`publish-check`:** checks publishing dependency cycles between local workspace crates, offline; reports the cycle and manifest declarations. Run it locally before releasing.
 - **`version <patch|minor|major>`:** bumps the workspace version everywhere it appears.
 - **`tag [--push]`:** creates (and pushes) the release tag `v<version>`.
 - **`js-version <patch|minor|major>`** and **`js-tag [--push]`:** the same for the npm packages, which have a version of their own and `js-v<version>` tags.

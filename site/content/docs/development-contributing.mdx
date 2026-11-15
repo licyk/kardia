@@ -61,10 +61,13 @@ bun run build       # 按依赖顺序生成每个包的 lib/（scripts/build.ts�
 | 命令 | 作用 |
 |---|---|
 | `cargo xtask arch` | 检查模块结构：每个 `lib.rs` 和 `mod.rs`（位于 `crates/*/src`、`crates/*/tests` 和 `xtask/src`）只声明模块、重新导出，并承载文档和属性。实现代码（函数、类型、trait、`impl` 块、常量、静态变量、`macro_rules!`、内联测试模块）放在各自的文件里，再由入口文件重新导出。只做重新导出的内联模块（如 `kardia::prelude`）以及 Rust 要求放在 crate 根部的过程宏入口函数是允许的。它会列出每处违规的文件、行号和种类，只要有违规就失败。CI 会运行它。 |
+| `cargo xtask publish-check` | 离线检查可发布 workspace crate 之间的本地路径依赖环。包含普通/构建依赖，以及声明版本（包括 workspace 继承）的开发依赖；忽略无版本的纯路径开发依赖。发现循环时返回非零，输出第一条循环路径、manifest 文件、依赖键、平台条件及 optional 标记。 |
 | `cargo xtask version <patch\|minor\|major> [--dry-run]` | 递增工作区版本（`0.1.3` → `0.1.4` / `0.2.0` / `1.0.0`），更新 `[workspace.package]`、`[workspace.dependencies]` 中的 `kardia-*` 条目以及 `Cargo.lock`。当用户填写的版本要求发生变化时（1.0 之前的 minor 或 major 递增、1.0 之后的 major 递增），还会更新 README 和本文档中的 `kardia = "0.x"` 依赖片段。它不会提交。 |
 | `cargo xtask tag [--version X.Y.Z \| --name NAME] [--message TEXT] [--push] [--remote NAME] [--dry-run]` | 在 `HEAD` 上创建一个附注标签：默认是 `v<工作区版本>`。`--version` 必须等于工作区版本（`v*` 标签会发布它），`--name` 用来创建其他任意标签。工作区有未提交的修改，或标签已经存在（在本地，或使用 `--push` 时在远端）时，它会拒绝执行。`--push` 会推送标签（到 `origin`，或 `--remote` 指定的远端）。 |
 | `cargo xtask js-version <patch\|minor\|major> [--dry-run]` | 递增 npm 包的版本，这些包共用一个独立的版本：更新每个 `js/packages/*/package.json` 中的 `version`，在版本要求变化时更新它们互相引用的 `^` 范围，并更新 `js/bun.lock`（`bun install`）。各包版本不一致时它会拒绝执行。它不会提交。 |
 | `cargo xtask js-tag [与 tag 相同的选项]` | 与 `tag` 相同，用于 npm 包：默认是 `js-v<版本>`，它会启动 npm 发布。 |
+
+`publish-check` 内部执行 `cargo metadata --no-deps --offline --locked`，再读取原始 TOML 声明。显式 `version = "*"` 的开发依赖仍进入发布图，无版本声明的开发依赖不会。平台条件与可选依赖即使未在当前主机启用也会纳入检查。此命令手动在本地运行，不修改 manifest/锁文件、不打包、不编译业务代码、不查询 registry，也不自动接入发布或打标签流程。它只检查 workspace 发布依赖环，不检查外部 registry 依赖，也不替代所有打包校验。
 
 ## CI [#ci]
 
