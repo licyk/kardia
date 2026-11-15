@@ -1,0 +1,24 @@
+[package]
+name = "kardia-server-proxy"
+description = "Lifecycle-owned HTTP and WebSocket reverse proxy for kardia"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+kardia-core.workspace = true
+kardia-server.workspace = true
+kardia-http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+futures.workspace = true
+reqwest = { version = "0.13.5", default-features = false, features = ["stream"] }
+tokio-tungstenite = "0.30"
+
+[lints]
+workspace = true

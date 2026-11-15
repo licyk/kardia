@@ -46,6 +46,38 @@ async fn main() -> kardia_core::Result<()> {
                 Ok(None)
             })?;
         }
+        "proxy" => {
+            let target = Context::new();
+            target.plugin::<ServerPlugin>(ServerConfig::local(0))?.settled().await?;
+            target.plugin::<kardia_server_echo::EchoPlugin>(json!({}))?.settled().await?;
+            let url = std::env::var("KARDIA_PROXY_TARGET").unwrap_or(target.get::<Server>()?.public_url());
+            root.defer(
+                "proxy fixture",
+                kardia_core::Disposer::future(move || async move {
+                    let _ = target.fiber().dispose().await;
+                }),
+            )?;
+            root.plugin::<kardia_http::HttpPlugin>(Default::default())?.settled().await?;
+            let context = root.clone();
+            server.get("/__proxy_url", move |_, res, _| {
+                let ctx = context.clone();
+                async move {
+                    let base = ctx.get::<Server>()?.public_url();
+                    let plain = ctx.get::<kardia_server_proxy::ServerProxy>()?.public_url()?.replace(&base, "$BASE");
+                    let intercepted = ctx
+                        .intercept("server", json!({"path":"/caller"}))
+                        .get::<kardia_server_proxy::ServerProxy>()?
+                        .public_url()?
+                        .replace(&base, "$BASE");
+                    res.set_json(&json!({"root":plain,"intercepted":intercepted}))?;
+                    Ok(None)
+                }
+            })?;
+            root.intercept("server", json!({"path":std::env::var("KARDIA_PROXY_PATH").unwrap_or_default()}))
+                .plugin::<kardia_server_proxy::ProxyPlugin>(kardia_server_proxy::ProxyConfig { target: url })?
+                .settled()
+                .await?;
+        }
         "echo" => {
             root.plugin::<kardia_server_echo::EchoPlugin>(json!({}))?.settled().await?;
         }

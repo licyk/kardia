@@ -70,7 +70,8 @@ if (scenario === 'client') {
     await target.use(Server, { port: 0 });
     await target.use(await load('server/echo'));
     await ctx.use(Http);
-    await ctx.use(Proxy, { target: target.server.publicUrl });
+    ctx.server.get('/__proxy_url', (_, res) => { res.json({ root: ctx.server.proxy.publicUrl.replace(ctx.server.publicUrl, '$BASE'), intercepted: ctx.intercept('server', { path: '/caller' }).server.proxy.publicUrl.replace(ctx.server.publicUrl, '$BASE') }); });
+    await ctx.intercept('server', { path: process.env.KARDIA_PROXY_PATH ?? '' }).use(Proxy, { target: process.env.KARDIA_PROXY_TARGET ?? target.server.publicUrl });
   } else {
     await ctx.use(await load('server/echo'));
   }

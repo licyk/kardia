@@ -1434,6 +1434,7 @@ dependencies = [
  "kardia-loader",
  "kardia-server-acl",
  "kardia-server-echo",
+ "kardia-server-proxy",
  "kardia-server-static",
  "mime_guess",
  "multer",
@@ -1471,6 +1472,21 @@ dependencies = [
  "kardia-core",
  "kardia-server",
  "serde_json",
+]
+
+[[package]]
+name = "kardia-server-proxy"
+version = "0.2.3"
+dependencies = [
+ "futures",
+ "kardia-core",
+ "kardia-http",
+ "kardia-server",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]

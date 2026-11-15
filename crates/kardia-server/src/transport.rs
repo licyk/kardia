@@ -114,8 +114,14 @@ async fn serve(
     let mut response = hyper::Response::new(StreamBody::new(stream).boxed_unsync());
     *response.status_mut() = data.status;
     *response.headers_mut() = data.headers;
-    if let Some(text) = data.status_text {
-        response.extensions_mut().insert(text);
-    }
+    let reason = data.status_text.unwrap_or_else(|| {
+        let text = match data.status.as_u16() {
+            418 => "I'm a Teapot",
+            509 => "Bandwidth Limit Exceeded",
+            _ => data.status.canonical_reason().unwrap_or("unknown"),
+        };
+        hyper::ext::ReasonPhrase::from_static(text.as_bytes())
+    });
+    response.extensions_mut().insert(reason);
     Ok(response)
 }

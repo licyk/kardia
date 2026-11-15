@@ -28,6 +28,7 @@ mime_guess = "2"
 tokio-tungstenite = "0.30"
 
 [dev-dependencies]
+kardia-server-proxy.workspace = true
 kardia-loader.workspace = true
 kardia-server-echo.workspace = true
 kardia-server-acl.workspace = true
