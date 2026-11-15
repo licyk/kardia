@@ -1,0 +1,118 @@
+---
+title: "HTTP and WebSocket services"
+description: "Use Server, ACL, Echo, Static and Proxy together, with configurable failure recovery."
+icon: Server
+---
+
+The Server family provides HTTP/1 and WebSocket routing, access control, echo, static files and reverse proxying. Each plugin owns its routes, connections, streams and tasks. Replacing a provider rebuilds its consumers while unrelated plugins keep running.
+
+These features are on the source main branch; this work did not publish a new crates.io release. Use source containing the [Server acceptance commit](https://github.com/licyk/kardia/commit/eee256a7ca64802170ed8007b88b9960196f67d7). An older binary installed with `cargo install kardia` need not contain them.
+
+## Run the complete example [#example]
+
+From the repository root:
+
+```sh
+cargo run -p kardia -- examples/server.yml
+curl -X POST --data 'hello' http://127.0.0.1:5140/echo
+curl http://127.0.0.1:5140/static/
+curl -X POST --data 'proxied' http://127.0.0.1:5140/proxy/echo
+```
+
+WebSocket clients can connect to `ws://127.0.0.1:5140/echo` or `/proxy/echo` and send text or binary messages. The example ACL accepts loopback Host values only. The CLI starts `fs` and `fs:local`. Static resolves relative paths against the working directory's file URL, so run this example from the repository root.
+
+The [complete configuration](https://github.com/licyk/kardia/blob/main/examples/server.yml) runs all five packages. A minimal Echo configuration is:
+
+```yaml
+- id: server
+  name: server
+  config:
+    host: 127.0.0.1
+    port: 5140
+- id: echo
+  name: server:echo
+  intercept:
+    server:
+      path: /echo
+```
+
+| Plugin | Configuration | Dependencies |
+|---|---|---|
+| `server` | Required `port`; host defaults to `127.0.0.1` | None |
+| `server:acl` | `allowedHosts: false` or a domain list | `server` |
+| `server:echo` | Mount with `intercept.server.path` | `server` |
+| `server:static` | Required `root`; index, exclude, errorPages | `server`, `fs` |
+| `server:proxy` | Required `target`; normally enable `http` too | `server`, `http` |
+| `http` | baseUrl, headers, timeout, rootCertificates | None |
+| `fs:local` | Mounts the read-only `file:` provider | `fs` |
+
+The catalog also accepts the actual upstream names: `@cordisjs/server`, `@cordisjs/server-acl`, `@cordisjs/server-echo`, `@cordisjs/server-static`, `@cordisjs/server-proxy`, `@cordisjs/http`, `@cordisjs/fs` and `@cordisjs/fs-node`.
+
+## Register routes in a Rust plugin [#rust]
+
+Declare `Inject::new().with("server")`, then access the service through the plugin's own `Context` in `apply`:
+
+```rust
+use kardia::server::{Server, ServerExt, WsExt, ws_handler};
+
+let server = ctx.get::<Server>()?;
+server.get("/hello/:name", |req, res, _| async move {
+    res.set_json(&kardia::json!({"hello": req.params["name"]}))?;
+    Ok(None)
+})?;
+server.ws("/ws", Some(ws_handler(|_, accept| async move {
+    let socket = accept.accept().await?;
+    while let Some(message) = socket.recv().await {
+        let message = message?;
+        if message.is_close() { break; }
+        socket.send(message)?;
+    }
+    Ok(())
+})), kardia::json!({}))?;
+```
+
+Return `Ok(None)` to use the supplied response, `Ok(Some(response))` to propagate a returned response, or `next.await` to continue. A request body can be consumed once. Response readers and the sending branch are separate, so inspecting a response does not consume its outgoing body. Use `Body::stream` to forward data without collecting it first.
+
+Dispose a returned `Route` / `WsRoute` to unregister it individually; plugin disposal also releases them. Pending HTTP callbacks and response sources are cancelled and awaited, and a WS route closes its connections. User callbacks and asynchronous cleanup run outside runtime locks.
+
+## Choose recovery behavior [#recovery]
+
+The default is to remain failed until explicitly handled. Put `recovery` on the entry, beside the plugin's `config`:
+
+```yaml
+recovery:
+  mode: manual
+```
+
+```yaml
+recovery:
+  mode: retry
+  delayMs: 1000
+```
+
+```yaml
+recovery:
+  mode: host
+  handler: network-failure
+```
+
+Host mode requires an embedding host to register that name using `Loader::register_recovery_handler`. The standard CLI does not define the callback automatically; an unknown handler name is an error.
+
+When embedding directly, configure the plugin's `Fiber`:
+
+```rust
+use std::time::Duration;
+use kardia::{RecoveryAction, RecoveryPolicy};
+
+fiber.set_recovery(RecoveryPolicy::Retry {
+    delay: Duration::from_secs(1),
+})?;
+fiber.set_recovery(RecoveryPolicy::host(|failure| async move {
+    failure.fiber.context().logger().log_error(&failure.error);
+    Ok(RecoveryAction::KeepFailed)
+}))?;
+```
+
+Automatic supervision outlives the failed instance, waits for cleanup, and retries at a bounded rate. In manual mode, use `fiber.update(config)` to recover explicitly; `restart()` does not clear failure. Host handlers can keep the instance failed or return `RetryAfter`; handler errors and unwind panics are contained too. Disabling, removing, disposing or changing policy cancels the previous recovery action. Recovery does not write configuration back automatically.
+
+Every policy must keep unrelated plugins operational. An ordinary request error stays local to that request; an instance failure withdraws its services and affects their consumers. Unwind containment cannot isolate a process-wide native crash: use the existing process or WASM guest boundary when required. See [architecture and acceptance](/docs/development-server) and the [behavior reference](/docs/reference-server).

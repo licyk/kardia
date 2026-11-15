@@ -118,7 +118,7 @@ pub struct CommittedView { entries: SmallVec<[(Key, ImplId); 4]> }
 
 <Mermaid chart={"stateDiagram-v2\n  [*] --> Pending\n  Pending --> Loading: 目标变为一个纪元\n  Loading --> Active: apply 完成，目标未变\n  Loading --> Unloading: 目标改变或 apply 失败\n  Active --> Unloading: 目标改变\n  Unloading --> Loading: 目标再次成为纪元\n  Unloading --> Pending: 目标为非活跃\n  Unloading --> Failed: 加载失败\n  Unloading --> Disposed: 纤程被移除\n  Failed --> Loading: update / replace，且依赖就绪\n  Failed --> Pending: update / replace，等待依赖\n  Disposed --> [*]"} />
 
-`FiberState` 即论文中的 θ。处于 `Failed` 的纤程通过 `update` 或注册表中的 `replace` 清除错误，再按依赖是否就绪重新加载或等待；`restart` 和依赖刷新都保持其失败状态。当前状态机不会自行重试。项目要求使用者可配置自动重试、保持失败等待手动处理或宿主自定义处理；选择自动重试时才由失败实例之外的监督逻辑驱动。所有策略均须保证无关插件正常运行，见[强制故障隔离与可配置恢复规范](/docs/development-contributing#failure-isolation)。
+`Fiber::set_recovery` 已支持 `Manual`（默认）、限频 `Retry` 和 `Host` 处理；监督位于失败实例之外，等待清理，并随释放或策略切换取消。loader 条目通过 `recovery` 提供相同选择，见[配置与示例](/docs/guide-server#recovery)及[原生故障证据](/docs/development-server#isolation)。`restart()` 仍不清除失败，手动处理使用 `update`，选择监督策略后由监督逻辑驱动恢复操作。每种策略都必须保持无关插件正常运行。
 
 <Callout type="info">
 在代码中（`state.rs` 和 `fiber.rs`），`FiberState` 和 `Target` 与草图一致，只是 `Target::Epoch::providers` 是 `Vec<ImplId>`（工作区不使用 `smallvec`）。`FiberData` 有所不同：

@@ -1,0 +1,87 @@
+---
+title: "Server behavior reference"
+description: "HTTP, WS, ACL, Static, Proxy and auxiliary-service contracts at the fixed Cordis baseline."
+icon: Server
+---
+
+This reference targets [Cordis f6290dbb](https://github.com/cordiverse/cordis/tree/f6290dbbf1558cb3a870a58b1f97bacc0d3a9960/packages/server): core 1.7.0, ACL 1.0.1, Echo 1.1.1, Static 1.2.1 and Proxy 1.2.1. Expectations do not follow a floating main branch or npm version.
+
+## Core API [#core]
+
+`kardia::server` exports `ServerPlugin`, `ServerConfig`, `Server`, `ServerExt`, `Request`, `Response`, `Body`, `Path`, `WsExt` and related types. Its service key is `server`.
+
+| Setting | Behavior |
+|---|---|
+| `host` | Defaults to `127.0.0.1` |
+| `port` | Required; `0` lets the system allocate a port |
+| `maxPort` | Defaults to the starting port; only address-in-use/permission errors advance the port |
+| `publicUrl` | Removes trailing slashes, then appends the caller's `intercept.server.path` |
+
+Automatic URLs use the actual bound port; wildcard addresses map to `127.0.0.1`. Ports 80/443 produce http/https URLs, but the URL scheme **does not enable listener TLS**. The server uses HTTP/1; a fronting host can terminate TLS. The HTTP client supports HTTPS and WSS.
+
+`get`, `post` and `all` are convenience registrations; `route(method, path, handler, options)` also supports DELETE, HEAD, PUT and PATCH. Routes run in registration order. GET does not imply HEAD. No matching path produces 404; a method mismatch produces 405; OPTIONS produces 204. `Allow` uses lowercase methods in registration order, with `*` for all.
+
+String paths support parameters, wildcards, optional groups and quoted parameter names, following path-to-regexp 8.4.2. Captures replace `+` with space before decoding. Queries preserve duplicate keys separately. `Path::regex(source, flags)` uses ECMAScript syntax with g/y state, UTF-16 matching and Unicode flags. Intercept prefixes use string-prefix matching without an extra segment-boundary rule.
+
+For string HTTP routes, `intercept.server.routes["METHOD path"]` overrides supplied options while retaining unspecified fields. WS and regex routes do not use this override table.
+
+## Requests, responses and hooks [#http]
+
+- `use_middleware`, `on_route_request` and `Next` form asynchronous chains with short-circuiting. `on_route_check` returns true to skip a route and is shared by HTTP/WS.
+- `Request` exposes method, url, path, query, headers, params and bytes/text/json/blob/form_data readers. Its body is consumed once.
+- `Response` supports status, headers and bytes/text/json/Blob/FormData/stream bodies. Setting status or body claims a response; setting a header alone does not. Later body writes replace earlier ones.
+- Ordinary errors and unwind panics produce 500 while unclaimed; validator `ValidationError` produces 422 with issues. Claimed status and content are retained.
+- Adopting `Some(Response)` copies body, status and headers, but **does not copy custom status text**, matching upstream. Setting status text directly on the supplied response works.
+- `accepts` uses the fixed upstream MIME database and negotiation priorities. JSON output uses JS Number formatting and integer-property ordering. Send integers beyond JS Number precision as strings when exactness matters.
+- Rust APIs use UTF-8 strings, serde JSON values and typed callbacks. They do not emulate JS prototypes, callable objects or isolated UTF-16 surrogates. The Rust JSON value representation is not a complete JS Number runtime; response encoding follows the tested contract.
+
+## WebSocket and Echo [#websocket]
+
+`ws(path, handler, options)` registers a route. An omitted handler accepts automatically; an explicit handler must call `accept.accept().await`. Returning without accepting disconnects. Errors before acceptance produce 500; errors afterwards close the connection. An unmatched WS path produces 404.
+
+Valid handshakes accept versions 13/8 and select the first requested subprotocol. Invalid method/key/version/protocol status, body and headers are compared with upstream. The server message limit is 100 MiB. `WebSocket::send/recv/close` uses typed Message values, preserving text/binary distinctions and close reasons. Route disposal closes its own connections and reclaims their tasks.
+
+Echo registers empty-path POST and WS routes, mounted through interception. HTTP streams the body and content-type; WS preserves message type and bytes.
+
+## ACL [#acl]
+
+`AclPlugin` / `AclConfig` accepts `allowedHosts`: omitted or true allows all; false permits loopback only; a list additionally permits its domains. Matching ignores case and ports, recognizes bracketed IPv6, and lets `.example.com` match both the apex and subdomains. Route options replace the component's allowedHosts rather than merging lists.
+
+A rejection continues to later routes. If all reject, the result is 404, without changing it to 403 or revealing rejected methods through Allow. HTTP and WS share this rule.
+
+## Static [#static]
+
+`StaticPlugin` / `StaticConfig` depends on `server` and `fs`. It reads through providers rather than bypassing the file service for direct disk access.
+
+| Setting | Default and behavior |
+|---|---|
+| `root` | Required; resolved relative to fs.baseUrl |
+| `index` | `["index.html", "index.htm"]`, tried in order |
+| `redirect` | true; a directory without a trailing slash redirects with 301 |
+| `extensions` | Empty; the original file wins before ordered extension candidates |
+| `exclude` | Empty; matches relative URL paths, including dotfiles |
+| `fallthrough` | false; when enabled, only 404 continues |
+| `disposition` | Unset; inline / attachment are supported |
+| `errorPages` | Empty; selects a page by status code and retains that status |
+
+Missing paths, non-directories, directories and InvalidPath map to 404; PermissionDenied maps to 403; other read failures map to 500. Error pages retain upstream's separate resolution path: ordinary-file exclude/containment checks and download disposition are not applied. Do not assume the ordinary-request path rules apply to error pages.
+
+MIME selection tries content detection, filename, then octet-stream. Real fixtures cover all 171 supported MIME values from file-type 20.5.0. Detection owns an independent cancellable stream and supports small chunks and container headers beyond the first chunk. Extension mappings and picomatch exclusions are compared with upstream. Attachment filenames use UTF-8 encoding.
+
+## Proxy [#proxy]
+
+`ProxyPlugin` / `ProxyConfig` depends on `server` and `http`. Required `target` is treated as a directory. Captured paths resolve beneath it, and queries are re-encoded with URLSearchParams semantics; their original byte spelling need not survive.
+
+HTTP forwards the method and headers, with bodies only for POST/PUT/PATCH. The raw client retains 4xx/5xx and applies Fetch redirect rules to streaming bodies. Decompressed responses remove content-encoding/content-length. Upstream's returned-Response adoption behavior is retained: custom reason text is dropped and repeated Set-Cookie keeps only its last value.
+
+WS connects upstream before accepting downstream, filtering Host, Connection, Upgrade, handshake key/version/extensions/accept and content-length. Text and binary messages travel in both directions. Close codes 1000 and 3000–4999 are preserved; others become 1000. Upstream transport errors close downstream with 1011. A failed upstream handshake is not accepted and is not replaced with an invented 502 response.
+
+`ServerProxy` uses service key `server.proxy`. Its `public_url()` reads Server from the **providing plugin's context**, including its mount prefix; later consumer interception does not change this getter. Replacing HTTP/Server rebuilds Proxy through dependency tracking. An ordinary upstream connection failure remains operation-local, so a healthy Proxy can serve again when upstream returns.
+
+## Auxiliary-service scope [#auxiliary]
+
+`FsExt` adds `base_url`, `resolve`, `file` and `mount`. baseUrl resolves through interception layers; the longest mount prefix wins. `LocalFsPlugin` explicitly mounts file: while existing native watches remain available. This work does not port the FS write/delete/rename ecosystem.
+
+`HttpExt::request` returns raw status, reason, headers and a streaming body. `WebSocketExt::ws` opens client connections. Configuration supports baseUrl, headers, timeout, keepAlive, proxyAgent and additional PEM rootCertificates. Interception follows upstream merging, and request headers replace configuration headers. Timeout runs until response headers arrive; the body remains owned by the caller's lifecycle. TLS uses platform verification with optional added trust roots and never disables verification.
+
+Decoding supports gzip, deflate (zlib/raw), Brotli and Zstd. Raw response headers retain compression metadata so the caller can decide how to forward it. The auxiliary client does not cover the complete HTTP decoder, file/data URL or SOCKS ecosystem. Its WS client does not offer permessage-deflate; application-message semantics are compared. Production paths are Rust; Node runs only the reference tests.

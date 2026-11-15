@@ -332,7 +332,7 @@ The fiber handle offers:
 
 A `Failed` plugin clears its failure through `update` or an implementation replacement in the registry. Neither `restart()` nor a dependency refresh clears the error. `update_with(config, true)` can also recover it without emitting the `ConfigCommitted` event used for configuration write-back.
 
-These are the runtime's current recovery operations, not an automatic retry policy. The [mandatory project rules](/docs/development-contributing#failure-isolation) require configurable recovery: automatic retry, remaining failed until manual intervention, or host-defined handling. Restart must not be forced. Every policy must preserve failure isolation and continued operation of unrelated plugins, verified by real fault-injection tests. When automatic retry is selected, supervision outside the failed instance invokes recovery.
+`Fiber::set_recovery` now selects `Manual` (default), bounded `Retry`, or `Host` handling. The supervisor outlives the failed instance, waits for cleanup and cancels on disposal or policy changes. Loader entries expose the same choice through `recovery`; see [configuration and examples](/docs/guide-server#recovery) and [native fault evidence](/docs/development-server#isolation). `restart()` still does not clear failure; manual handling uses `update`, while selected supervision drives the supported recovery operation. Unrelated plugins must remain operational under every policy.
 
 ## Configuration [#configuration]
 

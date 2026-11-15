@@ -99,7 +99,7 @@ g_n^u(γ^u) ≃_K (Ψ^{t_l} ∘ … ∘ Ψ^{t_1})(γ^b)
 一次迭代可能抛出错误：`Γ → Either(Ξ, Γ × (Γ→Γ) × Maybe(ℑ))`。抛出错误会像中止式的 L-Divert 一样退出 Reloading（由迭代而不是环境选择）：纤程带着迄今为止构建的累加器经由 Unloading 展开，最终以未设置任何东西的状态到达 Inactive，并且**错误被记录在纤程上**。此后 L-Begin 要求纤程没有错误：失败的效应*不会在未改变的环境中重试*；`quiet` 接纳失败的纤程；失败不会传播到父纤程（兄弟纤程继续运行）。重试是一次修订（不带结果的重新插入）。合流性排除失败的纤程。在实现中，这对应状态 `FAILED`。
 
 <Callout type="info">
-**在 kardia 中**：失败的纤程处于 `FiberState::Failed`，并保留其错误（`Fiber::error()`）；`update` 或注册表中的 `replace` 清除错误，`restart` 和依赖刷新不会清除。运行时不会自行重试失败纤程。恢复策略应允许使用者选择自动重试、保持失败等待手动处理或宿主自定义处理；无论选择哪种，无关插件都必须正常运行。自动重试模式需要独立监督逻辑。见[生命周期](/docs/development-lifecycle)和[强制故障隔离与可配置恢复规范](/docs/development-contributing#failure-isolation)。
+`Fiber::set_recovery` 已支持 `Manual`（默认）、限频 `Retry` 和 `Host` 处理；监督位于失败实例之外，等待清理，并随释放或策略切换取消。loader 条目通过 `recovery` 提供相同选择，见[配置与示例](/docs/guide-server#recovery)及[原生故障证据](/docs/development-server#isolation)。`restart()` 仍不清除失败，手动处理使用 `update`，选择监督策略后由监督逻辑驱动恢复操作。每种策略都必须保持无关插件正常运行。
 </Callout>
 
 ### 隔离

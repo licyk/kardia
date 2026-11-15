@@ -33,6 +33,8 @@ icon: Wrench
 
 ## `@cordisjs/plugin-fs-node` [#fs-node]
 
+以下保留历史 watcher 基线的分析。当前 Rust `fs` 另有 baseUrl、URL 解析、provider 挂载与可取消读流，并由显式 `fs:local` 提供本地读取。较新固定上游的实际范围见 [Server 辅助服务](/docs/reference-server#auxiliary)。
+
 `index.ts`、`watcher.ts`。服务 `fs`，目前只有 `watch(path, { filter }) → Watcher`。
 
 - 路径相对于**调用方的** `ctx.baseUrl` 解析；接受 `file:` URL；拒绝 Windows 的驱动器相对路径形式。

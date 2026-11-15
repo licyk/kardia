@@ -58,3 +58,8 @@ kardia 的测试依据两份规范检查实现：Cordis 的 TypeScript 测试套
 - `cargo fmt`、`cargo clippy -D warnings`、`cargo test --workspace`（CI 的确切命令见[参与开发](/docs/development-contributing#ci)）。
 - `unsafe` 仅限于 dylib 后端的 FFI（`kardia-hmr/src/dylib.rs`）和访客 SDK（`kardia-guest/src/ffi.rs`）；其他所有 crate 都禁止使用它。
 - *不*计划引入可选的 `loom`：单锁设计没有需要建模的无锁状态。
+
+
+## Server 对照与故障测试 [#server]
+
+五个 Server 包有 105 项原始上游声明和 200 项真实补充/双端测试，在 Linux、Windows、macOS 验证。覆盖完整 MIME 样本、TLS、WS、CLI 集成以及三种恢复策略下无关插件持续运行。见[复现命令与证据](/docs/development-server#parity)；清单和 MIME 源码通过现有脚本生成，不手改。

@@ -33,6 +33,8 @@ These packages are not described in the paper; they show how ordinary services a
 
 ## `@cordisjs/plugin-fs-node` [#fs-node]
 
+The following describes the historical watcher baseline. Current Rust `fs` additionally supports baseUrl, URL resolution, provider mounts and cancellable read streams, with explicit `fs:local` file reads. See [Server auxiliary services](/docs/reference-server#auxiliary) for the newer fixed upstream scope.
+
 `index.ts`, `watcher.ts`. Service `fs`, currently only `watch(path, { filter }) → Watcher`.
 
 - Paths resolve relative to the **caller's** `ctx.baseUrl`; `file:` URLs are accepted; Windows drive-relative forms are rejected.

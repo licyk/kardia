@@ -6,6 +6,8 @@ icon: ListChecks
 
 The plan was carried out in phases, each closed by porting and passing the matching part of the TypeScript test suite. All phases are done; this page records them and every place where the result departs from the design or from Cordis.
 
+The historical phases below describe the original core port. The subsequent Server implementation has passed [fixed upstream and three-platform acceptance](/docs/development-server): all five packages, auxiliary HTTP/FS paths, catalog/CLI integration, and configurable recovery. File URLs and Windows native path behavior now have real comparisons; Server middleware provides typed continuation chains.
+
 ## Implementation phases [#phases]
 
 | Phase | Scope | Exit criteria |
@@ -34,11 +36,10 @@ Every case of every TypeScript spec has been ported, found already covered, or j
 - decorators, prototypes and Proxy-based callable services, `this` binding;
 - waterfall and the deprecated `dispatch` API;
 - Node module resolution and loader internals (`resolve`, `import`, `create`, `package-manager`, `loader-utils`);
-- file URLs and Windows drive letters;
 - JavaScript stack frames;
 - concurrent reads of one async iterator.
 
-kardia is published on crates.io as [`kardia`](https://crates.io/crates/kardia) and the nine `kardia-*` crates; the [releases](https://github.com/licyk/kardia/releases) list each version.
+The current workspace contains 17 library/application crates plus the unpublished `xtask`. Published crate versions are listed under [Releases](https://github.com/licyk/kardia/releases); the newly added HTTP/Server crates are source additions and were not released in this work.
 
 CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, clippy with warnings as errors, `cargo xtask arch` and the test suite on pushes and pull requests that change Rust code, on a pinned toolchain (Rust 1.99.1), because the compile-error snapshots of `kardia-macros` change with the compiler. Pushing a `v*` tag runs `release.yml`: it reuses CI's run of the tagged commit, then runs `cargo publish --workspace` for every crate version crates.io does not have yet, waiting out its limit on new crates, and creates the GitHub release. The workflow can also be started by hand to resume a release that stopped part-way. [Contributing](/docs/development-contributing#releases) describes the workflows step by step.
 

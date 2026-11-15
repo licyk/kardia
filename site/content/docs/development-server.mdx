@@ -1,0 +1,81 @@
+---
+title: "Server 架构与验收"
+description: "Rust Server 系列的生命周期边界、固定上游对照、三平台证据和已说明的实现差异。"
+icon: Network
+---
+
+Server 系列以 [eee256a](https://github.com/licyk/kardia/commit/eee256a7ca64802170ed8007b88b9960196f67d7) 为实现验收提交。固定参考为 Cordis `f6290dbbf1558cb3a870a58b1f97bacc0d3a9960`。五个包及它们需要的 FS/HTTP 路径已实现；本轮没有发版或修改工作区版本。
+
+## 依赖与归属 [#architecture]
+
+<Mermaid chart={"flowchart LR\n  Server --> ACL\n  Server --> Echo\n  Server --> Static\n  Server --> Proxy\n  FS --> Static\n  Local[file provider] --> FS\n  HTTP[HTTP client] --> Proxy\n  Policy[Recovery supervisor] --> Fiber[Plugin lifecycle]\n  Fiber --> Effects[Routes streams sockets tasks]"} />
+
+`kardia-server` 使用 Hyper 1.12 提供 HTTP/1 传输、tokio-tungstenite 0.30 处理 WS 帧；路由、claimed 响应和生命周期由 Kardia 控制。`kardia-http` 使用 Reqwest 0.13.5、rustls 平台证书验证及显式流解压，避免 HTTP 库默认重定向/状态校验改变上游语义。生产实现不调用 Node。
+
+`Svc` 的 caller 决定路由、挂载、连接和流的效应归属；服务依赖从定义处解析。HTTP handler、中间件、route/upgrade hook 的在途任务以及响应源拥有可取消的任务集合。释放先撤销注册、停止任务并等待资源销毁，恢复随后才创建新实例。流采用有界传递；读取/轮询 panic 被转换为操作错误。
+
+Static 使用 FS provider，不直接绑定本地文件系统。内容探测有独立流；简单 file-type 规则和扩展名表由固定源码生成，复杂容器检测使用 Rust 流读取。生成器检查源码 hash，避免上游变化未经审计进入映射。picomatch-rs 0.1.0 的默认 POSIX 细节按实测修正。
+
+## 故障隔离与恢复 [#isolation]
+
+[AGENTS.md](https://github.com/licyk/kardia/blob/main/AGENTS.md) 将隔离和可配置恢复规定为强制项目要求。默认 manual；retry 在失败实例外监督，以有界频率等待清理后恢复；host 回调决定保持失败或延迟重试。配置错误不循环重试。策略切换、禁用、移除和释放会取消旧动作，不把恢复写成配置更改。
+
+| 验收范围 | 真实测试证据 |
+|---|---|
+| 核心监督与 loader | 三种策略、重复失败、配置错误、宿主同步/异步 panic、取消待执行恢复、未注册 handler |
+| Server | handler panic 前后状态；三种策略下占用端口启动失败/恢复，独立 Server 持续 HTTP 服务 |
+| HTTP 生命周期 | dispose 返回前 pending 回调、body 源、中间件、route hook、upgrade hook 均销毁 |
+| Echo / ACL | 各策略反复实例失败，健康路由继续工作；Echo 保持同一健康 WS 连接 |
+| FS / Static | provider 同步/轮询 panic、首读/后续流错误、取消、非本地挂载；恢复后流计数归零 |
+| HTTP client / Proxy | 各策略重复 provider/实例失败、依赖消费者重建；健康 HTTP 和同一健康 WS 持续工作 |
+| 上游不可用 | 当前 HTTP 操作失败、WS 不 accept；Proxy 仍 Active，上游恢复后无需重启 |
+| 现有 guest 边界 | workspace 回归包含进程退出/超时/I/O panic、WASM 与 dylib 路径；没有把 native dylib 描述为崩溃隔离 |
+
+这些测试注入真实实现的错误、panic 或 Fiber 失败，并观察真实网络与清理计数。自动模式没有以手动 update 代替恢复；手动模式验证保持 Failed，之后才明确处理；host 模式遵循回调结果。失败只允许影响该实例及其不可用服务的消费者。
+
+隔离边界必须明确：in-process unwind 可捕获 Rust panic，但不能阻止 abort、segfault 或进程级退出。需要这种隔离时使用已有进程/WASM guest 边界；本轮没有新增任意原生代码沙箱。
+
+## 固定对照与复现 [#parity]
+
+在仓库根目录构建 Rust 宿主，再从 `js/` 运行既有工具：
+
+```sh
+cargo build -p kardia-server --example server-reference
+cd js
+bun install --frozen-lockfile
+bun run server:prepare
+bun run server:inventory --check
+bun run server:mime --check
+bun run check
+bun run test:server:reference
+```
+
+准备脚本验证并构建忽略目录 `cordis/` 中的固定上游，使用 immutable Yarn 依赖，运行原始套件；不会重置未知上游工作区。`inventory.json` 记录声明数量，不把清单当通过证据。适配器仅注册场景和驱动真实服务，不重写被测算法。
+
+| 测试类型 | 已通过范围 |
+|---|---|
+| 固定上游原始测试 | 105：core 57、ACL 15、Static 24、Proxy 9；Echo 无原始独立套件 |
+| 补充/双端网络测试 | 200：上游补充 22、HTTP 50、WS/Echo 5、ACL 26、Static 29、客户端 28、Proxy 25、握手 15 |
+| MIME 内容检测 | 固定 file-type 样本 SHA `7fc6d9ff7cc01987aa73006757792a5ca198023a` 的 254 文件及 2 补充样本，覆盖全部 171 MIME 值 |
+| MIME 协商与 glob | 1,180 个扩展名；26 组 Static 配置各 15 个路径；不归一化语义差异 |
+| 原生平台 | Linux、Windows、macOS 同时运行 Rust 检查与真实上游/对照 |
+| CLI/catalog | 实际 CLI 子进程运行示例；catalog 包名、服务替换与消费者重建 |
+
+HTTP 对比状态、reason、语义 header 和完整 body；大文件比较完整 SHA-256。WS 对比文本/二进制、字节、子协议和关闭码/原因。HTTPS/WSS 使用真实 TLS 证书夹具，另测不受信证书和主机名错误；没有跳过证书验证。
+
+## 验收记录 [#evidence]
+
+- 最终实现 [CI #43703951854](https://github.com/licyk/kardia/actions/runs/43703951854) 的六个平台任务全部成功，绑定 `eee256a`；同提交 [JS CI #43703951468](https://github.com/licyk/kardia/actions/runs/43703951468) 成功。
+- 本机 `cargo test --workspace`、workspace clippy、fmt、arch、loader 无默认 feature 测试/clippy，以及 HMR process feature clippy 全部通过。
+- 首次 FS Windows 验收发现父路径为文件时系统返回 NotFound，而 Unix 返回 NotADirectory。测试改为原生期望，随后 [CI #43700024799](https://github.com/licyk/kardia/actions/runs/43700024799) 成功；错误映射没有被掩盖。
+- Static 首轮 macOS 的既有 include rename watcher 超时；同一提交仅重跑失败任务后 [CI #43700396222](https://github.com/licyk/kardia/actions/runs/43700396222) 成功。最终提交再次完整通过三平台。
+- 本地旧 xtask 二进制曾内嵌仓库改名前的路径；仅清理该包编译缓存后，架构及完整 workspace 再次通过，没有修改断言。
+- 被后续推送取消的中间 CI 不作为成功证据。原生 CI runner 不等于用户个人设备验收；本轮未执行用户个人设备独立测试。
+
+## 与上游的关系 [#boundaries]
+
+保留实测上游细节，包括返回 Response 丢弃自定义 reason、Proxy 最后一个 Set-Cookie、提供者上下文的 proxy publicUrl、错误页不同于普通文件的路径规则。详细契约见[参考](/docs/reference-server)。
+
+Rust 使用类型化回调/服务和 UTF-8/serde 值，不重建整个 JS 对象模型。HTTP 辅助服务只覆盖 HTTP(S)/WS(S) raw transport、配置及生命周期；没有完整 decoder/file/data/SOCKS 生态，WS 客户端不提出 permessage-deflate。FS 扩展为 provider 只读流，保留已有 watch，没有增加写入生态。五个目标插件有实际生产实现，未另建五套 JS 产品或 guest 网络协议。
+
+后续更换上游 SHA 时，先记录版本差异、更新共享场景，再生成映射、运行三平台对照和故障矩阵。所有规则、样本来源和可复现命令应保持长期可查；不要用“编译成功”或一次宿主重启替代隔离验收。

@@ -29,6 +29,7 @@ The `kardia` binary runs the app described by a YAML or JSON config file (`kardi
 | `config` | The plugin's configuration. For a group, its list of entries. |
 | `group` | Marks a group entry. |
 | `disabled` | Stops the plugin without removing its entry. |
+| `recovery` | `manual` (default), `retry` with `delayMs`, or `host` with a registered `handler`; see [recovery](/docs/guide-server#recovery). |
 | `inject` | Extra services the entry depends on: a list of names, or a map of name → interception metadata. |
 | `intercept` | Metadata for the services the plugin uses, keyed by service. For example, `logger: { name: db, level: 3 }`. |
 | `isolate` | Gives services their own scope: `{ db: true }` makes `db` private to the entry, and `{ db: shared }` shares it between every entry using the label `shared`. |
@@ -86,7 +87,14 @@ Edits to the file are applied to the running app. Changes the app makes to its o
 |---|---|---|
 | `timer` | `timeout`, `interval`, `sleep`, `throttle` and `debounce`, each cancelled when its plugin stops | – |
 | `logger-console` | Prints logs to the terminal | `levels` (name → `0`–`3`, plus `default`), `showTime`, `colors`, `maxLength`, `label`, `showDiff` |
-| `fs` | The file-watching service | – |
+| `fs` | File watching, URL resolution and provider streams | `baseUrl` |
+| `fs:local` | Read-only file: provider | – |
+| `http` | HTTP(S) and WS(S) client | `baseUrl`, `headers`, `timeout`, `rootCertificates` |
+| `server` | HTTP/WS listener and routes | `host`, `port`, `maxPort`, `publicUrl` |
+| `server:acl` | Host access control | `allowedHosts` |
+| `server:echo` | Streaming HTTP and WS echo | mount with intercept |
+| `server:static` | Static files through FS providers | `root`, `index`, `exclude`, `extensions`, `errorPages` |
+| `server:proxy` | HTTP/WS reverse proxy | `target` |
 | `include` | Loads entries from another file as a subtree | `path`, `watch`, `initial`, `patches` |
 | `group` | Runs the entries in its `config` | the entry list |
 | `hmr` | Reloads guest modules when their files change | `base`, `watch: { enabled, files, debounce }` |
@@ -97,12 +105,19 @@ Each built-in also answers to its TypeScript package name:
 |---|---|
 | `timer` | `@cordisjs/plugin-timer` |
 | `logger-console` | `@cordisjs/plugin-logger-console` |
-| `fs` | `@cordisjs/plugin-fs-node` |
+| `fs` | `@cordisjs/fs` (`@cordisjs/plugin-fs-node` also remains registered) |
+| `fs:local` | `@cordisjs/fs-node` |
+| `http` | `@cordisjs/http` |
+| `server` | `@cordisjs/server` |
+| `server:acl` | `@cordisjs/server-acl` |
+| `server:echo` | `@cordisjs/server-echo` |
+| `server:static` | `@cordisjs/server-static` |
+| `server:proxy` | `@cordisjs/server-proxy` |
 | `include` | `@cordisjs/plugin-include` |
 | `group` | `@cordisjs/plugin-group` |
 | `hmr` | `@cordisjs/plugin-hmr` (registered by the `kardia` binary) |
 
-The binary starts `fs` itself and includes the config file with `watch: true`, so the file is an `include` whose entries form the app.
+The binary starts `fs` and `fs:local` itself and includes the config file with `watch: true`, so the file is an `include` whose entries form the app.
 
 ### `logger-console` [#logger-console]
 
@@ -148,4 +163,4 @@ A group's `config` is its list of entries. Updating it reconciles the list in pl
 
 ### `timer` and `fs` [#timer-and-fs]
 
-Neither takes configuration. They provide the `timer` and `fs` services; [Services](/docs/guide-services) shows how plugins use them.
+`timer` takes no configuration. `fs` accepts `baseUrl` for URL resolution and provider reads; native watching keeps its existing path behavior. They provide the `timer` and `fs` services; [Services](/docs/guide-services) shows how plugins use them.

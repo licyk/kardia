@@ -1,0 +1,118 @@
+---
+title: "HTTP 与 WebSocket 服务"
+description: "在同一插件系统中使用 Server、ACL、Echo、Static 和 Proxy，并选择故障恢复策略。"
+icon: Server
+---
+
+Server 系列提供 HTTP/1 与 WebSocket 路由、访问控制、回显、静态文件和反向代理。路由、连接、流和后台任务归所属插件管理；替换提供者会重建依赖消费者，无关插件继续运行。
+
+这些功能已进入源码主分支，本轮没有发布新的 crates.io 版本。请使用包含 [Server 验收提交](https://github.com/licyk/kardia/commit/eee256a7ca64802170ed8007b88b9960196f67d7) 的源码；不能假定旧的 `cargo install kardia` 二进制已包含它们。
+
+## 运行完整示例 [#example]
+
+在仓库根目录运行：
+
+```sh
+cargo run -p kardia -- examples/server.yml
+curl -X POST --data 'hello' http://127.0.0.1:5140/echo
+curl http://127.0.0.1:5140/static/
+curl -X POST --data 'proxied' http://127.0.0.1:5140/proxy/echo
+```
+
+WS 客户端可连接 `ws://127.0.0.1:5140/echo` 或 `/proxy/echo`，发送文本或二进制消息。示例 ACL 只接受 loopback Host。CLI 自行启动 `fs` 和 `fs:local`；Static 的相对路径以工作目录的文件 URL 为基础，因此此示例从仓库根目录启动。
+
+[完整配置](https://github.com/licyk/kardia/blob/main/examples/server.yml) 同时运行五个包。下面是最小 Echo 配置：
+
+```yaml
+- id: server
+  name: server
+  config:
+    host: 127.0.0.1
+    port: 5140
+- id: echo
+  name: server:echo
+  intercept:
+    server:
+      path: /echo
+```
+
+| 插件名 | 配置要点 | 依赖 |
+|---|---|---|
+| `server` | 必填 `port`；默认 host 为 `127.0.0.1` | 无 |
+| `server:acl` | `allowedHosts: false` 或域名列表 | `server` |
+| `server:echo` | 用 `intercept.server.path` 挂载 | `server` |
+| `server:static` | 必填 `root`，可配置 index、exclude、errorPages | `server`、`fs` |
+| `server:proxy` | 必填 `target`，通常同时启用 `http` | `server`、`http` |
+| `http` | baseUrl、headers、timeout、rootCertificates | 无 |
+| `fs:local` | 挂载 `file:` 只读 provider | `fs` |
+
+catalog 同时接受实际上游包名：`@cordisjs/server`、`@cordisjs/server-acl`、`@cordisjs/server-echo`、`@cordisjs/server-static`、`@cordisjs/server-proxy`、`@cordisjs/http`、`@cordisjs/fs` 和 `@cordisjs/fs-node`。
+
+## 在 Rust 插件中注册路由 [#rust]
+
+插件声明 `Inject::new().with("server")`，在 `apply` 中通过自己的 `Context` 访问服务：
+
+```rust
+use kardia::server::{Server, ServerExt, WsExt, ws_handler};
+
+let server = ctx.get::<Server>()?;
+server.get("/hello/:name", |req, res, _| async move {
+    res.set_json(&kardia::json!({"hello": req.params["name"]}))?;
+    Ok(None)
+})?;
+server.ws("/ws", Some(ws_handler(|_, accept| async move {
+    let socket = accept.accept().await?;
+    while let Some(message) = socket.recv().await {
+        let message = message?;
+        if message.is_close() { break; }
+        socket.send(message)?;
+    }
+    Ok(())
+})), kardia::json!({}))?;
+```
+
+处理器返回 `Ok(None)` 表示使用传入的响应；`Ok(Some(response))` 传播返回响应；`next.await` 继续后续处理链。原始请求 body 只能消费一次；响应的读分支与发送分支分开，因此检查响应 body 后仍可发送。流式转发使用 `Body::stream`，无需读完整个内容。
+
+手动释放返回的 `Route` / `WsRoute` 可卸载一个路由；插件卸载也会自动释放它们。HTTP 回调和未完成的响应源会取消并等待销毁，WS 连接随路由关闭。异步操作与清理不会在运行时锁内执行。
+
+## 选择恢复方式 [#recovery]
+
+默认保持失败，等待手动处理。配置写在条目的 `recovery` 中，与插件的 `config` 同级：
+
+```yaml
+recovery:
+  mode: manual
+```
+
+```yaml
+recovery:
+  mode: retry
+  delayMs: 1000
+```
+
+```yaml
+recovery:
+  mode: host
+  handler: network-failure
+```
+
+`host` 模式需要嵌入宿主通过 `Loader::register_recovery_handler` 注册同名处理器；标准 CLI 不会自动定义该回调。未注册的名称会报错。
+
+直接嵌入时可对插件的 `Fiber` 调用：
+
+```rust
+use std::time::Duration;
+use kardia::{RecoveryAction, RecoveryPolicy};
+
+fiber.set_recovery(RecoveryPolicy::Retry {
+    delay: Duration::from_secs(1),
+})?;
+fiber.set_recovery(RecoveryPolicy::host(|failure| async move {
+    failure.fiber.context().logger().log_error(&failure.error);
+    Ok(RecoveryAction::KeepFailed)
+}))?;
+```
+
+自动模式的监督任务位于失败实例之外，等待清理后再恢复，并限制重试频率。手动模式通过 `fiber.update(config)` 明确恢复；`restart()` 不清除失败状态。宿主模式可以保持失败或返回 `RetryAfter`；回调自身的错误和 unwind panic 也被隔离。禁用、删除、释放或切换策略会取消旧的恢复动作，恢复不自动回写用户配置。
+
+三种方式都必须保持无关插件正常工作。请求异常通常只影响该请求；实例失效才撤回服务并处理依赖消费者。原生库的进程级崩溃不受 unwind 隔离保护，需要这种边界时使用已有进程或 WASM guest 机制。详见[架构与验收](/docs/development-server)和[行为参考](/docs/reference-server)。

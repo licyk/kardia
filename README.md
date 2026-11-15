@@ -99,14 +99,23 @@ The file is a list of **entries**. Each entry runs one plugin:
 |---|---|---|
 | `timer` | `timeout`, `interval`, `sleep`, `throttle` and `debounce`, each cancelled when its plugin stops | – |
 | `logger-console` | Prints logs to the terminal | `levels` (name → `0`–`3`, plus `default`), `showTime`, `colors`, `maxLength`, `label` |
-| `fs` | The file-watching service | – |
+| `fs` | File watching, URL resolution and provider streams | `baseUrl` |
+| `fs:local` | Read-only file: provider | – |
+| `http` | HTTP(S) and WS(S) client | `baseUrl`, `headers`, `timeout`, `rootCertificates` |
+| `server` | HTTP/WS listener and routes | `host`, `port`, `maxPort`, `publicUrl` |
+| `server:acl` | Host access control | `allowedHosts` |
+| `server:echo` | Streaming HTTP and WS echo | mount with intercept |
+| `server:static` | Static files through FS providers | `root`, `index`, `exclude`, `extensions`, `errorPages` |
+| `server:proxy` | HTTP/WS reverse proxy | `target` |
 | `include` | Loads entries from another file as a subtree | `path`, `watch`, `initial`, `patches` |
 | `group` | Runs the entries in its `config` | the entry list |
 | `hmr` | Reloads guest modules when their files change | `base`, `watch: { enabled, files, debounce }` |
 
 Each built-in also answers to its TypeScript package name, such as `@cordisjs/plugin-timer`.
 
-The binary starts `fs` itself and includes the config file with `watch: true`.
+The binary starts `fs` and `fs:local` itself and includes the config file with `watch: true`.
+
+The source branch now includes the Server family and configurable manual/retry/host recovery. Run `cargo run -p kardia -- examples/server.yml` from the repository root. See [Server guide](https://kardia-dev.netlify.app/docs/guide-server) and [native acceptance](https://kardia-dev.netlify.app/docs/development-server). These additions have not been released to crates.io yet.
 
 ## Writing plugins in Rust
 
@@ -302,7 +311,13 @@ The Rust side of the bridge is the [`kardia-bridge`](crates/kardia-bridge/) crat
 | [`kardia-macros`](crates/kardia-macros/) | `#[derive(Service)]` and `#[plugin]` for declaring services and plugin dependencies |
 | [`kardia-timer`](crates/kardia-timer/) | Timeouts, intervals, sleep, throttle and debounce tied to the calling plugin's lifecycle |
 | [`kardia-logger-console`](crates/kardia-logger-console/) | Console log exporter with formatting, colors and configurable log levels |
-| [`kardia-fs`](crates/kardia-fs/) | File watching and filtering, with subscriptions disposed when the calling plugin stops |
+| [`kardia-fs`](crates/kardia-fs/) | File watching, URL resolution, provider mounts and lifecycle-owned read streams |
+| [`kardia-http`](crates/kardia-http/) | HTTP(S)/WS(S) client, verified TLS and caller-owned streams |
+| [`kardia-server`](crates/kardia-server/) | HTTP/WS routes, middleware, bodies and lifecycle-owned listeners |
+| [`kardia-server-acl`](crates/kardia-server-acl/) | Host access control shared by HTTP and WS |
+| [`kardia-server-echo`](crates/kardia-server-echo/) | Streaming HTTP and text/binary WebSocket echo |
+| [`kardia-server-static`](crates/kardia-server-static/) | Provider-backed files, MIME detection, indexes and error pages |
+| [`kardia-server-proxy`](crates/kardia-server-proxy/) | Streaming HTTP and bidirectional WebSocket reverse proxy |
 | [`kardia-loader`](crates/kardia-loader/) | Declarative plugin trees, entries, groups, service isolation, expressions and plugin resolution |
 | [`kardia-include`](crates/kardia-include/) | YAML/JSON entry trees, file watching, patches and bidirectional synchronization with runtime changes |
 | [`kardia-hmr`](crates/kardia-hmr/) | Module graph, hot replacement, file watching and guest service bridging for WebAssembly, dynamic libraries and child processes |

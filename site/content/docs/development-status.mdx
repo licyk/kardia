@@ -6,6 +6,8 @@ icon: ListChecks
 
 计划按阶段执行，每个阶段以移植并通过 TypeScript 测试套件中对应的部分作为结束。所有阶段均已完成；本页记录这些阶段，以及结果偏离设计或 Cordis 的每一处。
 
+下面的历史阶段描述最初的核心移植。后续 Server 实现已通过[固定上游与三平台验收](/docs/development-server)：五个包、辅助 HTTP/FS 路径、catalog/CLI 集成及可配置恢复均已完成。文件 URL 和 Windows 原生路径行为已有真实对照；Server 中间件使用类型化 continuation 链。
+
 ## 实现阶段 [#phases]
 
 | 阶段 | 范围 | 退出标准 |
@@ -34,11 +36,10 @@ icon: ListChecks
 - 装饰器、原型和基于 Proxy 的可调用服务、`this` 绑定；
 - waterfall 和已弃用的 `dispatch` API；
 - Node 模块解析与加载器内部（`resolve`、`import`、`create`、`package-manager`、`loader-utils`）；
-- 文件 URL 与 Windows 盘符；
 - JavaScript 栈帧；
 - 对同一个异步迭代器的并发读取。
 
-kardia 已在 crates.io 上以 [`kardia`](https://crates.io/crates/kardia) 和九个 `kardia-*` crate 的形式发布；各版本见 [Releases](https://github.com/licyk/kardia/releases)。
+当前工作区包含 17 个库/应用 crate 及不发布的 `xtask`。已发布版本见 [Releases](https://github.com/licyk/kardia/releases)；本轮新增 HTTP/Server crate 已进入源码，尚未发版。
 
 CI（`.github/workflows/ci.yml`）在改动 Rust 代码的推送和拉取请求上，在固定的工具链（Rust 1.99.1）上运行 `cargo fmt --check`、将警告视为错误的 clippy、`cargo xtask arch` 以及测试套件，因为 `kardia-macros` 的编译错误快照会随编译器而变化。推送 `v*` 标签会运行 `release.yml`：复用 CI 对该标签所指提交的运行结果，然后对 crates.io 上尚不存在的每个 crate 版本执行 `cargo publish --workspace`，并等待 crates.io 对新 crate 的数量限制过去，最后创建 GitHub Release。该工作流也可以手动启动，以继续一次中途停止的发布。[参与开发](/docs/development-contributing#releases)逐步描述了这些工作流。
 

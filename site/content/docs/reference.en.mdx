@@ -12,6 +12,8 @@ These pages describe Cordis, not kardia. Names such as `Context`, `Fiber`, `ctx.
 The analysed code is the TypeScript checkout at `cordis/` (a separate git repository, ignored by the outer repository's `.gitignore`), at HEAD `6663348 fix(fs-node): reject drive-relative paths on Windows (#285)`. The `cordis` core package is version `4.0.0-rc.12`, the paper's "Cordis v4". File:line references (`reflect.ts:182-185`) are against that revision.
 </Callout>
 
+The [Server reference](/docs/reference-server) additionally documents the Rust implementation against newer Cordis `f6290dbb`; its baseline is separate from the historical core analysis above.
+
 ## Pages in this section [#pages]
 
 <Cards>
@@ -25,6 +27,7 @@ The analysed code is the TypeScript checkout at `cordis/` (a separate git reposi
   <Card title="HMR" href="/docs/reference-hmr" description="Transactional hot module replacement: the reconcile transaction, union-find units, in-place replacement and watch mode." />
   <Card title="Auxiliary packages" href="/docs/reference-auxiliary" description="timer, logger-console, fs-node, package-manager, loader-utils and create: ordinary services built on the core primitives." />
   <Card title="Paper vs. implementation" href="/docs/reference-paper-vs-code" description="Faithful correspondences, every deviation and refinement, defects found while reading, and what the Rust port follows." />
+  <Card title="Server behavior" href="/docs/reference-server" description="The fixed upstream contract and Rust interfaces for five server packages." />
 </Cards>
 
 ## Packages [#packages]

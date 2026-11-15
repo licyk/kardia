@@ -12,6 +12,8 @@ kardia 是 [Cordis](https://github.com/cordiverse/cordis) 的 Rust 移植。Cord
 所分析的代码是位于 `cordis/` 的 TypeScript 检出（一个独立的 git 仓库，被外层仓库的 `.gitignore` 忽略），HEAD 为 `6663348 fix(fs-node): reject drive-relative paths on Windows (#285)`。`cordis` 核心包版本为 `4.0.0-rc.12`，即论文中的 "Cordis v4"。文件与行号引用（`reflect.ts:182-185`）均基于该版本。
 </Callout>
 
+[Server 参考](/docs/reference-server)另行记录基于较新 Cordis `f6290dbb` 的 Rust 实现；其基线与上面的历史核心分析分开。
+
 ## 本部分的页面 [#pages]
 
 <Cards>
@@ -25,6 +27,7 @@ kardia 是 [Cordis](https://github.com/cordiverse/cordis) 的 Rust 移植。Cord
   <Card title="HMR" href="/docs/reference-hmr" description="事务式热模块替换：reconcile 事务、并查集单元、原地替换与监听模式。" />
   <Card title="辅助包" href="/docs/reference-auxiliary" description="timer、logger-console、fs-node、package-manager、loader-utils 与 create：基于核心原语构建的普通服务。" />
   <Card title="论文与实现对照" href="/docs/reference-paper-vs-code" description="忠实对应、全部偏离与细化、阅读中发现的缺陷，以及 Rust 移植遵循哪一方。" />
+  <Card title="Server 行为" href="/docs/reference-server" description="五个 Server 包的固定上游契约与 Rust 接口。" />
 </Cards>
 
 ## 包 [#packages]

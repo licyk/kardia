@@ -102,14 +102,23 @@ kardia path/to/kardia.yml
 |---|---|---|
 | `timer` | 提供 `timeout`、`interval`、`sleep`、`throttle` 和 `debounce`，对应操作会在所属插件停止时取消 | – |
 | `logger-console` | 向终端输出日志 | `levels`（名称 → `0`–`3`，以及 `default`）、`showTime`、`colors`、`maxLength`、`label` |
-| `fs` | 文件监听服务 | – |
+| `fs` | 文件监听、URL 解析与 provider 读流 | `baseUrl` |
+| `fs:local` | file: 只读 provider | – |
+| `http` | HTTP(S) 与 WS(S) 客户端 | `baseUrl`、`headers`、`timeout`、`rootCertificates` |
+| `server` | HTTP/WS 监听与路由 | `host`、`port`、`maxPort`、`publicUrl` |
+| `server:acl` | Host 访问控制 | `allowedHosts` |
+| `server:echo` | HTTP 流式与 WS 回显 | 通过 intercept 挂载 |
+| `server:static` | 通过 FS provider 服务文件 | `root`、`index`、`exclude`、`extensions`、`errorPages` |
+| `server:proxy` | HTTP/WS 反向代理 | `target` |
 | `include` | 从另一个文件加载条目，作为子树运行 | `path`、`watch`、`initial`、`patches` |
 | `group` | 运行其 `config` 中的条目 | 条目列表 |
 | `hmr` | 客体模块文件变化时重新加载模块 | `base`、`watch: { enabled, files, debounce }` |
 
 每个内置插件也支持使用对应的 TypeScript 包名，例如 `@cordisjs/plugin-timer`。
 
-可执行程序会自行启动 `fs`，并以 `watch: true` 加载配置文件。
+可执行程序会自行启动 `fs` 与 `fs:local`，并以 `watch: true` 加载配置文件。
+
+源码分支已包含 Server 系列以及 manual/retry/host 可配置恢复。从仓库根目录运行 `cargo run -p kardia -- examples/server.yml`；详见 [Server 指南](https://kardia-dev.netlify.app/docs/guide-server)和[原生验收](https://kardia-dev.netlify.app/docs/development-server)。这些新增功能本轮尚未发布到 crates.io。
 
 ## 使用 Rust 编写插件
 
@@ -308,7 +317,13 @@ stdout 用于传输协议数据，因此进程客体插件不能向其打印内�
 | [`kardia-macros`](crates/kardia-macros/) | 用于声明服务和插件依赖的 `#[derive(Service)]` 与 `#[plugin]` 宏 |
 | [`kardia-timer`](crates/kardia-timer/) | 随调用方插件生命周期清理的超时、间隔、休眠、节流和防抖操作 |
 | [`kardia-logger-console`](crates/kardia-logger-console/) | 控制台日志输出，支持格式化、颜色和日志级别配置 |
-| [`kardia-fs`](crates/kardia-fs/) | 文件监听与过滤，订阅随调用方插件停止而清理 |
+| [`kardia-fs`](crates/kardia-fs/) | 文件监听、URL 解析、provider 挂载与随生命周期清理的读流 |
+| [`kardia-http`](crates/kardia-http/) | HTTP(S)/WS(S) 客户端、TLS 验证及调用者所属的流 |
+| [`kardia-server`](crates/kardia-server/) | HTTP/WS 路由、中间件、body 及随生命周期清理的监听器 |
+| [`kardia-server-acl`](crates/kardia-server-acl/) | HTTP 与 WS 共用的 Host 访问控制 |
+| [`kardia-server-echo`](crates/kardia-server-echo/) | HTTP 流式与 WS 文本/二进制回显 |
+| [`kardia-server-static`](crates/kardia-server-static/) | 通过 provider 服务文件，包含 MIME 检测、索引和错误页 |
+| [`kardia-server-proxy`](crates/kardia-server-proxy/) | HTTP 流式及双向 WS 反向代理 |
 | [`kardia-loader`](crates/kardia-loader/) | 声明式插件树、条目、分组、服务隔离、表达式和插件解析 |
 | [`kardia-include`](crates/kardia-include/) | YAML/JSON 条目树、文件监听、补丁及与运行时变更的双向同步 |
 | [`kardia-hmr`](crates/kardia-hmr/) | 模块图、热替换、文件监听，以及 WebAssembly、动态库和子进程的客体服务桥接 |

@@ -58,3 +58,8 @@ Pure modules (`IdTable`, `Scope` lookups, target computation, `journal`, `patch`
 - `cargo fmt`, `cargo clippy -D warnings`, `cargo test --workspace` (the exact CI commands are on [Contributing](/docs/development-contributing#ci)).
 - `unsafe` is confined to the FFI of the dylib backend (`kardia-hmr/src/dylib.rs`) and the guest SDK (`kardia-guest/src/ffi.rs`); every other crate forbids it.
 - Optional `loom` is *not* planned: the single-lock design has no lock-free state to model.
+
+
+## Server parity and failure tests [#server]
+
+The five Server packages have 105 original upstream declarations and 200 real supplement/dual-host tests on Linux, Windows and macOS. This includes full MIME fixtures, TLS, WS, CLI integration and all three recovery policies while unrelated plugins continue working. See [commands and evidence](/docs/development-server#parity); regenerate inventory/MIME sources with the existing scripts, never by hand.

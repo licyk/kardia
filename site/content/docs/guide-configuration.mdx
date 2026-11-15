@@ -29,6 +29,7 @@ icon: Settings
 | `config` | 插件的配置。对分组（group）而言，是它的条目列表。 |
 | `group` | 标记该条目为分组。 |
 | `disabled` | 停止插件而不删除其条目。 |
+| `recovery` | 默认 manual；retry 配置 delayMs；host 指定已注册 handler，见[恢复策略](/docs/guide-server#recovery)。 |
 | `inject` | 条目额外依赖的服务：一个名字列表，或一个从名字到拦截（interception）元数据的映射。 |
 | `intercept` | 插件所用服务的元数据，按服务分键。例如 `logger: { name: db, level: 3 }`。 |
 | `isolate` | 给服务一个独立的作用域：`{ db: true }` 让 `db` 成为该条目私有，`{ db: shared }` 让所有使用标签 `shared` 的条目共享它。 |
@@ -86,7 +87,14 @@ icon: Settings
 |---|---|---|
 | `timer` | `timeout`、`interval`、`sleep`、`throttle` 和 `debounce`，各自在其插件停止时取消 | – |
 | `logger-console` | 把日志打印到终端 | `levels`（名字 → `0`–`3`，外加 `default`）、`showTime`、`colors`、`maxLength`、`label`、`showDiff` |
-| `fs` | 文件监视服务 | – |
+| `fs` | 文件监听、URL 解析与 provider 读流 | `baseUrl` |
+| `fs:local` | file: 只读 provider | – |
+| `http` | HTTP(S) 与 WS(S) 客户端 | `baseUrl`、`headers`、`timeout`、`rootCertificates` |
+| `server` | HTTP/WS 监听与路由 | `host`、`port`、`maxPort`、`publicUrl` |
+| `server:acl` | Host 访问控制 | `allowedHosts` |
+| `server:echo` | HTTP 流式与 WS 回显 | 通过 intercept 挂载 |
+| `server:static` | 通过 FS provider 服务文件 | `root`、`index`、`exclude`、`extensions`、`errorPages` |
+| `server:proxy` | HTTP/WS 反向代理 | `target` |
 | `include` | 把另一个文件中的条目作为子树加载 | `path`、`watch`、`initial`、`patches` |
 | `group` | 运行其 `config` 中的条目 | 条目列表 |
 | `hmr` | 在访客模块文件变化时重新加载它们 | `base`、`watch: { enabled, files, debounce }` |
@@ -97,12 +105,19 @@ icon: Settings
 |---|---|
 | `timer` | `@cordisjs/plugin-timer` |
 | `logger-console` | `@cordisjs/plugin-logger-console` |
-| `fs` | `@cordisjs/plugin-fs-node` |
+| `fs` | `@cordisjs/fs` （同时保留 `@cordisjs/plugin-fs-node` 注册名） |
+| `fs:local` | `@cordisjs/fs-node` |
+| `http` | `@cordisjs/http` |
+| `server` | `@cordisjs/server` |
+| `server:acl` | `@cordisjs/server-acl` |
+| `server:echo` | `@cordisjs/server-echo` |
+| `server:static` | `@cordisjs/server-static` |
+| `server:proxy` | `@cordisjs/server-proxy` |
 | `include` | `@cordisjs/plugin-include` |
 | `group` | `@cordisjs/plugin-group` |
 | `hmr` | `@cordisjs/plugin-hmr`（由 `kardia` 可执行文件注册） |
 
-可执行文件会自行启动 `fs`，并以 `watch: true` include 配置文件，因此配置文件本身就是一个 `include`，其中的条目构成整个应用。
+可执行文件会自行启动 `fs` 与 `fs:local`，并以 `watch: true` include 配置文件，因此配置文件本身就是一个 `include`，其中的条目构成整个应用。
 
 ### `logger-console` [#logger-console]
 
@@ -148,4 +163,4 @@ icon: Settings
 
 ### `timer` 与 `fs` [#timer-and-fs]
 
-二者都不接受配置。它们提供 `timer` 和 `fs` 服务；插件如何使用它们见[服务](/docs/guide-services)。
+`timer` 不接受配置；`fs` 可通过 `baseUrl` 配置 URL 解析和 provider 读流，原生监听保持已有路径行为。它们提供 `timer` 和 `fs` 服务；插件如何使用它们见[服务](/docs/guide-services)。

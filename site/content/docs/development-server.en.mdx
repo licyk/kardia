@@ -1,0 +1,81 @@
+---
+title: "Server architecture and acceptance"
+description: "Lifecycle boundaries, fixed upstream comparisons, native platform evidence and documented differences."
+icon: Network
+---
+
+The Server implementation acceptance commit is [eee256a](https://github.com/licyk/kardia/commit/eee256a7ca64802170ed8007b88b9960196f67d7), against Cordis `f6290dbbf1558cb3a870a58b1f97bacc0d3a9960`. All five packages and their required FS/HTTP paths are implemented. This work did not publish a release or change the workspace version.
+
+## Dependencies and ownership [#architecture]
+
+<Mermaid chart={"flowchart LR\n  Server --> ACL\n  Server --> Echo\n  Server --> Static\n  Server --> Proxy\n  FS --> Static\n  Local[file provider] --> FS\n  HTTP[HTTP client] --> Proxy\n  Policy[Recovery supervisor] --> Fiber[Plugin lifecycle]\n  Fiber --> Effects[Routes streams sockets tasks]"} />
+
+`kardia-server` uses Hyper 1.12 for HTTP/1 and tokio-tungstenite 0.30 for WS frames. Kardia controls routing, claimed responses and lifecycle. `kardia-http` uses Reqwest 0.13.5, rustls platform certificate verification and explicit streaming decompression, preventing library redirect/status defaults from changing upstream semantics. Production code does not invoke Node.
+
+The `Svc` caller owns route, mount, connection and stream effects; services resolve dependencies at their definition site. In-flight HTTP handlers, middleware, route/upgrade hooks and response sources belong to cancellable task collections. Disposal unregisters, stops and awaits destruction before recovery creates another instance. Streams use bounded channels; reader/poll panics become operation errors.
+
+Static reads through FS providers. Content detection owns a separate stream. Simple file-type rules and extension mappings are generated from fixed sources, while Rust stream readers handle complex containers. A source-hash check prevents unaudited upstream changes from entering generated mappings. The default POSIX detail of picomatch-rs 0.1.0 is adjusted against real comparisons.
+
+## Isolation and recovery [#isolation]
+
+[AGENTS.md](https://github.com/licyk/kardia/blob/main/AGENTS.md) makes isolation and configurable recovery mandatory. Manual is the default. Retry supervision lives outside the instance, waits for cleanup and uses a bounded rate. Host callbacks choose failure retention or delayed retry. Configuration errors do not loop. Policy changes, disablement, removal and disposal cancel old actions, and recovery does not rewrite configuration.
+
+| Area | Real verification |
+|---|---|
+| Core supervision / loader | All policies, repeated failure, invalid configuration, synchronous/asynchronous host panic, cancellation and unknown handlers |
+| Server | Handler panic before/after claiming; occupied-port startup failure/recovery under every policy while an independent Server handles HTTP |
+| HTTP lifecycle | Pending callbacks, body sources, middleware, route hooks and upgrade hooks are destroyed before disposal completes |
+| Echo / ACL | Repeated instance failure under every policy with healthy routes; Echo preserves the same healthy WS connection |
+| FS / Static | Provider invocation/poll panic, first/later read errors, cancellation and non-local mounts; stream counters return to zero |
+| HTTP client / Proxy | Repeated provider/instance failure under every policy, consumer rebuilding, continued healthy HTTP and the same healthy WS connection |
+| Unavailable upstream | Current HTTP operation fails, WS never accepts; Proxy stays Active and works again without restart |
+| Existing guest boundaries | Workspace regressions cover process exit/timeout/I/O panic, WASM and dylib paths; native dylibs are not described as crash-isolated |
+
+Tests inject errors, panics or Fiber failure into the actual implementation and observe real sockets and cleanup counters. Automatic recovery does not use test-driven updates. Manual mode is observed Failed before explicit handling. Host mode follows callback decisions. Only the failed instance and consumers of unavailable services may be interrupted.
+
+The containment boundary remains explicit: in-process unwind handling can catch Rust panic, but cannot contain abort, segfault or process-wide exit. Use the existing process/WASM guest boundary when that isolation is needed. This work does not add a sandbox for arbitrary native code.
+
+## Fixed comparisons and reproduction [#parity]
+
+Build the Rust host from the repository root, then run the existing tooling from `js/`:
+
+```sh
+cargo build -p kardia-server --example server-reference
+cd js
+bun install --frozen-lockfile
+bun run server:prepare
+bun run server:inventory --check
+bun run server:mime --check
+bun run check
+bun run test:server:reference
+```
+
+Preparation verifies/builds the fixed upstream in ignored `cordis/`, installs immutable Yarn dependencies and runs the original suites. It does not reset an unknown upstream worktree. `inventory.json` counts declarations, not passing tests. Adapters register fixtures and drive real services; they do not reproduce the algorithms under test.
+
+| Test category | Passing coverage |
+|---|---|
+| Original upstream suites | 105: core 57, ACL 15, Static 24, Proxy 9; Echo has no original independent suite |
+| Supplement / dual-host network tests | 200: reference 22, HTTP 50, WS/Echo 5, ACL 26, Static 29, client 28, Proxy 25, handshake 15 |
+| Content MIME detection | 254 files at fixture SHA `7fc6d9ff7cc01987aa73006757792a5ca198023a` plus 2 supplements, covering all 171 MIME values |
+| Negotiation and globs | All 1,180 extensions; 26 Static configurations across 15 paths each; no semantic-difference normalization |
+| Native platforms | Linux, Windows and macOS run Rust checks and actual upstream/comparison suites |
+| CLI / catalog | A real CLI subprocess runs the example; catalog aliases, provider replacement and consumer rebuilding |
+
+HTTP comparisons include status, reason, semantic headers and complete bodies; large files use full-body SHA-256. WS compares text/binary types, bytes, subprotocols and close code/reason. HTTPS/WSS uses a real certificate fixture, with separate rejection tests for untrusted certificates and hostname mismatch. Certificate verification is not bypassed.
+
+## Acceptance evidence [#evidence]
+
+- All six platform jobs in final [CI #43703951854](https://github.com/licyk/kardia/actions/runs/43703951854) passed at `eee256a`; [JS CI #43703951468](https://github.com/licyk/kardia/actions/runs/43703951468) passed at the same commit.
+- Local `cargo test --workspace`, workspace clippy, fmt, arch, loader tests/clippy without default features, and HMR process-feature clippy passed.
+- Initial FS Windows acceptance found NotFound for a file used as a parent path, versus Unix NotADirectory. Native expectations were corrected and [CI #43700024799](https://github.com/licyk/kardia/actions/runs/43700024799) passed; error mapping was not hidden.
+- Static's first macOS run timed out in an existing include rename-watcher test. Rerunning only the failed job at the same commit passed [CI #43700396222](https://github.com/licyk/kardia/actions/runs/43700396222). The final commit passed all platforms again.
+- A locally cached xtask binary contained the repository's old path. Cleaning only that package's build cache restored the architecture test, and the complete workspace then passed without changing assertions.
+- Cancelled intermediate runs are not success evidence. Native CI runners are not the user's personal devices; this work did not independently test those devices.
+
+## Relationship to upstream [#boundaries]
+
+Observed upstream details are retained, including dropped custom reason text for returned Response, Proxy's last Set-Cookie, provider-context proxy publicUrl, and error-page path rules that differ from ordinary files. See the [behavior reference](/docs/reference-server).
+
+Rust uses typed callbacks/services and UTF-8/serde values rather than reconstructing the entire JS object model. The auxiliary HTTP service covers HTTP(S)/WS(S) raw transport, configuration and lifecycle, not the complete decoder/file/data/SOCKS ecosystem; its WS client does not offer permessage-deflate. FS adds read-only provider streams and keeps existing watches, without a write ecosystem. All five target plugins have production implementations; no parallel JS products or guest network protocol were added.
+
+When changing the upstream SHA, record behavior changes and update shared fixtures before regenerating mappings and running native parity and failure matrices. Keep rules, fixture provenance and reproducible commands available. Compilation or a successful host restart cannot replace isolation acceptance.
