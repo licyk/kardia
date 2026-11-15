@@ -12,7 +12,7 @@
 |---|---|---|
 | P0 分析、规范与计划 | 已完成并推送 | `b1da534`；[站点 CI 通过](https://github.com/licyk/kardia/actions/runs/43693689368)；详细验证见第 11 节 |
 | P1 上游基准、对照框架与恢复契约 | 基准已推送，CI 与 Rust 最小证明待完成 | `a3feda0`；本机上游 105 项及补充 socket 基准 22 项通过 |
-| P2 Server HTTP 核心与恢复监督 | 未开始 | — |
+| P2 Server HTTP 核心与恢复监督 | 恢复基础已推送，HTTP 与集成待实现 | `b010642`；核心测试、clippy、架构检查通过，原生 CI 待验收 |
 | P3 WebSocket 与 Echo | 未开始 | — |
 | P4 ACL | 未开始 | — |
 | P5 Static 所需文件服务能力 | 未开始 | — |
@@ -274,3 +274,9 @@
 - `a3feda06b31c67321c9346c750934ec8f0df8a0e` 已提交推送并核实远端 SHA。固定上游 SHA、可重建准备脚本、105 项生成清单及 22 项真实 HTTP/WS 补充基准位于 `js/tests/server-parity/`；现有 Rust CI 增加三平台基准任务。
 - 本机验证：Yarn immutable 安装、`corepack yarn build core`、`corepack yarn build`、`corepack yarn test server server-acl server-proxy server-static` 通过（4 文件、105 项）；`bun run server:inventory` 生成 105 项，`bun run check`、`bun run test:server:reference` 通过（22 项）。这些结果仅证明上游基准，不代表 Rust 对照完成。
 - 传输选型已查验：Hyper 1.12、tokio-tungstenite 0.30、Reqwest 0.13.5；来源、MSRV、许可证和恢复契约见基准 README。三平台 CI 及 Rust 传输/恢复最小证明待后续验证，不提前关闭 P1。
+- 基准首轮 CI：Linux/macOS 基准及全部三平台 Rust 检查通过，Windows 原始 105 项通过，但生成清单的字节比较受 CRLF checkout 影响失败。`804782a` 修正检查时的换行规范化，已推送；不手改生成清单，不将该失败作为完成证据。
+
+### P2 恢复基础
+
+- `b010642` 已提交推送：新增 `Fiber::set_recovery`，默认手动保持失败，可选限频自动重试或宿主回调；监督跨实例存活，随 fiber 退役取消，切换策略取消旧动作。宿主同步/异步 panic 被捕获并记录；无根上下文重置，无自动配置回写。
+- 本地 `cargo test -p kardia-core`、`cargo clippy -p kardia-core --all-targets -- -D warnings`、`cargo xtask arch` 通过。6 项新故障测试验证重复失败、手动/宿主策略、处理器 panic、取消恢复和配置错误不循环重试；网络持续服务与 loader 配置集成仍待 P2 后续。
