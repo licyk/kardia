@@ -4,7 +4,7 @@ description: "Lifecycle boundaries, fixed upstream comparisons, native platform 
 icon: Network
 ---
 
-The Server implementation acceptance commit is [eee256a](https://github.com/licyk/kardia/commit/eee256a7ca64802170ed8007b88b9960196f67d7), against Cordis `f6290dbbf1558cb3a870a58b1f97bacc0d3a9960`. All five packages and their required FS/HTTP paths are implemented. This work did not publish a release or change the workspace version.
+The Server implementation acceptance commit is [3226312](https://github.com/licyk/kardia/commit/3226312ff3e3e08196b8175efa02d1905e2eba59), against Cordis `f6290dbbf1558cb3a870a58b1f97bacc0d3a9960`. All five packages and their required FS/HTTP paths are implemented. This work did not publish a release or change the workspace version.
 
 ## Dependencies and ownership [#architecture]
 
@@ -55,7 +55,7 @@ Preparation verifies/builds the fixed upstream in ignored `cordis/`, installs im
 | Test category | Passing coverage |
 |---|---|
 | Original upstream suites | 105: core 57, ACL 15, Static 24, Proxy 9; Echo has no original independent suite |
-| Supplement / dual-host network tests | 200: reference 22, HTTP 50, WS/Echo 5, ACL 26, Static 29, client 28, Proxy 25, handshake 15 |
+| Supplement / dual-host network tests | 201: reference 22, HTTP 51, WS/Echo 5, ACL 26, Static 29, client 28, Proxy 25, handshake 15 |
 | Content MIME detection | 254 files at fixture SHA `7fc6d9ff7cc01987aa73006757792a5ca198023a` plus 2 supplements, covering all 171 MIME values |
 | Negotiation and globs | All 1,180 extensions; 26 Static configurations across 15 paths each; no semantic-difference normalization |
 | Native platforms | Linux, Windows and macOS run Rust checks and actual upstream/comparison suites |
@@ -65,7 +65,7 @@ HTTP comparisons include status, reason, semantic headers and complete bodies; l
 
 ## Acceptance evidence [#evidence]
 
-- All six platform jobs in final [CI #43703951854](https://github.com/licyk/kardia/actions/runs/43703951854) passed at `eee256a`; [JS CI #43703951468](https://github.com/licyk/kardia/actions/runs/43703951468) passed at the same commit.
+- All six platform jobs in final [CI #43705092966](https://github.com/licyk/kardia/actions/runs/43705092966) passed at `3226312`; [JS CI #43705092953](https://github.com/licyk/kardia/actions/runs/43705092953) passed at the same commit.
 - Local `cargo test --workspace`, workspace clippy, fmt, arch, loader tests/clippy without default features, and HMR process-feature clippy passed.
 - Initial FS Windows acceptance found NotFound for a file used as a parent path, versus Unix NotADirectory. Native expectations were corrected and [CI #43700024799](https://github.com/licyk/kardia/actions/runs/43700024799) passed; error mapping was not hidden.
 - Static's first macOS run timed out in an existing include rename-watcher test. Rerunning only the failed job at the same commit passed [CI #43700396222](https://github.com/licyk/kardia/actions/runs/43700396222). The final commit passed all platforms again.

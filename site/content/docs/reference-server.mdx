@@ -31,7 +31,7 @@ icon: Server
 - `Request` 提供 method、url、path、query、headers、params，以及 bytes/text/json/blob/form_data。请求 body 只消费一次。
 - `Response` 可设置状态、header、bytes/text/json/Blob/FormData/stream。显式状态或 body 标记 claimed；仅设置 header 不算完成响应。后一次 body 写入替换前一次。
 - 普通异常或 unwind panic 在未 claimed 时返回 500；验证器的 `ValidationError` 返回 422 和 issues。已 claimed 的状态和内容保留。
-- 返回 `Some(Response)` 时按上游采用 body、status 和 header，**不复制自定义 status text**。直接对传入响应设置 status text 可以生效。
+- 返回 `Some(Response)` 时按上游采用 body、status 和 header，**不复制自定义 status text**，重复 Set-Cookie 只保留最后一个。直接对传入响应设置 status text 可以生效。
 - `accepts` 使用固定上游 MIME 数据和协商优先级；JSON 输出采用 JS Number 格式及整数属性排序。需要保留超过 JS Number 精度的整数时使用字符串。
 - 原生 Rust API 使用 UTF-8 字符串、serde JSON 值及类型化回调，不模拟 JS 原型、可调用对象或孤立 UTF-16 surrogate。Rust 读取 JSON 的值表示不等于完整 JS Number 运行时；响应编码按对照契约处理。
 

@@ -4,7 +4,7 @@ description: "Rust Server 系列的生命周期边界、固定上游对照、三
 icon: Network
 ---
 
-Server 系列以 [eee256a](https://github.com/licyk/kardia/commit/eee256a7ca64802170ed8007b88b9960196f67d7) 为实现验收提交。固定参考为 Cordis `f6290dbbf1558cb3a870a58b1f97bacc0d3a9960`。五个包及它们需要的 FS/HTTP 路径已实现；本轮没有发版或修改工作区版本。
+Server 系列以 [3226312](https://github.com/licyk/kardia/commit/3226312ff3e3e08196b8175efa02d1905e2eba59) 为实现验收提交。固定参考为 Cordis `f6290dbbf1558cb3a870a58b1f97bacc0d3a9960`。五个包及它们需要的 FS/HTTP 路径已实现；本轮没有发版或修改工作区版本。
 
 ## 依赖与归属 [#architecture]
 
@@ -55,7 +55,7 @@ bun run test:server:reference
 | 测试类型 | 已通过范围 |
 |---|---|
 | 固定上游原始测试 | 105：core 57、ACL 15、Static 24、Proxy 9；Echo 无原始独立套件 |
-| 补充/双端网络测试 | 200：上游补充 22、HTTP 50、WS/Echo 5、ACL 26、Static 29、客户端 28、Proxy 25、握手 15 |
+| 补充/双端网络测试 | 201：上游补充 22、HTTP 51、WS/Echo 5、ACL 26、Static 29、客户端 28、Proxy 25、握手 15 |
 | MIME 内容检测 | 固定 file-type 样本 SHA `7fc6d9ff7cc01987aa73006757792a5ca198023a` 的 254 文件及 2 补充样本，覆盖全部 171 MIME 值 |
 | MIME 协商与 glob | 1,180 个扩展名；26 组 Static 配置各 15 个路径；不归一化语义差异 |
 | 原生平台 | Linux、Windows、macOS 同时运行 Rust 检查与真实上游/对照 |
@@ -65,7 +65,7 @@ HTTP 对比状态、reason、语义 header 和完整 body；大文件比较完�
 
 ## 验收记录 [#evidence]
 
-- 最终实现 [CI #43703951854](https://github.com/licyk/kardia/actions/runs/43703951854) 的六个平台任务全部成功，绑定 `eee256a`；同提交 [JS CI #43703951468](https://github.com/licyk/kardia/actions/runs/43703951468) 成功。
+- 最终实现 [CI #43705092966](https://github.com/licyk/kardia/actions/runs/43705092966) 的六个平台任务全部成功，绑定 `3226312`；同提交 [JS CI #43705092953](https://github.com/licyk/kardia/actions/runs/43705092953) 成功。
 - 本机 `cargo test --workspace`、workspace clippy、fmt、arch、loader 无默认 feature 测试/clippy，以及 HMR process feature clippy 全部通过。
 - 首次 FS Windows 验收发现父路径为文件时系统返回 NotFound，而 Unix 返回 NotADirectory。测试改为原生期望，随后 [CI #43700024799](https://github.com/licyk/kardia/actions/runs/43700024799) 成功；错误映射没有被掩盖。
 - Static 首轮 macOS 的既有 include rename watcher 超时；同一提交仅重跑失败任务后 [CI #43700396222](https://github.com/licyk/kardia/actions/runs/43700396222) 成功。最终提交再次完整通过三平台。

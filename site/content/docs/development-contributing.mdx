@@ -195,9 +195,9 @@ bun run build     # static output in site/.output/public
 ### 内容 [#content]
 
 - 页面是 `site/content/docs/` 中的 MDX 文件，使用按前缀分组的扁平 slug（`guide-*`、`concepts-*`、`reference-*`、`development-*`）。
-- 站点是双语的。中文是默认语言：`<slug>.mdx`，不带前缀提供。英文是 `<slug>.en.mdx`，在 `/en/` 下提供。每个页面都有两种语言的版本，并有一个测试检查这一点。
+- 站点是双语的。中文是默认语言：`<slug>.mdx`，不带前缀提供。英文是 `<slug>.en.mdx`。两种语言使用同一页面 URL，按浏览器语言或用户保存的语言选择切换。每个页面都有两种语言的版本，并有一个测试检查这一点。
 - 侧边栏的顺序及其分节标题来自 `meta.json`（中文）和 `meta.en.json`（英文）。两者必须以相同的顺序列出相同的 slug；同样有一个测试检查这一点。
-- 页面之间的链接使用 `/docs/<slug>`（站点会自行加上 `/en`）。除 Fumadocs 的默认组件外，页面无需导入即可使用 `Cards`、`Callout`、`Steps`、`Tabs`、`Accordions` 和 `Mermaid` 组件。
+- 页面之间的链接使用 `/docs/<slug>`（站点在当前页面语言中加载内容）。除 Fumadocs 的默认组件外，页面无需导入即可使用 `Cards`、`Callout`、`Steps`、`Tabs`、`Accordions` 和 `Mermaid` 组件。
 - 代码、标识符、配置示例和论文的记号在两种语言中都保持原样。
 
 ### 部署 [#deployment]

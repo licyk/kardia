@@ -195,9 +195,9 @@ bun run build     # static output in site/.output/public
 ### Content [#content]
 
 - Pages are MDX files in `site/content/docs/`, with flat slugs grouped by prefix (`guide-*`, `concepts-*`, `reference-*`, `development-*`).
-- The site is bilingual. Chinese is the default language: `<slug>.mdx`, served without a prefix. English is `<slug>.en.mdx`, served under `/en/`. Every page exists in both languages, and a test checks it.
+- The site is bilingual. Chinese is the default language: `<slug>.mdx`, served without a prefix. English is `<slug>.en.mdx`. Both languages use the same page URL, selected from browser language or the user’s saved preference. Every page exists in both languages, and a test checks it.
 - The sidebar order and its section headings come from `meta.json` (Chinese) and `meta.en.json` (English). Both must list the same slugs in the same order; a test checks that too.
-- Links between pages use `/docs/<slug>` (the site adds `/en` itself). Besides Fumadocs' defaults, pages can use the `Cards`, `Callout`, `Steps`, `Tabs`, `Accordions` and `Mermaid` components without imports.
+- Links between pages use `/docs/<slug>` (the site loads content in the selected language). Besides Fumadocs' defaults, pages can use the `Cards`, `Callout`, `Steps`, `Tabs`, `Accordions` and `Mermaid` components without imports.
 - Code, identifiers, configuration examples and the paper's notation stay as they are in both languages.
 
 ### Deployment [#deployment]

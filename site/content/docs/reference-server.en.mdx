@@ -31,7 +31,7 @@ For string HTTP routes, `intercept.server.routes["METHOD path"]` overrides suppl
 - `Request` exposes method, url, path, query, headers, params and bytes/text/json/blob/form_data readers. Its body is consumed once.
 - `Response` supports status, headers and bytes/text/json/Blob/FormData/stream bodies. Setting status or body claims a response; setting a header alone does not. Later body writes replace earlier ones.
 - Ordinary errors and unwind panics produce 500 while unclaimed; validator `ValidationError` produces 422 with issues. Claimed status and content are retained.
-- Adopting `Some(Response)` copies body, status and headers, but **does not copy custom status text**, matching upstream. Setting status text directly on the supplied response works.
+- Adopting `Some(Response)` copies body, status and headers, but **does not copy custom status text** and keeps only the last repeated Set-Cookie, matching upstream. Setting status text directly on the supplied response works.
 - `accepts` uses the fixed upstream MIME database and negotiation priorities. JSON output uses JS Number formatting and integer-property ordering. Send integers beyond JS Number precision as strings when exactness matters.
 - Rust APIs use UTF-8 strings, serde JSON values and typed callbacks. They do not emulate JS prototypes, callable objects or isolated UTF-16 surrogates. The Rust JSON value representation is not a complete JS Number runtime; response encoding follows the tested contract.
 
