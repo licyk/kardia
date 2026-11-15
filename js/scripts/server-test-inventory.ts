@@ -17,7 +17,7 @@ for (const component of ["core", "acl", "proxy", "static"]) {
 const output = JSON.stringify({ upstream: UPSTREAM_SHA, tests }, null, 2) + "\n";
 const path = fileURLToPath(new URL("../tests/server-parity/inventory.json", import.meta.url));
 if (process.argv.includes("--check")) {
-  if (readFileSync(path, "utf8") !== output) throw new Error("Server test inventory is stale; run bun run server:inventory");
+  if (readFileSync(path, "utf8").replace(/\r\n/g, "\n") !== output) throw new Error("Server test inventory is stale; run bun run server:inventory");
 } else {
   writeFileSync(path, output);
 }
