@@ -81,6 +81,7 @@ pub(crate) struct FiberData {
     pub(crate) update_hooks: IdTable<Arc<UpdateHook>>,
     /// The effect on the parent that instantiated this fiber (O-Insert).
     pub(crate) retire: Option<Arc<EffectCell>>,
+    pub(crate) recovery: Option<crate::recovery::RecoveryTask>,
 }
 
 pub(crate) struct Impl {
@@ -235,6 +236,7 @@ impl FiberData {
             disposables: IdTable::new(),
             update_hooks: IdTable::new(),
             retire: None,
+            recovery: None,
         }
     }
 

@@ -144,7 +144,9 @@ impl State {
             return;
         }
         fiber.removed = true;
+        let recovery = fiber.recovery.take();
         let (scope, runtime) = (fiber.scope.clone(), fiber.runtime);
+        self.drop_later(recovery);
         self.emit(move |root| PluginRemoved { fiber: Fiber::from_parts(root, id, scope) });
         if let Some(key) = runtime
             && let Some(runtime) = self.runtimes.get_mut(&key)
