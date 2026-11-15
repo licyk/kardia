@@ -295,3 +295,10 @@
 - `253dc1f` 已提交推送并核实远端 SHA：entry 的 `recovery` 支持 `{ mode: "manual" }`（默认）、`{ mode: "retry", delayMs: 1000 }`、`{ mode: "host", handler: "name" }`；宿主通过 `Loader::register_recovery_handler` 注册处理器。未知配置字段保留，未注册的处理器报告错误，不运行插件或暗中改成自动重试。
 - 新增 5 项 loader 测试通过：重复失败无配置回写、默认手动与宿主决定、禁用/切换取消、未注册处理器及边界校验；loader 全套默认/无默认 feature 测试、相关 clippy、格式和架构检查通过。
 - Server 故障用例增至 5 项，包括 catalog 创建占用端口的隔离 Server，三种策略下释放端口并验证恢复，同时独立 Server 持续提供真实 HTTP 服务。该实现的原生 CI 尚待验收。
+
+### P2 HTTP 补充语义
+
+- `5a4615a` 已提交推送并核实远端 SHA：补齐 URL-encoded/multipart 表单、Blob、响应状态文本、Accept 协商及请求消费状态；响应保留可读分支和发送分支，客户端取消会释放数据源。
+- HTTP 双端对照扩大至 42 项，加原有 22 项上游补充基准共 64 项，本机全部通过；新增路径可选组/混合通配符/引号与 Unicode 参数/正则前瞻、表单文件、协商和错误 JSON 场景。保留逐字节对照并修复 JSON 字段顺序、Blob MIME 小写差异。
+- Rust 当前为 50 个 HTTP、5 个隔离、3 个流测试通过；类型检查、clippy、格式、架构和差异检查通过。路径编译依赖的实际锁定版本为 path-to-regexp **8.4.2**，已修正代码注释与 NOTICE 的错误版本标注。
+- 较早 HTTP 提交的 CI 被后续实现提交取消，不能作为成功证据；最终原生验收继续跟踪较新实现。P2 的完整监听故障矩阵与集成验收仍需收尾，随后继续 WS/Echo。
