@@ -375,3 +375,9 @@
 - `eee256a7ca64802170ed8007b88b9960196f67d7` 的 [CI #43703951854](https://github.com/licyk/kardia/actions/runs/43703951854) 全部成功：Linux、Windows、macOS 的 Rust workspace/feature 检查，以及三平台固定上游 105 项与 200 项补充/双端网络测试均通过。同提交 [JS CI #43703951468](https://github.com/licyk/kardia/actions/runs/43703951468) 成功。
 - P1/P2/P7/P8/P9 关闭；P3/P4/P5/P6 的行为和隔离在最终提交再次回归。原生 runner 验证不等于用户个人设备测试；本轮未进行个人设备独立验收，也未发布版本/tag。
 - P10 正在将使用方式、精确行为、恢复策略、实现边界和验收证据重写为双语站点页面；部署与线上验证完成后再删除本计划。
+
+### P10 正式文档已推送
+
+- `0b1c5806156e7fdfe04520b714c863eac929aab3` 已提交推送并核实远端 SHA。新增 guide-server、reference-server、development-server 的中英文正式页面；使用方式、行为边界、恢复配置、完整对照命令与三平台证据已迁入。同步导航/索引、README crate/plugin 清单、FS/配置/生命周期/元理论/开发状态及测试规范。
+- 依据当前 Cargo metadata 核实 17 个库/应用 crate 加 xtask；明确本轮源码功能尚未发版，不把旧 crates.io 二进制描述为已包含新包。正式文档没有引用临时计划。
+- 本机站点类型检查及 7 文件 41 测试通过；完整构建完成编译后，预渲染因已有进程占用 3000 失败，未停止该进程或修改构建配置。使用既有 site.yml 完整构建/发布作为最终验收；等待站点部署及双语页面线上验证，完成后删除本计划。
