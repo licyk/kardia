@@ -62,22 +62,9 @@ impl Plugin for ProxyPlugin {
                 let forwarded = kardia_server::Response::new();
                 forwarded.set_status(response.status);
                 forwarded.set_status_text(response.status_text)?;
-                for name in response.headers.keys() {
+                for (name, value) in &response.headers {
                     if name != "content-length" && name != "content-encoding" {
-                        let values = response.headers.get_all(name);
-                        // Cordis adopts a returned Fetch Response with Headers.set;
-                        // its repeated Set-Cookie entries overwrite one another.
-                        let value = if name == "set-cookie" {
-                            values.iter().next_back().unwrap().clone()
-                        } else {
-                            values
-                                .iter()
-                                .map(|v| v.to_str())
-                                .collect::<std::result::Result<Vec<_>, _>>()?
-                                .join(", ")
-                                .parse()?
-                        };
-                        forwarded.set_header(name.clone(), value);
+                        forwarded.append_header(name.clone(), value.clone());
                     }
                 }
                 forwarded.set_body(Body::stream(response.body.into_stream()));

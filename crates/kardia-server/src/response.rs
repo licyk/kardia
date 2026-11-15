@@ -127,7 +127,12 @@ impl Response {
         let mut data = self.0.lock();
         data.body = incoming.body;
         data.status = incoming.status;
+        // Cordis adopts Fetch headers with set(), so the last Set-Cookie wins.
+        let cookie = incoming.headers.get_all(http::header::SET_COOKIE).iter().next_back().cloned();
         data.headers.extend(incoming.headers);
+        if let Some(cookie) = cookie {
+            data.headers.insert(http::header::SET_COOKIE, cookie);
+        }
         data.claimed = true;
     }
     fn content_type(&self, value: &'static str) {

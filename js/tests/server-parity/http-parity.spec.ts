@@ -72,4 +72,7 @@ describe("Cordis and Rust HTTP socket parity", () => {
   it.each(['[1.0,-0.0,1e-7,1e21,9007199254740993,1e400]','{"2":"b","1":"a","x":1}'])('JSON number and property encoding %s',async body=>{
     const results=await Promise.all(hosts.map(async host=>{const response=await fetch(host.url+'/json',{method:'POST',body});return [response.status,await response.text()];}));expect(results[1]).toEqual(results[0]);
   });
+  it('adopts repeated headers from a returned Response',async()=>{
+    const results=await Promise.all(hosts.map(async host=>{const res=await fetch(host.url+'/returned-headers');return {cookies:res.headers.getSetCookie(),multi:res.headers.get('x-multi'),body:await res.text()};}));expect(results[1]).toEqual(results[0]);
+  });
 });

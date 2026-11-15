@@ -127,6 +127,14 @@ fn core(root: &Context, server: &kardia_core::Svc<Server>) -> kardia_core::Resul
             Ok(None)
         })?;
     }
+    server.get("/returned-headers", |_, _, _| async move {
+        let response = Response::new();
+        response.set_body("headers");
+        for (name, value) in [("set-cookie", "a=1"), ("set-cookie", "b=2"), ("x-multi", "one"), ("x-multi", "two")] {
+            response.append_header(name.parse()?, value.parse()?);
+        }
+        Ok(Some(response))
+    })?;
     server.get("/hello", |_, res, _| async move {
         res.set_text("world");
         Ok(None)
