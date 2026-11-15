@@ -116,9 +116,9 @@ pub(crate) struct FiberData {
 pub struct CommittedView { entries: SmallVec<[(Key, ImplId); 4]> }
 ```
 
-<Mermaid chart={"stateDiagram-v2\n  [*] --> Pending\n  Pending --> Loading: target becomes an epoch\n  Loading --> Active: apply finished, target unchanged\n  Loading --> Unloading: target changed or apply failed\n  Active --> Unloading: target changed\n  Unloading --> Loading: target is an epoch again\n  Unloading --> Pending: target is inactive\n  Unloading --> Failed: the load failed\n  Unloading --> Disposed: fiber removed\n  Failed --> Loading: update / restart / replace\n  Disposed --> [*]"} />
+<Mermaid chart={"stateDiagram-v2\n  [*] --> Pending\n  Pending --> Loading: target becomes an epoch\n  Loading --> Active: apply finished, target unchanged\n  Loading --> Unloading: target changed or apply failed\n  Active --> Unloading: target changed\n  Unloading --> Loading: target is an epoch again\n  Unloading --> Pending: target is inactive\n  Unloading --> Failed: the load failed\n  Unloading --> Disposed: fiber removed\n  Failed --> Loading: update / replace with dependencies ready\n  Failed --> Pending: update / replace awaiting dependencies\n  Disposed --> [*]"} />
 
-`FiberState` is the paper's θ. A fiber in `Failed` recovers only through `update`, `restart` or `replace`.
+`FiberState` is the paper's θ. A fiber in `Failed` clears its error through `update` or the registry's `replace`, then loads or waits according to dependency availability. Neither `restart` nor a dependency refresh clears its failure. The current state machine does not retry on its own; supervision outside the failed instance must drive automatic recovery. See the [mandatory failure-isolation and recovery rules](/docs/development-contributing#failure-isolation).
 
 <Callout type="info">
 In the code (`state.rs` and `fiber.rs`), `FiberState` and `Target` are as sketched, except that `Target::Epoch::providers` is a `Vec<ImplId>` (the workspace does not use `smallvec`). `FiberData` differs:

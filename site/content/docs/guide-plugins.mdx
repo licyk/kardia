@@ -325,12 +325,14 @@ root.inject(Inject::of::<(Database,)>(), |ctx| async move {
 | `settled().await` | 等到没有进行中的状态转换；插件出错时返回该错误 |
 | `update(value)?.await` | 替换配置（见下文） |
 | `update_with(value, no_save)` | 同上；`no_save: true` 跳过写回配置文件 |
-| `restart().await` | 卸载并重新加载插件 |
+| `restart().await` | 卸载并重新加载未失败的插件；已失败的插件仍保持失败 |
 | `dispose().await` | 停止并移除插件 |
 | `error()` | 上一次加载失败的错误 |
 | `context()`、`config()`、`name()`、`parent()`、`effects()` | 内省 |
 
-处于 `Failed` 状态的插件只能通过 `update`、`restart` 或替换来恢复。
+处于 `Failed` 状态的插件通过 `update` 或注册表中的实现替换来清除失败；`restart()` 和依赖刷新都不会清除错误。`update_with(config, true)` 同样可以恢复，并且不发出用于配置回写的 `ConfigCommitted` 事件。
+
+这是当前运行时提供的恢复操作，并不表示它会自行重试失败的插件。[项目强制规范](/docs/development-contributing#failure-isolation)要求插件实现提供自动恢复，并保证无关插件持续运行；实现时必须由失败实例之外的监督逻辑调用恢复操作，并通过真实故障注入验证。
 
 ## 配置 [#configuration]
 

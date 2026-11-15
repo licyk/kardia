@@ -325,12 +325,14 @@ The fiber handle offers:
 | `settled().await` | Waits until no transition is in flight; fails with the plugin's error |
 | `update(value)?.await` | Replaces the configuration (below) |
 | `update_with(value, no_save)` | The same; `no_save: true` skips the write-back to a config file |
-| `restart().await` | Unloads and loads the plugin again |
+| `restart().await` | Unloads and loads a non-failed plugin again; a failed plugin stays failed |
 | `dispose().await` | Stops the plugin and removes it |
 | `error()` | The error of the last failed load |
 | `context()`, `config()`, `name()`, `parent()`, `effects()` | Introspection |
 
-A `Failed` plugin recovers only through `update`, `restart` or a replacement.
+A `Failed` plugin clears its failure through `update` or an implementation replacement in the registry. Neither `restart()` nor a dependency refresh clears the error. `update_with(config, true)` can also recover it without emitting the `ConfigCommitted` event used for configuration write-back.
+
+These are the runtime's current recovery operations, not an automatic retry policy. The [mandatory project rules](/docs/development-contributing#failure-isolation) require plugin implementations to recover automatically while unrelated plugins keep running. Supervision outside the failed instance must invoke recovery, and real fault-injection tests must verify it.
 
 ## Configuration [#configuration]
 

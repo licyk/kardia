@@ -99,7 +99,7 @@ g_n^u(γ^u) ≃_K (Ψ^{t_l} ∘ … ∘ Ψ^{t_1})(γ^b)
 一次迭代可能抛出错误：`Γ → Either(Ξ, Γ × (Γ→Γ) × Maybe(ℑ))`。抛出错误会像中止式的 L-Divert 一样退出 Reloading（由迭代而不是环境选择）：纤程带着迄今为止构建的累加器经由 Unloading 展开，最终以未设置任何东西的状态到达 Inactive，并且**错误被记录在纤程上**。此后 L-Begin 要求纤程没有错误：失败的效应*不会在未改变的环境中重试*；`quiet` 接纳失败的纤程；失败不会传播到父纤程（兄弟纤程继续运行）。重试是一次修订（不带结果的重新插入）。合流性排除失败的纤程。在实现中，这对应状态 `FAILED`。
 
 <Callout type="info">
-**在 kardia 中**：失败的纤程处于 `FiberState::Failed`，并保留其错误（`Fiber::error()`）；只有 `update`、`restart` 或 `replace` 能使其恢复。见[生命周期](/docs/development-lifecycle)。
+**在 kardia 中**：失败的纤程处于 `FiberState::Failed`，并保留其错误（`Fiber::error()`）；`update` 或注册表中的 `replace` 清除错误，`restart` 和依赖刷新不会清除。运行时不会自行重试失败纤程；插件的自动恢复需要独立监督逻辑。见[生命周期](/docs/development-lifecycle)和[强制故障隔离与恢复规范](/docs/development-contributing#failure-isolation)。
 </Callout>
 
 ### 隔离

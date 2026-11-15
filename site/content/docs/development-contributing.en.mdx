@@ -10,6 +10,17 @@ kardia is developed at [github.com/licyk/kardia](https://github.com/licyk/kardia
 The repository's [`AGENTS.md`](https://github.com/licyk/kardia/blob/main/AGENTS.md) has the code rules. In short: breaking refactors are allowed, with no compatibility layers; validate external data once, at the boundary, and tolerate unknown fields; no complexity for speculative races or edge cases without agreement first; keep main functions on the normal flow, with details in small helpers below; comment only non-obvious constraints; regenerate generated files instead of editing them; test the real implementation with few mocks; follow the repository's existing tools and workflows; extract a function only when it is reused, complex or a nameable concept.
 </Callout>
 
+## Mandatory failure isolation and automatic recovery [#failure-isolation]
+
+[`AGENTS.md`](https://github.com/licyk/kardia/blob/main/AGENTS.md) makes these acceptance requirements for plugin implementations and refactoring:
+
+- Plugin errors, unwind panics, failed background tasks, and isolated guest crashes must not terminate the host. Only the failed plugin and consumers of its unavailable services may be interrupted; unrelated plugins must continue serving requests and making progress throughout recovery.
+- Recoverable failures must recover automatically without restarting the host or manually editing configuration. Supervision must outlive the failed instance and retry at a bounded rate. Disabling, removing, or disposing the plugin cancels recovery. Report invalid configuration instead of repeatedly retrying it unchanged.
+- Distinguish a failed request or connection from a failed instance. Withdraw a failed instance's services and clean up its routes, listeners, connections, streams, and background tasks before replacing it. Do not reset the root context, duplicate registrations, or leave stale tasks running. User callbacks and asynchronous cleanup run outside runtime locks.
+- Inject faults into the real implementation: continuously check unrelated plugins during the failure, observe automatic recovery without test code calling recovery APIs, repeat failures to verify cleanup, and verify that disposal cancels recovery. Validate the relevant native platforms separately.
+
+**Current implementation boundary.** The core runtime catches unwind panics from `apply` and provides failure cleanup and recovery operations. It does not retry failed fibers automatically, and `restart()` does not clear their failure; `update` or a registry replacement must clear it. These rules do not establish that existing plugins already recover automatically; new implementations must supply and test that behavior. In-process catching cannot contain `abort`, segmentation faults, or process termination. Plugins needing that isolation must use the existing process or applicable WebAssembly boundary; native dynamic libraries do not provide it. See [Plugin lifecycle](/docs/guide-plugins) and [Guest failures](/docs/guide-guests#failures).
+
 ## Building and testing [#building]
 
 ```sh
