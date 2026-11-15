@@ -11,15 +11,15 @@
 | 阶段 | 状态 | 提交与验证证据 |
 |---|---|---|
 | P0 分析、规范与计划 | 已完成并推送 | `b1da534`；[站点 CI 通过](https://github.com/licyk/kardia/actions/runs/43693689368)；详细验证见第 11 节 |
-| P1 上游基准、对照框架与恢复契约 | 实现与本机验收完成，最终 CI 待定 | `a3feda0` / `804782a`；三平台基准通过，HTTP 双端对照已接入 |
-| P2 Server HTTP 核心与恢复监督 | 实现与本机验收完成，最终 CI 待定 | `b010642` / `4ac53b9`；50 HTTP 用例、4 故障用例及 18 双端对照通过，新代码原生 CI 待验收 |
+| P1 上游基准、对照框架与恢复契约 | 阶段验收通过 | `a3feda0` / `804782a`；三平台基准通过，HTTP 双端对照已接入 |
+| P2 Server HTTP 核心与恢复监督 | 阶段验收通过 | `b010642` / `4ac53b9`；50 HTTP 用例、4 故障用例及 18 双端对照通过，新代码原生 CI 待验收 |
 | P3 WebSocket 与 Echo | 阶段验收通过 | `d2a1bc3`；迁移、隔离、双端及三平台 CI 通过，最终集成见 P9 |
 | P4 ACL | 阶段验收通过 | `f907283`；15 个迁移用例、三种策略隔离、26 项双端场景及三平台 CI 通过 |
 | P5 Static 所需文件服务能力 | 阶段验收通过 | `98711c3`；6 项读流/挂载/隔离测试及 watch/include/hmr 回归通过 |
 | P6 Static | 阶段验收通过 | `f6e4e9e`；24 个迁移用例、流故障/三种恢复策略、完整 MIME 清单和共享配置对照通过 |
-| P7 Proxy 所需 HTTP 客户端能力 | 实现已推送，原生 CI 待验收 | `ac87dd9`；28 项客户端双端及三种恢复策略通过 |
-| P8 Proxy | 实现已推送，原生 CI 待验收 | `45a765d`；9 项迁移、25 项双端及三种恢复策略通过 |
-| P9 集成、全量实机对照与故障验收 | 本机验收完成，最终原生 CI 待定 | `9ad80ef` / `d52ce89` / `eee256a`；200 双端及完整 workspace/feature 检查通过 |
+| P7 Proxy 所需 HTTP 客户端能力 | 阶段验收通过 | `ac87dd9`；28 项客户端双端及三种恢复策略通过 |
+| P8 Proxy | 阶段验收通过 | `45a765d`；9 项迁移、25 项双端及三种恢复策略通过 |
+| P9 集成、全量实机对照与故障验收 | 完整验收通过 | `9ad80ef` / `d52ce89` / `eee256a`；200 双端及完整 workspace/feature 检查通过 |
 | P10 正式文档、站点发布与计划删除 | 编写中 | 五包最终原生验收后发布并删除计划 |
 
 ## 2. 固定分析基线
@@ -369,3 +369,9 @@
 - `cargo test --workspace` 完整通过（包括 guest/process/WASM/dylib、FS watcher、include/HMR 与文档测试）；workspace clippy、格式、架构检查通过；loader 无默认 feature 的 clippy/test 及 HMR process feature clippy 通过。新增 lifecycle 测试共 3 项。
 - 首轮 workspace 的唯一失败来自本地旧 xtask 二进制内嵌 `/root/code_workspace/cordis-rs/xtask` 路径；`cargo clean -p xtask` 后该包 21 项与真实当前目录架构检查通过，再次完整 workspace 通过。未修改测试逻辑；HMR 测试产生的 fixture lock 版本噪声已恢复。
 - 中间提交的原生网络任务已通过，但部分较慢的 Rust 任务被后续推送取消，不能算最终成功。以 `eee256a` 的完整三平台 CI 关闭 P1/P2/P7/P8/P9；等待期间编写正式文档，不提前删除计划。
+
+### P9 原生验收完成
+
+- `eee256a7ca64802170ed8007b88b9960196f67d7` 的 [CI #43703951854](https://github.com/licyk/kardia/actions/runs/43703951854) 全部成功：Linux、Windows、macOS 的 Rust workspace/feature 检查，以及三平台固定上游 105 项与 200 项补充/双端网络测试均通过。同提交 [JS CI #43703951468](https://github.com/licyk/kardia/actions/runs/43703951468) 成功。
+- P1/P2/P7/P8/P9 关闭；P3/P4/P5/P6 的行为和隔离在最终提交再次回归。原生 runner 验证不等于用户个人设备测试；本轮未进行个人设备独立验收，也未发布版本/tag。
+- P10 正在将使用方式、精确行为、恢复策略、实现边界和验收证据重写为双语站点页面；部署与线上验证完成后再删除本计划。
