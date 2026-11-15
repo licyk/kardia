@@ -86,7 +86,7 @@ await fiber.dispose(); // 它的 interval 停止，每次 increase 都被撤销
 
 ### 故障隔离与恢复策略 [#recovery]
 
-本节新增 API 已进入源码主分支，尚未发布新的 npm 版本。Rust 与 JS 的插件实例分别由各自运行时监督；配置 Rust 恢复策略不会自动修改 JS 插件策略。
+本节新增 API 包含在 npm 0.2.0 中。Rust 与 JS 的插件实例分别由各自运行时监督；配置 Rust 恢复策略不会自动修改 JS 插件策略。
 
 `fiber.setRecovery(policy)` 为一个插件句柄选择恢复策略，跨越该插件实例的卸载与重新加载。默认是 `{ type: "manual" }`，不强制重启。故障只影响失败实例及依赖其服务的消费者，无关插件必须继续工作。
 
@@ -128,7 +128,7 @@ host 收到 `{ fiber, error, signal }`。切换策略、手动更新、替换实
 
 ```toml
 [dependencies]
-kardia-bridge = "0.2"
+kardia-bridge = "0.3"
 ```
 
 应用创建一个 `Bridge`，挂载它的插件，并把客户端请求交给 `Bridge::handle`。插件注入 `bridge` 并暴露服务；暴露是暴露它的插件的效应，因此该插件停止时会被撤回：

@@ -115,7 +115,7 @@ Each built-in also answers to its TypeScript package name, such as `@cordisjs/pl
 
 The binary starts `fs` and `fs:local` itself and includes the config file with `watch: true`.
 
-The source branch now includes the Server family and configurable manual/retry/host recovery. Run `cargo run -p kardia -- examples/server.yml` from the repository root. See [Server guide](https://kardia-dev.netlify.app/docs/guide-server) and [native acceptance](https://kardia-dev.netlify.app/docs/development-server). These additions have not been released to crates.io yet.
+Rust 0.3.0 includes the Server family and configurable manual/retry/host recovery. Run `cargo run -p kardia -- examples/server.yml` from the repository root. See [Server guide](https://kardia-dev.netlify.app/docs/guide-server) and [native acceptance](https://kardia-dev.netlify.app/docs/development-server).
 
 ## Writing plugins in Rust
 
@@ -123,7 +123,7 @@ Add the facade crate:
 
 ```toml
 [dependencies]
-kardia = "0.2"
+kardia = "0.3"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
@@ -226,7 +226,7 @@ Create a `cdylib` crate that depends on `kardia-guest`:
 crate-type = ["cdylib"]
 
 [dependencies]
-kardia-guest = "0.2"
+kardia-guest = "0.3"
 ```
 
 ```rust

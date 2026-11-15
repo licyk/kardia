@@ -118,7 +118,7 @@ kardia path/to/kardia.yml
 
 可执行程序会自行启动 `fs` 与 `fs:local`，并以 `watch: true` 加载配置文件。
 
-源码分支已包含 Server 系列以及 manual/retry/host 可配置恢复。从仓库根目录运行 `cargo run -p kardia -- examples/server.yml`；详见 [Server 指南](https://kardia-dev.netlify.app/docs/guide-server)和[原生验收](https://kardia-dev.netlify.app/docs/development-server)。这些新增功能本轮尚未发布到 crates.io。
+Rust 0.3.0 包含 Server 系列以及 manual/retry/host 可配置恢复。从仓库根目录运行 `cargo run -p kardia -- examples/server.yml`；详见 [Server 指南](https://kardia-dev.netlify.app/docs/guide-server)和[原生验收](https://kardia-dev.netlify.app/docs/development-server)。
 
 ## 使用 Rust 编写插件
 
@@ -126,7 +126,7 @@ kardia path/to/kardia.yml
 
 ```toml
 [dependencies]
-kardia = "0.1"
+kardia = "0.3"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
@@ -231,7 +231,7 @@ cargo run -p kardia --example provider_consumer
 crate-type = ["cdylib"]
 
 [dependencies]
-kardia-guest = "0.1"
+kardia-guest = "0.3"
 ```
 
 ```rust

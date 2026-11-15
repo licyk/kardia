@@ -86,7 +86,7 @@ Where it differs from Kardia and Cordis is listed on [Implementation status](/do
 
 ### Failure isolation and recovery policy [#recovery]
 
-These new APIs are available on the source branch; no new npm version has been published for them yet. Rust and JS supervise their own plugin instances. A Rust recovery setting does not configure a JS plugin's policy.
+These new APIs are included in npm version 0.2.0. Rust and JS supervise their own plugin instances. A Rust recovery setting does not configure a JS plugin's policy.
 
 `fiber.setRecovery(policy)` selects supervision for one plugin handle, surviving instance unload/reload. The default is `{ type: "manual" }`, with no forced restart. Only the failed instance and consumers of its unavailable services may be interrupted; unrelated plugins must continue working.
 
@@ -128,7 +128,7 @@ A shared JS thread cannot isolate infinite loops, runtime crashes or process ter
 
 ```toml
 [dependencies]
-kardia-bridge = "0.2"
+kardia-bridge = "0.3"
 ```
 
 The app creates a `Bridge`, mounts its plugin, and routes client requests into `Bridge::handle`. Plugins inject `bridge` and expose services; an exposure is an effect of the exposing plugin, so it is withdrawn when that plugin stops:
