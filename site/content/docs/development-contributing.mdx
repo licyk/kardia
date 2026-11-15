@@ -73,7 +73,7 @@ bun run build       # 按依赖顺序生成每个包的 lib/（scripts/build.ts�
 | 工作流 | 触发条件 | 内容 |
 |---|---|---|
 | `ci.yml`（Rust） | 推送到 `main` 和拉取请求，但只修改 `site/`、`js/`、Markdown、`LICENSE`、`NOTICE` 和托管配置文件的除外；手动运行；被 Release 调用 | fmt、clippy、`cargo xtask arch`、测试套件 |
-| `js.yml`（npm 包） | 修改了 `js/` 或 `crates/kardia-bridge/` 的推送到 `main` 和拉取请求；手动运行；被 npm release 调用 | 各包的类型检查、测试和构建；桥对 Rust 宿主的端到端测试 |
+| `js.yml`（npm 包） | 修改了 `js/`、`crates/kardia-core/` 或 `crates/kardia-bridge/` 的推送到 `main` 和拉取请求；手动运行；被 npm release 调用 | Linux、Windows、macOS 上各包的类型检查、测试和构建；桥对真实 Rust 宿主的端到端故障恢复测试 |
 | `site.yml`（文档） | 修改了 `site/` 的推送到 `main` 和拉取请求；手动运行 | 站点的类型检查、测试和构建；在拉取请求之外还会部署（见下文） |
 | `release.yml` | `v*` 标签；手动运行 | 发布到 crates.io（见下文） |
 | `npm-release.yml` | `js-v*` 标签（`v*` 不匹配它）；手动运行 | 发布到 npm（[见下文](#npm-releases)） |
@@ -96,7 +96,7 @@ CI 的步骤：
 | README、`AGENTS.md`、许可证 | 什么都不运行 |
 | Rust 代码、测试、`Cargo.*`、`xtask/`、除 `site.yml` 和 js 相关工作流以外的工作流 | `ci.yml` |
 | `js/` | 只有 `js.yml` |
-| `crates/kardia-bridge/` | `ci.yml` 和 `js.yml` |
+| `crates/kardia-core/` 或 `crates/kardia-bridge/` | `ci.yml` 和 `js.yml` |
 | 版本递增，然后打标签 | `ci.yml` 运行一次；`release.yml` 复用那次运行 |
 | npm 版本递增，然后打 `js-v*` 标签 | 推送时运行 `js.yml`，作为发布的检查时再运行一次 |
 

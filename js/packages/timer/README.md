@@ -19,3 +19,7 @@ root.inject(["timer"], async (ctx) => {
 ```
 
 `timeout`, `interval`, `sleep`, `throttle` (with or without a trailing call) and `debounce`, as in the Rust crate `kardia-timer`. License: GPL-3.0-only.
+
+The source branch catches callback throws and Promise rejections, logs them under the scheduling plugin and keeps unrelated plugins running. An operation error does not restart its plugin. Report an unusable instance with `ctx.fiber.fail(error)` to invoke its configured recovery policy.
+
+Disposal cancels future triggers and waits for callbacks already in flight; return the Promise for all asynchronous callback work. Do not await disposal of the callback's own effect or fiber inside that callback. Arbitrary detached tasks, native timers and process-level failures are outside this boundary. These changes have not yet been published as a new npm version.

@@ -63,3 +63,22 @@ kardia 的测试依据两份规范检查实现：Cordis 的 TypeScript 测试套
 ## Server 对照与故障测试 [#server]
 
 五个 Server 包有 105 项原始上游声明和 201 项真实补充/双端测试，在 Linux、Windows、macOS 验证。覆盖完整 MIME 样本、TLS、WS、CLI 集成以及三种恢复策略下无关插件持续运行。见[复现命令与证据](/docs/development-server#parity)；清单和 MIME 源码通过现有脚本生成，不手改。
+
+## JS 恢复与跨端隔离 [#js-recovery]
+
+`js.yml` 在 Linux、Windows、macOS 分别执行包类型检查、测试、构建，以及真实 Rust 子进程 bridge E2E。它验证 JS 与 Rust 各自的恢复策略，不依赖上游 Server 对照工作流。
+
+```sh
+bun run --cwd js check
+bun run --cwd js test
+bun run --cwd js build
+bun run --cwd js test:e2e
+```
+
+本地验收：14 个 JS 测试文件、155 项测试，10 项真实跨端 E2E；Rust bridge 11 项测试、clippy、fmt 与架构检查通过。新增验收包括：
+
+- core 17 项：三种策略下反复失效、清理完成后恢复、无关插件持续进展；默认手动、加载失败、配置错误不重试、宿主处理函数抛错/拒绝、策略切换和卸载取消过期决定。
+- timer 15 项：四种调度器捕获同步异常/异步拒绝、日志归属、卸载等待回调结束；三种策略下显式实例故障反复恢复。
+- bridge 新增 5 项：实际 Rust 提供者分别执行三轮 manual/retry/host 恢复，JS 消费者随服务撤销/重新暴露停止和启动；独立 Rust/JS 调用及定时进展不中断，不重启 bridge；另测 retry/host 的移除取消。
+
+既有部分单元测试使用假定时器；新增故障测试使用真实计时器和实现，E2E 使用真实子进程通信。原生 CI 不等于用户个人设备、浏览器或 Tauri webview 的独立实机验收。恢复策略与同线程隔离限制见[使用指南](/docs/guide-typescript#recovery)。

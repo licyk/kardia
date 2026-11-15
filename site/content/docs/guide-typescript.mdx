@@ -84,6 +84,44 @@ await fiber.dispose(); // 它的 interval 停止，每次 increase 都被撤销
 
 它与 Kardia 和 Cordis 的不同之处列在[实现状态](/docs/development-status#typescript)中。
 
+### 故障隔离与恢复策略 [#recovery]
+
+本节新增 API 已进入源码主分支，尚未发布新的 npm 版本。Rust 与 JS 的插件实例分别由各自运行时监督；配置 Rust 恢复策略不会自动修改 JS 插件策略。
+
+`fiber.setRecovery(policy)` 为一个插件句柄选择恢复策略，跨越该插件实例的卸载与重新加载。默认是 `{ type: "manual" }`，不强制重启。故障只影响失败实例及依赖其服务的消费者，无关插件必须继续工作。
+
+| 策略 | 行为 |
+|---|---|
+| `{ type: "manual" }` | 保持 failed，等待宿主调用 `fiber.update(fiber.config, true)`，或修改配置/替换实现 |
+| `{ type: "retry", delay: 1000 }` | 清理完成后等待指定毫秒，再用当前配置恢复；失败后按同样间隔重试 |
+| `{ type: "host", handler }` | 清理完成后调用宿主，返回 `{ type: "keep-failed" }` 或 `{ type: "retry", delay: 1000 }`；可以返回 Promise |
+
+```ts
+import { Context } from "@kardiajs/core";
+
+const root = new Context();
+const worker = root.plugin((ctx) => {
+  ctx.provide("worker-status", "ready");
+});
+worker.setRecovery({ type: "retry", delay: 1000 });
+await worker.settled();
+
+// 宿主确认实例已无法继续工作时报告；一次请求失败不应直接等同于实例失效。
+worker.fail(new Error("worker is unusable"));
+```
+
+`fail()` 同步发起失效处理，清理异步完成；`settled()` 在失败结算后拒绝。普通 `restart()` 不清除失败，手动恢复使用 `update`。自动恢复不触发配置写回事件。retry 延时必须为有限正数且不大于 2,147,483,647 毫秒，避免 JS 定时器溢出导致高频重试。`ValidationError` 不会在配置未变时被自动重试，host 返回 retry 也一样。
+
+host 收到 `{ fiber, error, signal }`。切换策略、手动更新、替换实现或移除插件会使过期决定失效；取消时 `signal` 被中止。宿主应将它传给支持取消的异步操作。框架不能强制终止任意 Promise，但不会执行已取消决定所返回的重试。宿主处理函数抛错或拒绝时记录错误，插件保持失败，无关插件继续运行。根上下文不能调用 `setRecovery` 或 `fail`，不能用重启根上下文恢复单个插件。
+
+### 定时回调的错误与清理 [#timer-failures]
+
+`@kardiajs/timer` 的 timeout、interval、throttle、debounce 捕获回调同步异常和异步拒绝，日志归属于安排回调的插件。它们按**操作错误**处理，不自动将整个插件置为 failed；interval 后续仍可执行。若插件已无法继续工作，应显式调用 `ctx.fiber.fail(error)`，再由选定策略处理。
+
+卸载先取消后续触发，再等待已经开始的异步回调结束；timeout 的 effect 保留到回调结束。这保证受管理回调不会跨越旧实例清理边界。回调必须返回其异步工作的 Promise；脱离返回链的后台任务、原生定时器不受此机制管理。不要在回调内部等待自身 effect 或所属 fiber 的 dispose 完成，这会形成自等待；报告实例故障时使用非等待的 `fail()`。
+
+同一 JS 线程无法隔离无限循环、运行时崩溃或进程退出，也不能强制取消不配合的 Promise。这里保证的是框架管理的异常处理与生命周期；需要强隔离的执行应使用应用提供的独立执行边界。Vue 贡献的错误边界仍只隔离该贡献，不默认停止所属插件。
+
 ## 桥 [#bridge]
 
 ### 宿主：`kardia-bridge` [#host]

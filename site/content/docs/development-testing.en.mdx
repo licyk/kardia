@@ -63,3 +63,22 @@ Pure modules (`IdTable`, `Scope` lookups, target computation, `journal`, `patch`
 ## Server parity and failure tests [#server]
 
 The five Server packages have 105 original upstream declarations and 201 real supplement/dual-host tests on Linux, Windows and macOS. This includes full MIME fixtures, TLS, WS, CLI integration and all three recovery policies while unrelated plugins continue working. See [commands and evidence](/docs/development-server#parity); regenerate inventory/MIME sources with the existing scripts, never by hand.
+
+## JS recovery and cross-runtime isolation [#js-recovery]
+
+`js.yml` runs package type checks, tests, builds and real Rust subprocess bridge E2E on Linux, Windows and macOS. It verifies recovery in each runtime independently of the manual upstream Server comparison workflow.
+
+```sh
+bun run --cwd js check
+bun run --cwd js test
+bun run --cwd js build
+bun run --cwd js test:e2e
+```
+
+Local acceptance passed 155 tests in 14 JS files, 10 real cross-runtime E2E tests, and 11 Rust bridge tests plus clippy, fmt and architecture checks. New coverage includes:
+
+- 17 core tests: repeated failure under all three policies, recovery after cleanup, independent plugin progress, default manual handling, failed loads, no unchanged validation retries, throwing/rejecting host handlers, and cancellation on policy changes or removal.
+- 15 timer tests: synchronous/asynchronous errors across all four schedulers, caller attribution and awaiting callbacks on disposal; repeated explicit instance failures under all three policies.
+- 5 additional bridge tests: three manual/retry/host recovery rounds in a real Rust provider, JS consumer withdrawal/recreation, uninterrupted independent Rust/JS calls and timer progress without restarting the bridge, plus removal cancelling retry/host recovery.
+
+Some existing unit tests use fake timers; the new fault tests use real timers and implementations, and E2E uses real subprocess communication. Native CI does not constitute independent testing on the user's devices, in a browser or in a Tauri webview. See [policies and same-thread boundaries](/docs/guide-typescript#recovery).

@@ -120,6 +120,7 @@ hmr 的 `index` 用例“waits for a second re-enable init”在 Rust 中没有�
 | 效应 | `ctx.effect(scope => ...)`，配合 `scope.defer`、`scope.adopt` 和 `scope.checkpoint`，或返回一个撤销函数（相当于 Kardia 的 `effect_sync` / `effect` 合一）。没有生成器或异步迭代器形式的效应。 |
 | 内部事件 | 使用 `internal/plugin-inserted` 和 `internal/plugin-removed`（对应 Kardia 的 `PluginInserted` / `PluginRemoved`），而不是 Cordis 的单个 `internal/plugin`；`internal/status` 同时传递旧状态和新状态。 |
 | 事件 | 与 Kardia 相同：`emit` 记录失败的监听器并继续运行其余监听器；没有 `waterfall`；更新钩子是 `ctx.onUpdate`。没有装饰器，也不绑定监听器的 `this`。 |
+| 恢复策略 | `fiber.setRecovery` 支持 manual（默认）、限频 retry 和异步 host 决策；`fiber.fail` 报告实例失效。timer 回调错误只记录为操作失败，卸载等待在途回调。源码已实现，尚未发布新的 npm 版本；见[说明](/docs/guide-typescript#recovery)。 |
 | `update` / `restart` | 配置无效或纤程已退役时立即抛出（对应 Kardia 的 `Result`）；它们返回的 promise 随纤程一起结算，并被标记为已处理，因此丢弃它不会引发未处理的拒绝。 |
 | `ctx.inject(deps, apply)` | 每次调用都创建一个独立的插件，因此 `registry.replace` 无法指向它。 |
 | 名称 | 纤程在其插件的最后一个纤程退役后仍保留插件名称，因此移除时的事件仍带有该名称。 |

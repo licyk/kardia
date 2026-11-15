@@ -120,6 +120,7 @@ For using guests, see [Guest plugins](/docs/guide-guests) and [Hot reload](/docs
 | Effects | `ctx.effect(scope => ...)` with `scope.defer`, `scope.adopt` and `scope.checkpoint`, or a returned disposer (Kardia's `effect_sync` / `effect` in one). No generator or async-iterator effects. |
 | Internal events | `internal/plugin-inserted` and `internal/plugin-removed` (Kardia's `PluginInserted` / `PluginRemoved`) instead of Cordis' single `internal/plugin`; `internal/status` passes the old and new state. |
 | Events | As in Kardia: `emit` logs a failing listener and runs the rest; no `waterfall`; update hooks are `ctx.onUpdate`. No decorators, no `this` binding of listeners. |
+| Recovery | `fiber.setRecovery` supports manual (default), bounded retry and asynchronous host decisions; `fiber.fail` reports instance failure. Timer callback errors are operation failures, and disposal awaits in-flight callbacks. Available in source, not yet in a new npm release; see [details](/docs/guide-typescript#recovery). |
 | `update` / `restart` | Throw at once for an invalid config or a retired fiber (Kardia's `Result`); the promise they return, which settles with the fiber, is marked handled, so dropping it never raises an unhandled rejection. |
 | `ctx.inject(deps, apply)` | Creates a plugin of its own on every call, so `registry.replace` cannot target it. |
 | Names | A fiber keeps its plugin's name after its last fiber is retired, so the events of its removal still name it. |

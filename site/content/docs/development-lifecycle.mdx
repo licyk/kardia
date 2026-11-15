@@ -120,6 +120,8 @@ pub struct CommittedView { entries: SmallVec<[(Key, ImplId); 4]> }
 
 `Fiber::set_recovery` 已支持 `Manual`（默认）、限频 `Retry` 和 `Host` 处理；监督位于失败实例之外，等待清理，并随释放或策略切换取消。loader 条目通过 `recovery` 提供相同选择，见[配置与示例](/docs/guide-server#recovery)及[原生故障证据](/docs/development-server#isolation)。`restart()` 仍不清除失败，手动处理使用 `update`，选择监督策略后由监督逻辑驱动恢复操作。每种策略都必须保持无关插件正常运行。
 
+JS 的 `Fiber.setRecovery` 与 `Fiber.fail` 也已实现，采用独立于实例效应的监督对象；清理完成后才处理失败，移除或切换策略会取消旧决定。JS timer 将回调异常与实例故障区分，清理时等待在途回调。见[JS 使用指南](/docs/guide-typescript#recovery)及[跨端验收](/docs/development-testing#js-recovery)。
+
 <Callout type="info">
 在代码中（`state.rs` 和 `fiber.rs`），`FiberState` 和 `Target` 与草图一致，只是 `Target::Epoch::providers` 是 `Vec<ImplId>`（工作区不使用 `smallvec`）。`FiberData` 有所不同：
 

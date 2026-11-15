@@ -84,6 +84,44 @@ It is a port of Kardia's core rather than a wrapper of the TypeScript Cordis:
 
 Where it differs from Kardia and Cordis is listed on [Implementation status](/docs/development-status#typescript).
 
+### Failure isolation and recovery policy [#recovery]
+
+These new APIs are available on the source branch; no new npm version has been published for them yet. Rust and JS supervise their own plugin instances. A Rust recovery setting does not configure a JS plugin's policy.
+
+`fiber.setRecovery(policy)` selects supervision for one plugin handle, surviving instance unload/reload. The default is `{ type: "manual" }`, with no forced restart. Only the failed instance and consumers of its unavailable services may be interrupted; unrelated plugins must continue working.
+
+| Policy | Behavior |
+|---|---|
+| `{ type: "manual" }` | Remains failed until the host calls `fiber.update(fiber.config, true)`, changes configuration or replaces the implementation |
+| `{ type: "retry", delay: 1000 }` | Waits the specified milliseconds after cleanup, then recovers with current configuration; subsequent failures retry at the same interval |
+| `{ type: "host", handler }` | Calls the host after cleanup; returns `{ type: "keep-failed" }` or `{ type: "retry", delay: 1000 }`, optionally through a Promise |
+
+```ts
+import { Context } from "@kardiajs/core";
+
+const root = new Context();
+const worker = root.plugin((ctx) => {
+  ctx.provide("worker-status", "ready");
+});
+worker.setRecovery({ type: "retry", delay: 1000 });
+await worker.settled();
+
+// Report an instance known to be unusable; a single failed request need not fail its instance.
+worker.fail(new Error("worker is unusable"));
+```
+
+`fail()` starts failure handling synchronously; cleanup finishes asynchronously, and `settled()` rejects when the failure settles. Ordinary `restart()` does not clear failure; manual recovery uses `update`. Automatic recovery does not emit configuration write-back events. Retry delays must be finite, positive and at most 2,147,483,647 milliseconds, avoiding JS timer overflow and rapid retries. An unchanged `ValidationError` is not automatically retried, including when a host handler returns retry.
+
+The host receives `{ fiber, error, signal }`. Policy changes, manual updates, implementation replacement and removal invalidate obsolete decisions; cancellation aborts `signal`. Pass it to asynchronous operations that support cancellation. The framework cannot terminate arbitrary Promises, but never schedules retries from cancelled decisions. A throwing or rejecting host handler is logged, leaving the plugin failed while unrelated plugins continue. The root context rejects `setRecovery` and `fail`; restarting the root is not a recovery mechanism for one plugin.
+
+### Timer callback errors and cleanup [#timer-failures]
+
+`@kardiajs/timer` catches synchronous throws and asynchronous rejections from timeout, interval, throttle and debounce callbacks, logging under the scheduling plugin. These are **operation errors**, not automatic instance failures; an interval may continue firing. Explicitly call `ctx.fiber.fail(error)` when an instance is no longer usable, so its selected policy handles recovery.
+
+Disposal cancels future triggers, then waits for callbacks already in flight. A timeout's effect remains until its callback finishes. Managed callbacks therefore finish before the old instance's cleanup completes. Callbacks must return the Promise for their asynchronous work; detached tasks and native timers are outside this mechanism. Do not await disposal of the callback's own effect or owning fiber from inside that callback: it would wait for itself. Report an instance failure through the non-waiting `fail()` operation instead.
+
+A shared JS thread cannot isolate infinite loops, runtime crashes or process termination, nor forcibly cancel an uncooperative Promise. These guarantees cover framework-managed errors and lifecycle operations; stronger isolation requires a separate execution boundary supplied by the application. Vue contribution error boundaries still isolate the contribution without stopping its owning plugin by default.
+
 ## The bridge [#bridge]
 
 ### Host: `kardia-bridge` [#host]

@@ -73,7 +73,7 @@ The repository has five workflows, each for one part of it, so that a change run
 | Workflow | Runs on | Does |
 |---|---|---|
 | `ci.yml` (Rust) | pushes to `main` and pull requests, except changes only to `site/`, `js/`, Markdown, `LICENSE`, `NOTICE` and the hosting files; manual runs; called by Release | fmt, clippy, `cargo xtask arch`, the test suite |
-| `js.yml` (npm packages) | pushes to `main` and pull requests that change `js/` or `crates/kardia-bridge/`; manual runs; called by npm release | the packages' types, tests and build; the bridge's end-to-end test against the Rust host |
+| `js.yml` (npm packages) | pushes to `main` and pull requests that change `js/`, `crates/kardia-core/` or `crates/kardia-bridge/`; manual runs; called by npm release | package types, tests and builds on Linux, Windows and macOS; end-to-end recovery tests against the real Rust host |
 | `site.yml` (docs) | pushes to `main` and pull requests that change `site/`; manual runs | the site's types, tests and build; outside pull requests, the deploy (below) |
 | `release.yml` | `v*` tags; manual runs | publishes to crates.io (below) |
 | `npm-release.yml` | `js-v*` tags (which `v*` does not match); manual runs | publishes to npm ([below](#npm-releases)) |
@@ -96,7 +96,7 @@ A newer push cancels an older CI run of the same branch or pull request. Tags ne
 | the README, `AGENTS.md`, the licence | nothing |
 | Rust code, tests, `Cargo.*`, `xtask/`, a workflow other than `site.yml` and the js ones | `ci.yml` |
 | `js/` | `js.yml` only |
-| `crates/kardia-bridge/` | `ci.yml` and `js.yml` |
+| `crates/kardia-core/` or `crates/kardia-bridge/` | `ci.yml` and `js.yml` |
 | a version bump, then its tag | `ci.yml` once; `release.yml` reuses that run |
 | an npm version bump, then its `js-v*` tag | `js.yml` on the push, and again as the release's checks |
 

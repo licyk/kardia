@@ -120,6 +120,8 @@ pub struct CommittedView { entries: SmallVec<[(Key, ImplId); 4]> }
 
 `Fiber::set_recovery` now selects `Manual` (default), bounded `Retry`, or `Host` handling. The supervisor outlives the failed instance, waits for cleanup and cancels on disposal or policy changes. Loader entries expose the same choice through `recovery`; see [configuration and examples](/docs/guide-server#recovery) and [native fault evidence](/docs/development-server#isolation). `restart()` still does not clear failure; manual handling uses `update`, while selected supervision drives the supported recovery operation. Unrelated plugins must remain operational under every policy.
 
+JS also implements `Fiber.setRecovery` and `Fiber.fail`, with supervision outside instance effects. Failure decisions follow cleanup and are cancelled on removal or policy changes. JS timers distinguish callback errors from instance failures and await in-flight callbacks during disposal. See the [JS guide](/docs/guide-typescript#recovery) and [cross-runtime acceptance](/docs/development-testing#js-recovery).
+
 <Callout type="info">
 In the code (`state.rs` and `fiber.rs`), `FiberState` and `Target` are as sketched, except that `Target::Epoch::providers` is a `Vec<ImplId>` (the workspace does not use `smallvec`). `FiberData` differs:
 

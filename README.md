@@ -354,7 +354,7 @@ bun run build
 
 **CI** is split by what a change touches:
 - **`ci.yml`:** the Rust checks, on a pinned Rust 1.99.1, since the compile-error snapshots of `kardia-macros` depend on the compiler version. It skips changes only to the docs site, `js/` or Markdown.
-- **`js.yml`:** the npm packages' types, tests and build, and the bridge's end-to-end test.
+- **`js.yml`:** the npm packages' types, tests and build, and real Rust/JS bridge recovery tests, on Linux, Windows and macOS.
 - **`site.yml`:** checks and deploys the docs site.
 
 **To release:**
