@@ -11,16 +11,16 @@
 | 阶段 | 状态 | 提交与验证证据 |
 |---|---|---|
 | P0 分析、规范与计划 | 已完成并推送 | `b1da534`；[站点 CI 通过](https://github.com/licyk/kardia/actions/runs/43693689368)；详细验证见第 11 节 |
-| P1 上游基准、对照框架与恢复契约 | 原生基准通过，WS 最小证明待完成 | `a3feda0` / `804782a`；三平台基准通过，HTTP 双端对照已接入 |
-| P2 Server HTTP 核心与恢复监督 | HTTP 与恢复基础已推送，补充行为和 loader 集成待完成 | `b010642` / `4ac53b9`；50 HTTP 用例、4 故障用例及 18 双端对照通过，新代码原生 CI 待验收 |
+| P1 上游基准、对照框架与恢复契约 | 实现与本机验收完成，最终 CI 待定 | `a3feda0` / `804782a`；三平台基准通过，HTTP 双端对照已接入 |
+| P2 Server HTTP 核心与恢复监督 | 实现与本机验收完成，最终 CI 待定 | `b010642` / `4ac53b9`；50 HTTP 用例、4 故障用例及 18 双端对照通过，新代码原生 CI 待验收 |
 | P3 WebSocket 与 Echo | 阶段验收通过 | `d2a1bc3`；迁移、隔离、双端及三平台 CI 通过，最终集成见 P9 |
 | P4 ACL | 阶段验收通过 | `f907283`；15 个迁移用例、三种策略隔离、26 项双端场景及三平台 CI 通过 |
 | P5 Static 所需文件服务能力 | 阶段验收通过 | `98711c3`；6 项读流/挂载/隔离测试及 watch/include/hmr 回归通过 |
 | P6 Static | 阶段验收通过 | `f6e4e9e`；24 个迁移用例、流故障/三种恢复策略、完整 MIME 清单和共享配置对照通过 |
 | P7 Proxy 所需 HTTP 客户端能力 | 实现已推送，原生 CI 待验收 | `ac87dd9`；28 项客户端双端及三种恢复策略通过 |
 | P8 Proxy | 实现已推送，原生 CI 待验收 | `45a765d`；9 项迁移、25 项双端及三种恢复策略通过 |
-| P9 集成、全量实机对照与故障验收 | 未开始 | — |
-| P10 正式文档、站点发布与计划删除 | 未开始 | — |
+| P9 集成、全量实机对照与故障验收 | 本机验收完成，最终原生 CI 待定 | `9ad80ef` / `d52ce89` / `eee256a`；200 双端及完整 workspace/feature 检查通过 |
+| P10 正式文档、站点发布与计划删除 | 编写中 | 五包最终原生验收后发布并删除计划 |
 
 ## 2. 固定分析基线
 
@@ -361,3 +361,11 @@
 - `d52ce8966dac208d560fe43a8986105d13387be2` 已提交推送并核实远端 SHA。实测发现移除路由后 pending handler 和未结束 body 仍存活（释放后计数为 2）；新增调用/流任务归属后，两者在 dispose 返回前销毁，计数为 0。中间件及 route-request hook 同样取消并等待自己的任务，客户端取消也会终止其调用/流。
 - 新增 2 项真实网络生命周期测试通过；Echo、Proxy、HTTP provider、Static 的三种恢复策略回归及 CLI/catalog 集成通过，177 项双端对照通过。clippy、格式、架构及差异检查通过。保持一块有界流传递，不先缓存整个响应。
 - 对照 Node 24 内置 HTTP Server 源码，TCP 默认 noDelay 为 true；Rust 对齐该设置，避免新增分离流任务触发 Nagle 延迟。最终原生验收及剩余语义审计继续进行。
+
+### P9 最终语义与本机验收
+
+- `eee256a` 已提交推送并核实远端 SHA。内容协商改为固定上游 1,180 个 MIME 映射；正则使用 UTF-16 匹配并保留 g/y 的 lastIndex；JSON 输出采用 ECMAScript 数字格式与数字属性排序；WS 握手对齐 key/version/protocol 校验、错误 body/header 和 HTTP Upgrade 分流。upgrade hook 的 pending 任务也随效应释放。
+- 本机完整 200 项双端网络测试通过：原 177 项，加 5 项正则、1 项全 MIME negotiation、2 项 JSON 编码、15 项握手。固定原始 105 声明清单及生成代码检查通过；上游基线未漂移。
+- `cargo test --workspace` 完整通过（包括 guest/process/WASM/dylib、FS watcher、include/HMR 与文档测试）；workspace clippy、格式、架构检查通过；loader 无默认 feature 的 clippy/test 及 HMR process feature clippy 通过。新增 lifecycle 测试共 3 项。
+- 首轮 workspace 的唯一失败来自本地旧 xtask 二进制内嵌 `/root/code_workspace/cordis-rs/xtask` 路径；`cargo clean -p xtask` 后该包 21 项与真实当前目录架构检查通过，再次完整 workspace 通过。未修改测试逻辑；HMR 测试产生的 fixture lock 版本噪声已恢复。
+- 中间提交的原生网络任务已通过，但部分较慢的 Rust 任务被后续推送取消，不能算最终成功。以 `eee256a` 的完整三平台 CI 关闭 P1/P2/P7/P8/P9；等待期间编写正式文档，不提前删除计划。
