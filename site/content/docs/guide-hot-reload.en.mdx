@@ -8,6 +8,8 @@ Plugins compiled into the binary can be reconfigured live, but changing their co
 
 Rust has no module registry, so the host owns one: a `ModuleGraph` loads module code from a `ModuleSource`. The `Hmr` service reloads changed modules and replaces the plugins they export in place through [`registry.replace`](/docs/guide-effects#replace); with `watch.enabled` (and the `fs` service) it does so as files change. How to write the modules themselves is on [Guest plugins](/docs/guide-guests); how the reconciliation is built is on [Loader internals](/docs/development-loader), and the TypeScript original on [HMR](/docs/reference-hmr).
 
+HMR requires `fs`; its directory comes from the scoped `fs.baseUrl`. `hmr.base` has been removed. To choose another directory, set `intercept: { fs: { baseUrl: "./plugins" } }` on the HMR entry. An include scopes FS to its configuration file directory, including nested includes. `watch.files` and logged paths are relative to this directory. Non-file bases are configuration errors.
+
 ## Watching guest modules [#config]
 
 To reload guest modules as they change, add an `hmr` entry with watch mode to the config file:
@@ -16,10 +18,9 @@ To reload guest modules as they change, add an `hmr` entry with watch mode to th
 - id: hmr
   name: hmr
   config:
-    base: .                  # relative to this file; the default
     watch:
       enabled: true
-      files: [plugins]       # patterns relative to base; `!` excludes
+      files: [plugins]       # patterns relative to fs.baseUrl; `!` excludes
       debounce: 100          # ms; changes in one window reload together
 - id: hello
   name: ./plugins/hello.wasm
@@ -29,9 +30,8 @@ To reload guest modules as they change, add an `hmr` entry with watch mode to th
 
 | Option | Default | Meaning |
 |---|---|---|
-| `base` | `.` | The base directory. A relative `base` resolves against the directory of the config file that loads the `hmr` entry (as the TypeScript code does with `ctx.baseUrl`), else against the working directory. `watch.files` and logged paths are relative to it. |
 | `watch.enabled` | `false` | Reload on file changes. Requires the `fs` service. |
-| `watch.files` | `[".", "!**/.*", "!**/target"]` | Files to watch: patterns relative to `base`, as the `fs` watch filter takes them. A leading `!` excludes, and the last pattern matching a path or one of its ancestors decides. |
+| `watch.files` | `[".", "!**/.*", "!**/target"]` | Files to watch: patterns relative to the scoped `fs.baseUrl`, as the `fs` watch filter takes them. A leading `!` excludes, and the last pattern matching a path or one of its ancestors decides. |
 | `watch.debounce` | `100` | Changes within this many milliseconds are reloaded together. |
 
 With `watch.enabled` and a non-empty `files` list, `hmr` logs `watching [..] in <base>` and starts a watch below itself that waits for `fs`. If `fs` is there, the watch is set up before `hmr` settles; a failure to set it up is logged.
@@ -50,9 +50,11 @@ A `ModuleGraph` is also a `Resolver`, so the loader can resolve entry names thro
 
 ```rust
 use kardia::hmr::{Hmr, ModuleGraph, WasmSource};
+use kardia::fs::FsPlugin;
 use kardia::prelude::*;
 
 let root = Context::new();
+root.plugin::<FsPlugin>(Default::default())?.settled().await?;
 let graph = ModuleGraph::new(WasmSource::new());
 root.plugin_def(&Loader::plugin(graph.clone()), Value::Null)?.settled().await?;
 root.plugin_def(&Hmr::plugin(graph), Value::Null)?.settled().await?;
@@ -180,8 +182,8 @@ What can go wrong, and what happens:
 
 ## Watch mode [#watch]
 
-In watch mode, `hmr` watches `base` through the `fs` service and turns file changes into transactions:
-- Each change is logged at debug level (`change detected at <path>`, relative to `base`).
+In watch mode, `hmr` watches the directory at the scoped `fs.baseUrl` and turns file changes into transactions:
+- Each change is logged at debug level (`change detected at <path>`, relative to the scoped `fs.baseUrl`).
 - Changes are collected until `debounce` milliseconds pass without another one; the window's changes reload together as one batch (`reconcile N changed files`).
 - Batches run one at a time, and each batch takes over the files retained by the one before:
   - the files of failed imports are retried with the next batch (their import failures have been logged by the transaction);

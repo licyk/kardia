@@ -8,6 +8,8 @@ Everything a plugin sets up (listeners, timers, services, child plugins) is an *
 
 This page shows how to register effects, how they are disposed and what a fiber's handle can do. For the theory see [Revertible effects](/docs/concepts-revertible-effects); for the design decisions (non-owning handles, inertial loads instead of dropped futures) see [API design](/docs/development-design); for the state machine underneath see [Core data structures](/docs/development-lifecycle).
 
+Repeated `EffectHandle::dispose()` calls wait for the same cleanup and observe the same result, including failures. Cleanup runs once; dropping the first completion handle does not cancel it. Synchronous cleanup still finishes before `dispose()` returns.
+
 ## Registering an inverse [#inverses]
 
 The simplest effect is a plain inverse for something you just did:

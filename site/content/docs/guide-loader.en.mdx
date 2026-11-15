@@ -30,7 +30,7 @@ let loader = (*root.get::<Loader>()?).clone();
 
 ```rust
 pub trait Resolver: Send + Sync + 'static {
-    fn resolve(&self, name: &str) -> BoxFuture<'static, Result<PluginDef, Error>>;
+    fn resolve(&self, ctx: &Context, name: &str) -> BoxFuture<'static, Result<PluginDef, Error>>;
 }
 ```
 
@@ -52,21 +52,31 @@ A resolver can mix sources. The `kardia` binary resolves built-ins from its cata
 struct Plugins {
     catalog: Catalog,
     graph: ModuleGraph,
-    base: PathBuf,       // the directory of the configuration file
 }
 
 impl Resolver for Plugins {
-    fn resolve(&self, name: &str) -> BoxFuture<'static, Result<PluginDef>> {
+    fn resolve(&self, ctx: &Context, name: &str) -> BoxFuture<'static, Result<PluginDef>> {
         if self.catalog.get(name).is_some() {
-            return self.catalog.resolve(name);
+            return self.catalog.resolve(ctx, name);
         }
-        let id: PathBuf = self.base.join(name).components().collect();
-        self.graph.resolve(&id.to_string_lossy())
+        // module ids are clean absolute paths, as the watch reports them
+        let path = ctx.get::<Fs>().map_err(Error::from).and_then(|fs| fs.resolve(name)).and_then(|url| {
+            url.to_file_path().map_err(|_| Error::msg("guest module must resolve to a local file URL"))
+        });
+        match path {
+            Ok(path) => {
+                let id: PathBuf = path.components().collect();
+                self.graph.resolve(ctx, &id.to_string_lossy())
+            }
+            Err(error) => futures::future::ready(Err(error)).boxed(),
+        }
     }
 }
 ```
 
 `Loader::plugin_with(resolver, backend)` also sets the backend of the loader's own tree (see [Tree backends](#backends)); `Loader::plugin` uses `MemoryTree`, which keeps it in memory only. `crates/kardia/src/main.rs` shows the full setup of the binary.
+
+Resolvers receive the parent group’s context, including the included file’s FS scope. A resolver that reads FS must declare that dependency when installing the loader. Independent `TreeBackend::base_dir` and `TreeHandle::base_dir` interfaces have been removed; use the context’s FS directory instead.
 
 ## Entries, groups and trees [#model]
 
@@ -112,7 +122,6 @@ An entry can also wait for the loader: declaring `inject: { loader: { await: tru
 |---|---|
 | `create`, `update`, `remove`, `resolve`, `entries` | as on `Loader`, within this tree |
 | `root()`, `context()` | its root group and context |
-| `base_dir()` | the directory relative paths in this tree resolve against: the backend's, else the enclosing tree's, else the working directory |
 | `handle()` | the object behind the tree (`TreeBackend::handle`), for its owner to find it again |
 | `locate(id, path, value)`, `locate_expr(id, path, expr, offset)` | where a value is written (see [errors](#errors)) |
 
@@ -182,7 +191,6 @@ A `TreeBackend` decides where a tree's changes go. Every method has a default:
 |---|---|---|
 | `commit(&change)` | nothing | called synchronously after a change has been applied to the tree |
 | `resolver()` | `None` (the loader's resolver) | resolves plugin names for this tree |
-| `base_dir()` | `None` | the directory relative paths inside this tree resolve against |
 | `handle()` | `None` | the object behind the tree, for its owner to find it again |
 | `locate(id, path, value)` | `None` | where the value at `path` in the options of entry `id` is written; with `value`, only if that is the value written there; without, a missing value is located at its closest written ancestor |
 | `locate_expr(id, path, expr, offset)` | `None` | where char `offset` of the expression `expr` at `path` is written |

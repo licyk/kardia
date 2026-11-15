@@ -109,7 +109,7 @@ The file is a list of **entries**. Each entry runs one plugin:
 | `server:proxy` | HTTP/WS reverse proxy | `target` |
 | `include` | Loads entries from another file as a subtree | `path`, `watch`, `initial`, `patches` |
 | `group` | Runs the entries in its `config` | the entry list |
-| `hmr` | Reloads guest modules when their files change | `base`, `watch: { enabled, files, debounce }` |
+| `hmr` | Reloads guest modules when their files change | `watch: { enabled, files, debounce }` |
 
 Each built-in also answers to its TypeScript package name, such as `@cordisjs/plugin-timer`.
 
@@ -209,10 +209,9 @@ To reload guest modules as they change, add an `hmr` entry with watch mode:
 - id: hmr
   name: hmr
   config:
-    base: .                  # relative to this file; the default
     watch:
       enabled: true
-      files: [plugins]       # patterns relative to base; `!` excludes
+      files: [plugins]       # patterns relative to fs.baseUrl; `!` excludes
       debounce: 100          # ms; changes in one window reload together
 - id: hello
   name: ./plugins/hello.wasm

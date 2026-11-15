@@ -8,6 +8,8 @@ icon: RotateCcw
 
 本页介绍如何登记效应、效应如何被释放，以及纤程句柄能做什么。理论见[可撤销效应](/docs/concepts-revertible-effects)；设计决策（非拥有的句柄、用惯性加载代替丢弃 future）见 [API 设计](/docs/development-design)；底层的状态机见[核心数据结构](/docs/development-lifecycle)。
 
+重复调用 `EffectHandle::dispose()` 会等待同一次清理并取得相同结果，包括清理失败；清理只执行一次，丢弃第一次返回的句柄不会取消清理。同步清理仍在 `dispose()` 返回前完成。
+
 ## 登记逆操作 [#inverses]
 
 最简单的效应，是为刚做的事登记一个普通逆操作：

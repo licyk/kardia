@@ -4,7 +4,7 @@ description: "Lifecycle boundaries, fixed upstream comparisons, native platform 
 icon: Network
 ---
 
-The Server implementation acceptance commit is [3226312](https://github.com/licyk/kardia/commit/3226312ff3e3e08196b8175efa02d1905e2eba59), against Cordis `f6290dbbf1558cb3a870a58b1f97bacc0d3a9960`. All five packages and their required FS/HTTP paths are implemented. This work did not publish a release or change the workspace version.
+The current fixed reference is Cordis `36dc7fb5e271143039e6b8b6df59840fc0886c1b`. The November 15 synchronization updates path decoding, Proxy confinement and FS directory semantics across Static, include, HMR and CLI module resolution. It also fixes repeated Rust effect disposal; the corresponding upstream fix is still on an unmerged branch. All five Server packages remain native Rust implementations. No version bump or release was performed.
 
 ## Dependencies and ownership [#architecture]
 
@@ -52,12 +52,12 @@ bun run check
 bun run test:server:reference
 ```
 
-Preparation verifies/builds the fixed upstream in ignored `cordis/`, installs immutable Yarn dependencies and runs the original suites. It does not reset an unknown upstream worktree. `inventory.json` counts declarations, not passing tests. Adapters register fixtures and drive real services; they do not reproduce the algorithms under test.
+Preparation verifies/builds the fixed upstream in ignored `cordis/`, installs immutable Yarn dependencies and runs the original suites. It does not reset an unknown upstream worktree. `inventory.json` uses the pinned TypeScript parser to expand `it.each` into actual cases; the inventory is not passing-test evidence. Adapters register fixtures and drive real services; they do not reproduce the algorithms under test.
 
 | Test category | Passing coverage |
 |---|---|
-| Original upstream suites | 105: core 57, ACL 15, Static 24, Proxy 9; Echo has no original independent suite |
-| Supplement / dual-host network tests | 201: reference 22, HTTP 51, WS/Echo 5, ACL 26, Static 29, client 28, Proxy 25, handshake 15 |
+| Original upstream suites | Server 111: core 58, ACL 15, Static 25, Proxy 13; plus FS 34 (one Windows-only case skipped on Linux/macOS) |
+| Supplement / dual-host network tests | 224 on Linux/macOS, 226 on Windows: original 201 plus Proxy 10, Static 2 and FS 11 (two extra FS cases on Windows) |
 | Content MIME detection | 254 files at fixture SHA `7fc6d9ff7cc01987aa73006757792a5ca198023a` plus 2 supplements, covering all 171 MIME values |
 | Negotiation and globs | All 1,180 extensions; 26 Static configurations across 15 paths each; no semantic-difference normalization |
 | Native platforms | Linux, Windows and macOS run Rust checks and actual upstream/comparison suites |
@@ -65,9 +65,23 @@ Preparation verifies/builds the fixed upstream in ignored `cordis/`, installs im
 
 HTTP comparisons include status, reason, semantic headers and complete bodies; large files use full-body SHA-256. WS compares text/binary types, bytes, subprotocols and close code/reason. HTTPS/WSS uses a real certificate fixture, with separate rejection tests for untrusted certificates and hostname mismatch. Certificate verification is not bypassed.
 
+## Synchronization and migration [#migration]
+
+- Path parameters preserve `+`; query form decoding still maps it to space. Proxy encodes each path segment and rejects destinations outside its target directory before connecting.
+- FS bases/intercepts and Static roots are directories. Include scopes children to each file's directory; CLI guests and HMR share it. Replace `hmr.base` with `intercept.fs.baseUrl`. Native watch still accepts native paths; HTTP client base URLs retain ordinary URL semantics.
+- `Resolver::resolve` now receives `&Context`; tree `base_dir` APIs were removed. Rust effect disposal starts once, waits for pending setup/cleanup, shares errors and continues after a caller drops its handle.
+- Manual/default, bounded retry and host-defined recovery remain available; all require failure isolation and continued progress of unrelated plugins. No JS production package was added.
+
 ## Acceptance evidence [#evidence]
 
-- All six platform jobs in final [CI #43705092966](https://github.com/licyk/kardia/actions/runs/43705092966) passed at `3226312`; [JS CI #43705092953](https://github.com/licyk/kardia/actions/runs/43705092953) passed at the same commit.
+- [Rust CI #43709794937](https://github.com/licyk/kardia/actions/runs/43709794937) passed all three native platforms at `aa14386`, including the full workspace, failure/recovery tests, no-default-feature checks, clippy, formatting and architecture.
+
+- Current synchronization: manually dispatched [Server reference #43709881683](https://github.com/licyk/kardia/actions/runs/43709881683) passed on Linux, Windows and macOS at `aa14386`. The dual-host suite passed 224 cases on Linux/macOS and 226 on Windows; the Windows run also executed the upstream drive-path test. [JS CI #43709794978](https://github.com/licyk/kardia/actions/runs/43709794978) passed at the same commit.
+- Local related Rust suites, workspace/all-target clippy, architecture and formatting checks passed. Website type checks and 41 tests passed.
+
+### Earlier acceptance notes
+
+- Historical baseline: all six platform jobs in [CI #43705092966](https://github.com/licyk/kardia/actions/runs/43705092966) passed at `3226312`; [JS CI #43705092953](https://github.com/licyk/kardia/actions/runs/43705092953) passed at the same commit.
 - Local `cargo test --workspace`, workspace clippy, fmt, arch, loader tests/clippy without default features, and HMR process-feature clippy passed.
 - Initial FS Windows acceptance found NotFound for a file used as a parent path, versus Unix NotADirectory. Native expectations were corrected and [CI #43700024799](https://github.com/licyk/kardia/actions/runs/43700024799) passed; error mapping was not hidden.
 - Static's first macOS run timed out in an existing include rename-watcher test. Rerunning only the failed job at the same commit passed [CI #43700396222](https://github.com/licyk/kardia/actions/runs/43700396222). The final commit passed all platforms again.

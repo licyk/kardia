@@ -4,7 +4,7 @@ description: "固定 Cordis 基线下的 HTTP、WS、ACL、Static、Proxy 及辅
 icon: Server
 ---
 
-本页对应 [Cordis f6290dbb](https://github.com/cordiverse/cordis/tree/f6290dbbf1558cb3a870a58b1f97bacc0d3a9960/packages/server)，五个包的源码版本依次为 core 1.7.0、ACL 1.0.1、Echo 1.1.1、Static 1.2.1、Proxy 1.2.1。实现不随上游 main 或 npm 浮动版本改变预期。
+本页对应 [Cordis 36dc7fb5](https://github.com/cordiverse/cordis/tree/36dc7fb5e271143039e6b8b6df59840fc0886c1b/packages/server)，五个包的源码版本依次为 core 1.7.0、ACL 1.0.1、Echo 1.1.1、Static 1.2.1、Proxy 1.2.1。实现不随上游 main 或 npm 浮动版本改变预期。
 
 ## 核心接口 [#core]
 
@@ -21,7 +21,7 @@ icon: Server
 
 `get`、`post`、`all` 注册便捷路由；`route(method, path, handler, options)` 支持 DELETE、HEAD、PUT、PATCH 等方法。顺序为注册顺序，GET 不隐式接受 HEAD。无匹配为 404，路径匹配但方法不同为 405；OPTIONS 为 204，`Allow` 使用小写方法和注册顺序，all 对应 `*`。
 
-字符串路径支持参数、通配符、可选组和引号参数名，遵循 path-to-regexp 8.4.2；捕获值将 `+` 转为空格后解码。query 独立保留重复键。`Path::regex(source, flags)` 使用 ECMAScript 正则语法，支持 g/y 状态、UTF-16 匹配和 Unicode 标志。拦截前缀按字符串匹配，不额外要求路径段边界。
+字符串路径支持参数、通配符、可选组和引号参数名，遵循 path-to-regexp 8.4.2；路径捕获值解码百分号转义并保留字面量 `+`；query 保留重复键，仍将 `+` 解码为空格。`Path::regex(source, flags)` 使用 ECMAScript 正则语法，支持 g/y 状态、UTF-16 匹配和 Unicode 标志。拦截前缀按字符串匹配，不额外要求路径段边界。
 
 字符串 HTTP 路由的 `intercept.server.routes["METHOD path"]` 覆盖调用处 options，未覆盖字段保留；WS 和正则路由不应用这一覆盖表。
 
@@ -55,7 +55,7 @@ Echo 只注册空路径 POST 和 WS，通过 intercept 挂载。HTTP 流式复�
 
 | 配置 | 默认与行为 |
 |---|---|
-| `root` | 必填；相对 fs.baseUrl 解析 |
+| `root` | 必填；相对 fs.baseUrl 按目录解析，清除查询和片段 |
 | `index` | `["index.html", "index.htm"]`，按顺序尝试 |
 | `redirect` | true；目录缺少尾斜杠时 301 |
 | `extensions` | 空；原文件优先，再按顺序尝试扩展名 |
@@ -70,7 +70,7 @@ MIME 顺序为内容检测、文件名、octet-stream。固定 file-type 20.5.0 
 
 ## Proxy [#proxy]
 
-`ProxyPlugin` / `ProxyConfig` 依赖 `server` 与 `http`，必填 `target` 按目录解析。捕获路径拼到 target 下；query 重新按 URLSearchParams 编码，不保证原始 query 字节形式不变。
+`ProxyPlugin` / `ProxyConfig` 依赖 `server` 与 `http`，必填 `target` 按目录解析。即使配置 URL 含查询或片段，也在 pathname 上补尾斜杠。解码后的路径逐段重新编码，保留 `+` 和路径段子分隔符；`?`、`#`、`%` 保持为路径内容。规范化后的目标必须仍在同一 origin 和目标目录内；越界 HTTP 返回 400，WS 直接断开且不连接上游、不接受下游。query 以 URLSearchParams 规则编码并替换目标查询。
 
 HTTP 转发方法与 header，仅 POST/PUT/PATCH 转发 body。原始客户端保留 4xx/5xx，并按 Fetch 重定向规则处理流式 body。解压后的响应移除 content-encoding/content-length。上游核心采用返回 Response 的行为也被保留：自定义 reason 不转发，重复 Set-Cookie 只留下最后一个。
 
@@ -80,7 +80,7 @@ WS 先连接上游再 accept 下游，过滤 Host、Connection、Upgrade、握�
 
 ## 辅助服务范围 [#auxiliary]
 
-`FsExt` 增加 `base_url`、`resolve`、`file` 和 `mount`；baseUrl 随拦截逐层解析，最长挂载前缀优先。`LocalFsPlugin` 显式挂载 file:，保留原生 watch 功能。本轮没有扩展 FS 写入/删除/重命名生态。
+`FsExt` 增加 `base_url`、`resolve`、`file` 和 `mount`；配置 base 与从外到内的每层拦截都视为目录 URL：pathname 以 `/` 结尾，清除 query/fragment，拒绝 `mem:bucket` 等不支持相对解析的 opaque base。因此 `file:///app` → `data` → `logs?x#y` 最终指向 `file:///app/data/logs/`。Windows 绝对盘符路径在输入边界转换为 file URL；未知配置字段仍可保留。最长挂载前缀优先。`LocalFsPlugin` 显式挂载 file:，保留原生 watch 功能。本轮没有扩展 FS 写入/删除/重命名生态。
 
 `HttpExt::request` 返回 raw status、reason、headers 和流 body；`WebSocketExt::ws` 提供客户端连接。配置支持 baseUrl、headers、timeout、keepAlive、proxyAgent 和附加 PEM rootCertificates。拦截按上游规则合并，请求 headers 替换配置 headers。超时约束到响应头收到为止；body 仍归调用者生命周期。TLS 使用平台证书验证并可添加信任根，不关闭验证。
 

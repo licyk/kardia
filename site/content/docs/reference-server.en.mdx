@@ -4,7 +4,7 @@ description: "HTTP, WS, ACL, Static, Proxy and auxiliary-service contracts at th
 icon: Server
 ---
 
-This reference targets [Cordis f6290dbb](https://github.com/cordiverse/cordis/tree/f6290dbbf1558cb3a870a58b1f97bacc0d3a9960/packages/server): core 1.7.0, ACL 1.0.1, Echo 1.1.1, Static 1.2.1 and Proxy 1.2.1. Expectations do not follow a floating main branch or npm version.
+This reference targets [Cordis 36dc7fb5](https://github.com/cordiverse/cordis/tree/36dc7fb5e271143039e6b8b6df59840fc0886c1b/packages/server): core 1.7.0, ACL 1.0.1, Echo 1.1.1, Static 1.2.1 and Proxy 1.2.1. Expectations do not follow a floating main branch or npm version.
 
 ## Core API [#core]
 
@@ -21,7 +21,7 @@ Automatic URLs use the actual bound port; wildcard addresses map to `127.0.0.1`.
 
 `get`, `post` and `all` are convenience registrations; `route(method, path, handler, options)` also supports DELETE, HEAD, PUT and PATCH. Routes run in registration order. GET does not imply HEAD. No matching path produces 404; a method mismatch produces 405; OPTIONS produces 204. `Allow` uses lowercase methods in registration order, with `*` for all.
 
-String paths support parameters, wildcards, optional groups and quoted parameter names, following path-to-regexp 8.4.2. Captures replace `+` with space before decoding. Queries preserve duplicate keys separately. `Path::regex(source, flags)` uses ECMAScript syntax with g/y state, UTF-16 matching and Unicode flags. Intercept prefixes use string-prefix matching without an extra segment-boundary rule.
+String paths support parameters, wildcards, optional groups and quoted parameter names, following path-to-regexp 8.4.2. Path captures decode percent escapes and preserve literal `+`. Queries preserve duplicate keys and still decode `+` as a space. `Path::regex(source, flags)` uses ECMAScript syntax with g/y state, UTF-16 matching and Unicode flags. Intercept prefixes use string-prefix matching without an extra segment-boundary rule.
 
 For string HTTP routes, `intercept.server.routes["METHOD path"]` overrides supplied options while retaining unspecified fields. WS and regex routes do not use this override table.
 
@@ -55,7 +55,7 @@ A rejection continues to later routes. If all reject, the result is 404, without
 
 | Setting | Default and behavior |
 |---|---|
-| `root` | Required; resolved relative to fs.baseUrl |
+| `root` | Required; resolved as a directory relative to fs.baseUrl, clearing query and fragment |
 | `index` | `["index.html", "index.htm"]`, tried in order |
 | `redirect` | true; a directory without a trailing slash redirects with 301 |
 | `extensions` | Empty; the original file wins before ordered extension candidates |
@@ -70,7 +70,7 @@ MIME selection tries content detection, filename, then octet-stream. Real fixtur
 
 ## Proxy [#proxy]
 
-`ProxyPlugin` / `ProxyConfig` depends on `server` and `http`. Required `target` is treated as a directory. Captured paths resolve beneath it, and queries are re-encoded with URLSearchParams semantics; their original byte spelling need not survive.
+`ProxyPlugin` / `ProxyConfig` depends on `server` and `http`. Required `target` is treated as a directory. Its pathname gains a trailing slash even when the configured URL has a query or fragment. Decoded path segments are encoded again, preserving `+` and segment sub-delimiters; `?`, `#` and `%` stay path data. Normalized destinations must remain on the same origin and beneath the target directory. Escaping HTTP requests return 400; escaping WS requests are disconnected without connecting upstream or accepting downstream. Queries replace the target query using URLSearchParams encoding.
 
 HTTP forwards the method and headers, with bodies only for POST/PUT/PATCH. The raw client retains 4xx/5xx and applies Fetch redirect rules to streaming bodies. Decompressed responses remove content-encoding/content-length. Upstream's returned-Response adoption behavior is retained: custom reason text is dropped and repeated Set-Cookie keeps only its last value.
 
@@ -80,7 +80,7 @@ WS connects upstream before accepting downstream, filtering Host, Connection, Up
 
 ## Auxiliary-service scope [#auxiliary]
 
-`FsExt` adds `base_url`, `resolve`, `file` and `mount`. baseUrl resolves through interception layers; the longest mount prefix wins. `LocalFsPlugin` explicitly mounts file: while existing native watches remain available. This work does not port the FS write/delete/rename ecosystem.
+`FsExt` adds `base_url`, `resolve`, `file` and `mount`. The configured base and every outer-to-inner intercept are directory URLs: pathname ends in `/`, query and fragment are cleared, and opaque bases such as `mem:bucket` are rejected. Thus `file:///app` → `data` → `logs?x#y` resolves beneath `file:///app/data/logs/`. On Windows, absolute drive paths become file URLs at the input boundary. Unknown configuration fields are tolerated. The longest mount prefix wins. `LocalFsPlugin` explicitly mounts file: while existing native watches remain available. This work does not port the FS write/delete/rename ecosystem.
 
 `HttpExt::request` returns raw status, reason, headers and a streaming body. `WebSocketExt::ws` opens client connections. Configuration supports baseUrl, headers, timeout, keepAlive, proxyAgent and additional PEM rootCertificates. Interception follows upstream merging, and request headers replace configuration headers. Timeout runs until response headers arrive; the body remains owned by the caller's lifecycle. TLS uses platform verification with optional added trust roots and never disables verification.
 

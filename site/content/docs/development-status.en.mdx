@@ -100,7 +100,7 @@ The hmr `index` case "waits for a second re-enable init" has no hmr decision to 
 
 Guest services are JSON views with JSON calls (`GuestService`). `kardia-guest` is the Rust guest SDK: a `Guest` trait and `export!`, which emits the WASM exports on wasm32 and the C symbols elsewhere, so one source builds for both backends; `serve` serves the process transport. Unlike the other crates (GPL-3.0-only), it is licensed MIT OR Apache-2.0.
 
-Watch mode (`HmrConfig { base, watch: { enabled, files, debounce } }`) follows the TS code: it watches `base` through `fs` and reloads each debounce window as one batch, one batch at a time. The files of failed imports are retried with the next batch, and changes to host modules are only reported. `base` resolves against the directory of the config file of the hmr entry, as the TS code does with `ctx.baseUrl`, or else against the working directory.
+Watch mode (`HmrConfig { watch: { enabled, files, debounce } }`) watches the scoped `fs.baseUrl` directory and reloads each debounce window as one batch. HMR requires FS; include scopes it to the included file’s directory. Override the directory with an FS intercept. `HmrConfig.base` and the loader tree’s independent `base_dir` interface have been removed. Failed imports retry in the next batch; host-module changes are only reported.
 
 The `kardia` binary registers `hmr` and resolves any entry name that is not a built-in plugin as a guest module relative to the config file: `examples/kardia.yml` hot-reloads `plugins/hello.wat`.
 

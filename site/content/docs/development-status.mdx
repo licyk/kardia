@@ -100,7 +100,7 @@ hmr 的 `index` 用例“waits for a second re-enable init”在 Rust 中没有�
 
 访客服务是带 JSON 调用的 JSON 视图（`GuestService`）。`kardia-guest` 是 Rust 访客 SDK：一个 `Guest` trait 和 `export!`，后者在 wasm32 上生成 WASM 导出，在其他平台上生成 C 符号，因此同一份源码可以为两种后端构建；`serve` 用于进程传输。与其他 crate（GPL-3.0-only）不同，它采用 MIT OR Apache-2.0 许可证。
 
-监视模式（`HmrConfig { base, watch: { enabled, files, debounce } }`）遵循 TS 代码：它通过 `fs` 监视 `base`，把每个防抖窗口内的变化作为一批重载，每次只处理一批。导入失败的文件会随下一批重试，而宿主模块的变化只会被报告。`base` 相对于 hmr 条目所在配置文件的目录解析（与 TS 代码使用 `ctx.baseUrl` 的方式相同），没有配置文件时则相对于工作目录解析。
+监视模式（`HmrConfig { watch: { enabled, files, debounce } }`）监视作用域内的 `fs.baseUrl` 目录，每个防抖窗口作为一批处理。HMR 必须依赖 FS；include 将其作用域设为所包含文件的目录。改目录使用 FS intercept；`HmrConfig.base` 和 loader tree 独立的 `base_dir` 接口已移除。导入失败随下一批重试，宿主模块变化仅报告。
 
 `kardia` 二进制注册了 `hmr`，并把任何不是内置插件的条目名称解析为相对于配置文件的访客模块：`examples/kardia.yml` 会热重载 `plugins/hello.wat`。
 

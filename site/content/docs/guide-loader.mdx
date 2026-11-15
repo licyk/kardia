@@ -30,7 +30,7 @@ let loader = (*root.get::<Loader>()?).clone();
 
 ```rust
 pub trait Resolver: Send + Sync + 'static {
-    fn resolve(&self, name: &str) -> BoxFuture<'static, Result<PluginDef, Error>>;
+    fn resolve(&self, ctx: &Context, name: &str) -> BoxFuture<'static, Result<PluginDef, Error>>;
 }
 ```
 
@@ -52,21 +52,31 @@ pub trait Resolver: Send + Sync + 'static {
 struct Plugins {
     catalog: Catalog,
     graph: ModuleGraph,
-    base: PathBuf,       // the directory of the configuration file
 }
 
 impl Resolver for Plugins {
-    fn resolve(&self, name: &str) -> BoxFuture<'static, Result<PluginDef>> {
+    fn resolve(&self, ctx: &Context, name: &str) -> BoxFuture<'static, Result<PluginDef>> {
         if self.catalog.get(name).is_some() {
-            return self.catalog.resolve(name);
+            return self.catalog.resolve(ctx, name);
         }
-        let id: PathBuf = self.base.join(name).components().collect();
-        self.graph.resolve(&id.to_string_lossy())
+        // module ids are clean absolute paths, as the watch reports them
+        let path = ctx.get::<Fs>().map_err(Error::from).and_then(|fs| fs.resolve(name)).and_then(|url| {
+            url.to_file_path().map_err(|_| Error::msg("guest module must resolve to a local file URL"))
+        });
+        match path {
+            Ok(path) => {
+                let id: PathBuf = path.components().collect();
+                self.graph.resolve(ctx, &id.to_string_lossy())
+            }
+            Err(error) => futures::future::ready(Err(error)).boxed(),
+        }
     }
 }
 ```
 
 `Loader::plugin_with(resolver, backend)` 还可以设置加载器自身那棵树的后端（见[树后端](#backends)）；`Loader::plugin` 使用 `MemoryTree`，只把树保存在内存中。`crates/kardia/src/main.rs` 展示了二进制的完整搭建过程。
+
+Resolver 接收父分组的上下文，其中包含配置文件的 FS 作用域。读取 FS 的解析器应在安装 Loader 时声明该依赖。独立的 `TreeBackend::base_dir` 和 `TreeHandle::base_dir` 已移除，目录由上下文的 FS 提供。
 
 ## 条目、分组与树 [#model]
 
@@ -112,7 +122,6 @@ impl Resolver for Plugins {
 |---|---|
 | `create`、`update`、`remove`、`resolve`、`entries` | 与 `Loader` 上的相同，作用于本树 |
 | `root()`、`context()` | 它的根分组和上下文 |
-| `base_dir()` | 本树中相对路径的基准目录：后端给出的目录，否则为外层树的目录，否则为工作目录 |
 | `handle()` | 树背后的对象（`TreeBackend::handle`），供其所有者再次找到它 |
 | `locate(id, path, value)`、`locate_expr(id, path, expr, offset)` | 某个值写在哪里（见[错误](#errors)） |
 
@@ -182,7 +191,6 @@ loader.settled().await;
 |---|---|---|
 | `commit(&change)` | 什么也不做 | 变化应用到树上之后被同步调用 |
 | `resolver()` | `None`（使用加载器的解析器） | 为本树解析插件名 |
-| `base_dir()` | `None` | 本树中相对路径的基准目录 |
 | `handle()` | `None` | 树背后的对象，供其所有者再次找到它 |
 | `locate(id, path, value)` | `None` | 条目 `id` 的选项中 `path` 处的值写在哪里；给出 `value` 时，仅当写在那里的正是这个值；不给时，缺失的值定位到其最近的已写出祖先 |
 | `locate_expr(id, path, expr, offset)` | `None` | `path` 处的表达式 `expr` 的第 `offset` 个字符写在哪里 |

@@ -112,7 +112,7 @@ kardia path/to/kardia.yml
 | `server:proxy` | HTTP/WS 反向代理 | `target` |
 | `include` | 从另一个文件加载条目，作为子树运行 | `path`、`watch`、`initial`、`patches` |
 | `group` | 运行其 `config` 中的条目 | 条目列表 |
-| `hmr` | 客体模块文件变化时重新加载模块 | `base`、`watch: { enabled, files, debounce }` |
+| `hmr` | 客体模块文件变化时重新加载模块 | `watch: { enabled, files, debounce }` |
 
 每个内置插件也支持使用对应的 TypeScript 包名，例如 `@cordisjs/plugin-timer`。
 
@@ -214,10 +214,9 @@ cargo run -p kardia --example provider_consumer
 - id: hmr
   name: hmr
   config:
-    base: .                  # 相对于当前文件；默认值为 .
     watch:
       enabled: true
-      files: [plugins]       # 相对于 base 的匹配模式；`!` 表示排除
+      files: [plugins]       # 相对于 fs.baseUrl 的匹配模式；`!` 表示排除
       debounce: 100          # 单位为毫秒；同一时间窗口内的变更合并重载
 - id: hello
   name: ./plugins/hello.wasm

@@ -97,7 +97,7 @@ Edits to the file are applied to the running app. Changes the app makes to its o
 | `server:proxy` | HTTP/WS reverse proxy | `target` |
 | `include` | Loads entries from another file as a subtree | `path`, `watch`, `initial`, `patches` |
 | `group` | Runs the entries in its `config` | the entry list |
-| `hmr` | Reloads guest modules when their files change | `base`, `watch: { enabled, files, debounce }` |
+| `hmr` | Reloads guest modules when their files change | `watch: { enabled, files, debounce }` |
 
 Each built-in also answers to its TypeScript package name:
 
@@ -154,9 +154,8 @@ A group's `config` is its list of entries. Updating it reconciles the list in pl
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `base` | path | `.` | Base directory, relative to the config file that contains the `hmr` entry (else the working directory). `watch.files` and logged paths are relative to it. |
 | `watch.enabled` | boolean | `false` | Reload modules as their files change. Needs the `fs` service. |
-| `watch.files` | list of patterns | `[".", "!**/.*", "!**/target"]` | Files to watch, relative to `base`; `!` excludes. |
+| `watch.files` | list of patterns | `[".", "!**/.*", "!**/target"]` | Files to watch, relative to the scoped `fs.baseUrl`; `!` excludes. |
 | `watch.debounce` | milliseconds | `100` | Changes within one window are reloaded together. |
 
 [Hot reload](/docs/guide-hot-reload) explains how reloading works.
@@ -164,3 +163,5 @@ A group's `config` is its list of entries. Updating it reconciles the list in pl
 ### `timer` and `fs` [#timer-and-fs]
 
 `timer` takes no configuration. `fs` accepts `baseUrl` for URL resolution and provider reads; native watching keeps its existing path behavior. They provide the `timer` and `fs` services; [Services](/docs/guide-services) shows how plugins use them.
+
+FS bases and intercepts always name directories: a trailing slash is added to the pathname and query/fragment are cleared. Opaque bases are rejected; Windows absolute drive paths are converted to file URLs. Include resolves its path through FS and scopes child entries to the included file’s directory. HMR and CLI guest modules use this same scope. Replace `hmr.base` with `intercept: { fs: { baseUrl: "./plugins" } }`; HTTP client `baseUrl` retains ordinary URL semantics.

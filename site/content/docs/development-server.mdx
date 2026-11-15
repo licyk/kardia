@@ -4,7 +4,7 @@ description: "Rust Server 系列的生命周期边界、固定上游对照、三
 icon: Network
 ---
 
-Server 系列以 [3226312](https://github.com/licyk/kardia/commit/3226312ff3e3e08196b8175efa02d1905e2eba59) 为实现验收提交。固定参考为 Cordis `f6290dbbf1558cb3a870a58b1f97bacc0d3a9960`。五个包及它们需要的 FS/HTTP 路径已实现；本轮没有发版或修改工作区版本。
+当前固定参考为 Cordis `36dc7fb5e271143039e6b8b6df59840fc0886c1b`。11 月 15 日同步更新了路径解码、Proxy 目录限制，以及 Static、include、HMR、CLI 模块解析共用的 FS 目录语义；同时修复 Rust effect 重复清理的等待行为，对应上游修复仍在未合并分支。五个 Server 包仍为原生 Rust 实现；本轮未升版本或发布。
 
 ## 依赖与归属 [#architecture]
 
@@ -52,12 +52,12 @@ bun run check
 bun run test:server:reference
 ```
 
-准备脚本验证并构建忽略目录 `cordis/` 中的固定上游，使用 immutable Yarn 依赖，运行原始套件；不会重置未知上游工作区。`inventory.json` 记录声明数量，不把清单当通过证据。适配器仅注册场景和驱动真实服务，不重写被测算法。
+准备脚本验证并构建忽略目录 `cordis/` 中的固定上游，使用 immutable Yarn 依赖，运行原始套件；不会重置未知上游工作区。`inventory.json` 使用上游 TypeScript 解析器展开 `it.each`，记录实际用例数，不把清单当通过证据。适配器仅注册场景和驱动真实服务，不重写被测算法。
 
 | 测试类型 | 已通过范围 |
 |---|---|
-| 固定上游原始测试 | 105：core 57、ACL 15、Static 24、Proxy 9；Echo 无原始独立套件 |
-| 补充/双端网络测试 | 201：上游补充 22、HTTP 51、WS/Echo 5、ACL 26、Static 29、客户端 28、Proxy 25、握手 15 |
+| 固定上游原始测试 | Server 111：core 58、ACL 15、Static 25、Proxy 13；另有 FS 34（Linux/macOS 跳过 1 个 Windows 专项） |
+| 补充/双端网络测试 | Linux/macOS 224，Windows 226：原 201 用例，加 Proxy 10、Static 2、FS 11（Windows 再加 2） |
 | MIME 内容检测 | 固定 file-type 样本 SHA `7fc6d9ff7cc01987aa73006757792a5ca198023a` 的 254 文件及 2 补充样本，覆盖全部 171 MIME 值 |
 | MIME 协商与 glob | 1,180 个扩展名；26 组 Static 配置各 15 个路径；不归一化语义差异 |
 | 原生平台 | Linux、Windows、macOS 同时运行 Rust 检查与真实上游/对照 |
@@ -65,9 +65,23 @@ bun run test:server:reference
 
 HTTP 对比状态、reason、语义 header 和完整 body；大文件比较完整 SHA-256。WS 对比文本/二进制、字节、子协议和关闭码/原因。HTTPS/WSS 使用真实 TLS 证书夹具，另测不受信证书和主机名错误；没有跳过证书验证。
 
+## 本次同步与迁移 [#migration]
+
+- 路径参数保留 `+`；query 表单解码仍转为空格。Proxy 逐段编码，连接上游前拒绝越出 target 目录的请求。
+- FS base/intercept 和 Static root 都表示目录。include 将子条目作用域设为各配置文件所在目录，CLI 客体与 HMR 共用。`hmr.base` 改为 `intercept.fs.baseUrl`；原生 watch 仍接受原生路径，HTTP 客户端 base URL 保持普通 URL 语义。
+- `Resolver::resolve` 新增 `&Context` 参数，移除 tree 的 `base_dir` API。Rust effect 只开始一次清理，重复调用等待 setup/cleanup 并共享错误，丢弃句柄不取消清理。
+- 保留默认手动、限速自动重试和宿主自定义恢复；无论策略如何，无关插件必须持续运行。没有新增 JS 生产包。
+
 ## 验收记录 [#evidence]
 
-- 最终实现 [CI #43705092966](https://github.com/licyk/kardia/actions/runs/43705092966) 的六个平台任务全部成功，绑定 `3226312`；同提交 [JS CI #43705092953](https://github.com/licyk/kardia/actions/runs/43705092953) 成功。
+- [Rust CI #43709794937](https://github.com/licyk/kardia/actions/runs/43709794937) 在 `aa14386` 上三平台全部通过，覆盖完整 workspace、故障/恢复测试、无默认 feature 检查、clippy、格式与架构。
+
+- 本次同步：手动触发的 [Server reference #43709881683](https://github.com/licyk/kardia/actions/runs/43709881683) 在 `aa14386` 上通过 Linux、Windows、macOS。双端对照 Linux/macOS 各 224 用例、Windows 226 用例；Windows 同时运行了上游盘符专项。[JS CI #43709794978](https://github.com/licyk/kardia/actions/runs/43709794978) 在同提交通过。
+- 本地相关 Rust 套件、workspace/all-target clippy、架构与格式检查通过；网站类型检查和 41 个测试通过。
+
+### 历史验收记录
+
+- 历史基线：最初实现 [CI #43705092966](https://github.com/licyk/kardia/actions/runs/43705092966) 的六个平台任务全部成功，绑定 `3226312`；同提交 [JS CI #43705092953](https://github.com/licyk/kardia/actions/runs/43705092953) 成功。
 - 本机 `cargo test --workspace`、workspace clippy、fmt、arch、loader 无默认 feature 测试/clippy，以及 HMR process feature clippy 全部通过。
 - 首次 FS Windows 验收发现父路径为文件时系统返回 NotFound，而 Unix 返回 NotADirectory。测试改为原生期望，随后 [CI #43700024799](https://github.com/licyk/kardia/actions/runs/43700024799) 成功；错误映射没有被掩盖。
 - Static 首轮 macOS 的既有 include rename watcher 超时；同一提交仅重跑失败任务后 [CI #43700396222](https://github.com/licyk/kardia/actions/runs/43700396222) 成功。最终提交再次完整通过三平台。
