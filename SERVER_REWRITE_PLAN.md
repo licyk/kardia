@@ -11,8 +11,8 @@
 | 阶段 | 状态 | 提交与验证证据 |
 |---|---|---|
 | P0 分析、规范与计划 | 已完成并推送 | `b1da534`；[站点 CI 通过](https://github.com/licyk/kardia/actions/runs/43693689368)；详细验证见第 11 节 |
-| P1 上游基准、对照框架与恢复契约 | 基准已推送，CI 与 Rust 最小证明待完成 | `a3feda0`；本机上游 105 项及补充 socket 基准 22 项通过 |
-| P2 Server HTTP 核心与恢复监督 | 恢复基础已推送，HTTP 与集成待实现 | `b010642`；核心测试、clippy、架构检查通过，原生 CI 待验收 |
+| P1 上游基准、对照框架与恢复契约 | 原生基准通过，WS 最小证明待完成 | `a3feda0` / `804782a`；三平台基准通过，HTTP 双端对照已接入 |
+| P2 Server HTTP 核心与恢复监督 | HTTP 与恢复基础已推送，补充行为和 loader 集成待完成 | `b010642` / `4ac53b9`；50 HTTP 用例、4 故障用例及 18 双端对照通过，新代码原生 CI 待验收 |
 | P3 WebSocket 与 Echo | 未开始 | — |
 | P4 ACL | 未开始 | — |
 | P5 Static 所需文件服务能力 | 未开始 | — |
@@ -280,3 +280,12 @@
 
 - `b010642` 已提交推送：新增 `Fiber::set_recovery`，默认手动保持失败，可选限频自动重试或宿主回调；监督跨实例存活，随 fiber 退役取消，切换策略取消旧动作。宿主同步/异步 panic 被捕获并记录；无根上下文重置，无自动配置回写。
 - 本地 `cargo test -p kardia-core`、`cargo clippy -p kardia-core --all-targets -- -D warnings`、`cargo xtask arch` 通过。6 项新故障测试验证重复失败、手动/宿主策略、处理器 panic、取消恢复和配置错误不循环重试；网络持续服务与 loader 配置集成仍待 P2 后续。
+- 上述恢复基础与 Windows 清单修复已通过 [CI #43694925630](https://github.com/licyk/kardia/actions/runs/43694925630)：Linux、Windows、macOS 的 Rust 和上游基准任务均成功。
+
+### P2 HTTP 基础与双端对照
+
+- `4ac53b9` 已提交推送并核实远端 SHA。新增 `kardia-server` 的实际 TCP 监听、HTTP 路由、中间件、路由钩子、参数匹配、请求验证及可分叉响应流；路由和钩子由调用方效应持有。路径编译遵循固定版本 path-to-regexp，NOTICE 保留归属。
+- 本机 `cargo test -p kardia-server` 通过：50 个上游 HTTP 声明对应测试、4 个故障隔离测试；clippy、格式、架构和差异检查通过。
+- 三种恢复策略均在三轮真实插件故障期间持续请求独立健康路由，验证故障路由清理和恢复后数量回归；同步及异步 handler panic 返回 500 后健康路由仍可服务。自动模式未调用手动恢复 API。
+- `bun run check` 及双端测试通过：22 项上游补充基准 + 18 项真实 HTTP 对照。首轮发现适配器误把 `res.text` 对应成直接 body 写入导致 content-type 差异，已修正等价注册方式，未放宽比较规则。
+- 现有三平台基准任务增加 Rust 宿主构建并运行双端测试，新提交 CI 尚待验收。P2 仍缺表单、内容协商等补充行为、loader 策略配置和监听任务完整故障矩阵，不能标记完成。
