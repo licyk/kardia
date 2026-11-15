@@ -9,6 +9,7 @@ bun install --frozen-lockfile
 bun run server:prepare
 bun run server:inventory --check
 bun run check
+cargo build --manifest-path ../Cargo.toml -p kardia-server --example server-reference
 bun run test:server:reference
 ```
 
@@ -25,4 +26,4 @@ Rust parity is added alongside each implementation stage. A passing reference te
 - Reqwest 0.13.5 (MIT/Apache-2.0, MSRV 1.85) supplies the HTTP client transport, streaming and decompression. Client settings must match the actual Cordis HTTP service rather than Reqwest defaults. [Builder API](https://docs.rs/reqwest/0.13.5/reqwest/struct.ClientBuilder.html).
 - Recovery defaults to remaining failed. The host can select automatic retry or a custom handler. Supervision belongs outside the failed instance; it uses the existing lifecycle recovery operation and never resets the root to repair one plugin. All modes must keep unrelated plugins running.
 
-Versions above were checked with `cargo info`; executable Rust transport and recovery proofs belong to P2/P3/P7 and remain pending until implemented. See the root execution plan for stage evidence and outstanding work.
+The HTTP adapter now drives both implementations through 18 shared socket cases, comparing status, reason phrase, semantic headers and body bytes. Rust also runs 50 migrated HTTP tests and real socket failure-isolation tests for all three recovery modes. WebSocket/client parity and the remaining HTTP supplements are still pending; see the root execution plan. The CI reference job builds the Rust adapter before running the same suite on each native platform.
