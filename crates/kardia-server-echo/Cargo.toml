@@ -1,0 +1,16 @@
+[package]
+name = "kardia-server-echo"
+description = "Streaming HTTP and WebSocket echo plugin for kardia"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+kardia-core.workspace = true
+kardia-server.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

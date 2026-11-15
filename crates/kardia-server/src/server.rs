@@ -22,6 +22,8 @@ pub struct Server {
     pub(crate) middleware: Mutex<Vec<(u64, Handler)>>,
     pub(crate) hooks: Mutex<Vec<(u64, RouteHook)>>,
     pub(crate) checks: Mutex<Vec<(u64, RouteCheck)>>,
+    pub(crate) ws_routes: Mutex<Vec<Arc<crate::websocket::WsEntry>>>,
+    pub(crate) upgrades: Mutex<Vec<(u64, crate::websocket::UpgradeHook)>>,
     sequence: AtomicU64,
 }
 impl Service for Server {
@@ -57,15 +59,19 @@ impl Plugin for ServerPlugin {
             middleware: Mutex::new(Vec::new()),
             hooks: Mutex::new(Vec::new()),
             checks: Mutex::new(Vec::new()),
+            ws_routes: Mutex::new(Vec::new()),
+            upgrades: Mutex::new(Vec::new()),
             sequence: AtomicU64::new(0),
         });
         let (stop, stopped) = oneshot::channel();
         let task = tokio::spawn(crate::transport::listen(server.clone(), listener, stopped));
+        let shutdown = server.clone();
         ctx.defer(
             "server listener",
             Disposer::future(move || async move {
                 let _ = stop.send(());
                 let _ = task.await;
+                shutdown.close_websockets().await;
             }),
         )?;
         ctx.provide_arc(server)?;

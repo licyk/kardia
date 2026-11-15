@@ -12,6 +12,36 @@ async fn main() -> kardia_core::Result<()> {
     let root = Context::new();
     root.plugin::<ServerPlugin>(ServerConfig::local(0))?.settled().await?;
     let server = root.get::<Server>()?;
+    match std::env::args().nth(1).as_deref().unwrap_or("core") {
+        "core" => core(&root, &server)?,
+        "echo" => {
+            root.plugin::<kardia_server_echo::EchoPlugin>(json!({}))?.settled().await?;
+        }
+        scenario => return Err(Error::msg(format!("unknown scenario {scenario}"))),
+    }
+    println!("{}", json!({"url":server.public_url()}));
+    io::stdout().flush()?;
+    tokio::task::spawn_blocking(|| io::stdin().lock().lines().next()).await?;
+    root.fiber().dispose().await
+}
+
+fn core(root: &Context, server: &kardia_core::Svc<Server>) -> kardia_core::Result<()> {
+    use kardia_server::{WsExt, ws_handler};
+    server.ws(
+        "/ws",
+        Some(ws_handler(|_, accept| async move {
+            let socket = accept.accept().await?;
+            while let Some(message) = socket.recv().await {
+                let message = message?;
+                if message.is_close() {
+                    break;
+                }
+                socket.send(message)?;
+            }
+            Ok(())
+        })),
+        json!({}),
+    )?;
     server.get("/hello", |_, res, _| async move {
         res.set_text("world");
         Ok(None)
@@ -125,8 +155,5 @@ async fn main() -> kardia_core::Result<()> {
         res.set_text("scoped");
         Ok(None)
     })?;
-    println!("{}", json!({"url":server.public_url()}));
-    io::stdout().flush()?;
-    tokio::task::spawn_blocking(|| io::stdin().lock().lines().next()).await?;
-    root.fiber().dispose().await
+    Ok(())
 }

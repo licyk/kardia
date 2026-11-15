@@ -10,7 +10,9 @@ mod request;
 mod response;
 mod route;
 mod server;
+mod socket;
 mod transport;
+mod websocket;
 
 pub use body::{Body, ByteStream};
 pub use bytes::Bytes;
@@ -22,3 +24,9 @@ pub use request::{Request, ValidationError};
 pub use response::Response;
 pub use route::{Handler, Next, Route, RouteCheck, RouteHook, RouteInfo, handler};
 pub use server::{Server, ServerExt, ServerPlugin};
+pub use socket::WebSocket;
+pub use tokio_tungstenite::tungstenite::{
+    Message,
+    protocol::{CloseFrame, frame::coding::CloseCode},
+};
+pub use websocket::{Accept, UpgradeHook, WsExt, WsHandler, WsRoute, ws_handler};
