@@ -10,7 +10,7 @@
 
 | 阶段 | 状态 | 提交与验证证据 |
 |---|---|---|
-| P0 分析、规范与计划 | 已编写，待提交推送 | 本文；AGENTS.md；中英文生命周期及参与开发文档。发布结果见后续进度记录 |
+| P0 分析、规范与计划 | 已完成并推送 | `b1da534`；[站点 CI 通过](https://github.com/licyk/kardia/actions/runs/43693689368)；详细验证见第 11 节 |
 | P1 上游基准、对照框架与恢复契约 | 未开始 | — |
 | P2 Server HTTP 核心与恢复监督 | 未开始 | — |
 | P3 WebSocket 与 Echo | 未开始 | — |
@@ -256,4 +256,6 @@
 
 - 2026-11-15 / P0：完成固定上游代码和本项目集成点分析；确认 FS、HTTP、waterfall 类型化适配与自动恢复缺口；修正中英文插件、生命周期及元理论页面的失败恢复描述，参与开发页面补充规范说明，添加 AGENTS.md 强制规则。
 - 本地验证：`git diff --check`、站点 `bun run check` 通过；`bun run test` 的 7 个文件、41 项测试全部通过。`bun run build` 完成编译后在预渲染启动失败，原因是现有进程占用 3000 端口；未停止该进程或修改站点配置，将以既有站点 CI 验证完整构建。
-- Server 实现、基准测试、对照与故障注入尚未开始；本次无 Rust 代码变化，未运行 Rust 测试。提交、远端 SHA 与 CI 结果在推送后更新。
+- 提交与推送：`b1da534912aa7c474738a28672feb523a7336a94`，`docs(server): plan rewrite and require plugin failure recovery`；已推送 `origin/main`，推送后核实远端 SHA 与本地一致。
+- [Documentation site #43693689368](https://github.com/licyk/kardia/actions/runs/43693689368) 针对上述提交执行并成功完成，包含类型检查、测试、完整构建和 `gh-pages` 推送。本地端口冲突不再阻塞文档构建验收；网站托管侧的缓存刷新及用户浏览器访问未独立验证。
+- 本进度记录按约定在上述提交推送后另行提交推送。Server 实现、基准测试、对照与故障注入尚未开始；本次无 Rust 代码变化，未运行 Rust 测试。
