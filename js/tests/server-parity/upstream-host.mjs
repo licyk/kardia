@@ -10,7 +10,17 @@ const scenario = process.argv[3];
 const ctx = new Context();
 await ctx.use(Server, { port: 0 });
 let target;
-if (scenario === 'acl' || scenario === 'acl-list') {
+if (scenario === 'static') {
+  await ctx.use((await load('fs')).default);
+  await ctx.use((await load('fs-node')).default);
+  const config = JSON.parse(process.env.KARDIA_STATIC_CONFIG);
+  ctx.server.get('/__file-error', async (req, res) => {
+    try { await ctx.fs.file(new URL(req.query.get('path'), config.root + '/')).bytes(); res.json(null); }
+    catch (error) { res.json(error.code); }
+  });
+  await ctx.use(await load('server/static'), config);
+  ctx.server.get('{/*path}', async (_, res) => { res.body = 'fallback'; });
+} else if (scenario === 'acl' || scenario === 'acl-list') {
   await ctx.use(await load('server/acl'), { allowedHosts: scenario === 'acl-list' ? ['.example.com'] : false });
   for (const [path, options, body] of [
     ['/default', {}, 'default'], ['/public', { allowedHosts: true }, 'public'],

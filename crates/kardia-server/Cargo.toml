@@ -31,6 +31,8 @@ tokio-tungstenite = "0.30"
 kardia-loader.workspace = true
 kardia-server-echo.workspace = true
 kardia-server-acl.workspace = true
+kardia-server-static.workspace = true
+kardia-fs.workspace = true
 reqwest = { version = "0.13.5", default-features = false, features = ["stream", "json"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 

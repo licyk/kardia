@@ -18,6 +18,7 @@ kardia-fs = { path = "crates/kardia-fs", version = "0.2.3" }
 kardia-server = { path = "crates/kardia-server", version = "0.2.3" }
 kardia-server-echo = { path = "crates/kardia-server-echo", version = "0.2.3" }
 kardia-server-acl = { path = "crates/kardia-server-acl", version = "0.2.3" }
+kardia-server-static = { path = "crates/kardia-server-static", version = "0.2.3" }
 # members opt into preserve-order themselves, so that kardia-hmr can leave serde_json's preserve_order to its embedder
 kardia-loader = { path = "crates/kardia-loader", version = "0.2.3", default-features = false }
 kardia-include = { path = "crates/kardia-include", version = "0.2.3" }

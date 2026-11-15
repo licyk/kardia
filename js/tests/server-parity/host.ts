@@ -3,12 +3,12 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { checkUpstream, upstream } from "./upstream.ts";
 
-export async function startHost(scenario: string, implementation: "upstream" | "rust" = "upstream") {
+export async function startHost(scenario: string, implementation: "upstream" | "rust" = "upstream", env: Record<string,string> = {}) {
   if (implementation === "upstream") checkUpstream();
   const binary = fileURLToPath(new URL(`../../../target/debug/examples/server-reference${process.platform === "win32" ? ".exe" : ""}`, import.meta.url));
   const child = implementation === "upstream"
-    ? spawn("node", ["--expose-internals", fileURLToPath(new URL("./upstream-host.mjs", import.meta.url)), upstream, scenario], { stdio: ["pipe", "pipe", "pipe"] })
-    : spawn(binary, [scenario], { stdio: ["pipe", "pipe", "pipe"] });
+    ? spawn("node", ["--expose-internals", fileURLToPath(new URL("./upstream-host.mjs", import.meta.url)), upstream, scenario], { stdio: ["pipe", "pipe", "pipe"], env: {...process.env,...env} })
+    : spawn(binary, [scenario], { stdio: ["pipe", "pipe", "pipe"], env: {...process.env,...env} });
   let stderr = "";
   child.stderr.on("data", (data: Buffer) => { stderr += data.toString(); });
   const exited = new Promise<void>((resolve, reject) => {

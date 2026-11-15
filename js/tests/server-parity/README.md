@@ -8,6 +8,7 @@ From `js/`, with Node 24, Bun and Corepack available:
 bun install --frozen-lockfile
 bun run server:prepare
 bun run server:inventory --check
+bun run server:mime --check
 bun run check
 cargo build --manifest-path ../Cargo.toml -p kardia-server --example server-reference
 bun run test:server:reference
@@ -26,4 +27,10 @@ Rust parity is added alongside each implementation stage. A passing reference te
 - Reqwest 0.13.5 (MIT/Apache-2.0, MSRV 1.85) supplies the HTTP client transport, streaming and decompression. Client settings must match the actual Cordis HTTP service rather than Reqwest defaults. [Builder API](https://docs.rs/reqwest/0.13.5/reqwest/struct.ClientBuilder.html).
 - Recovery defaults to remaining failed. The host can select automatic retry or a custom handler. Supervision belongs outside the failed instance; it uses the existing lifecycle recovery operation and never resets the root to repair one plugin. All modes must keep unrelated plugins running.
 
-The HTTP adapter now drives both implementations through 18 shared socket cases, comparing status, reason phrase, semantic headers and body bytes. Rust also runs 50 migrated HTTP tests and real socket failure-isolation tests for all three recovery modes. WebSocket/client parity and the remaining HTTP supplements are still pending; see the root execution plan. The CI reference job builds the Rust adapter before running the same suite on each native platform.
+The current suite has 22 upstream supplement cases, 42 HTTP comparisons, 5 WS/Echo comparisons, 26 ACL cases (each tests HTTP and WS), and 29 Static cases. The CI reference job builds the Rust adapter and runs the same suite on Linux, Windows and macOS. Proxy client parity and final integration acceptance remain pending; see the root execution plan.
+
+Static compares 26 configuration sets across 15 paths, native FS error codes, distinct error-page resolution, and the complete file-type 20.5.0 fixture directory. `server:prepare` also fetches the fixture repository at `7fc6d9ff7cc01987aa73006757792a5ca198023a` into `cordis/.file-type-reference`. All 254 fixtures are served without extensions, plus generic ASF and HEIC-sequence supplements; the test asserts coverage of all 171 upstream supported MIME values. Every response compares status, reason phrase, semantic headers and a SHA-256 digest of the complete body. No MIME differences are normalized away.
+
+`server:mime` generates Rust signatures and 1,180 extension mappings from the installed fixed upstream dependencies. Complex container readers are implemented in Rust; the source hash guards regeneration against an unaudited upstream change. The generator uses the upstream TypeScript parser and existing rustfmt tooling. Content detection owns an independent, cancellable FS stream; no production Node process is required. picomatch-rs 0.1.0 supplies glob compilation, with the unspecified upstream POSIX option reproduced for literal `!` in character classes and tested over shared configuration samples. NOTICE preserves the adapted sources' MIT notices.
+
+Rust tests cover all 24 original Static declarations, first-read/stream errors, provider panics, client cancellation and three repeated failures under each recovery policy while an independent plugin continues handling HTTP requests. These are distinct from upstream protocol parity and from final native CI acceptance.

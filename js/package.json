@@ -13,7 +13,8 @@
     "clean": "bun run scripts/build.ts --clean",
     "test:server:reference": "vitest run --config vitest.server.config.ts",
     "server:prepare": "bun scripts/prepare-server-reference.ts",
-    "server:inventory": "bun scripts/server-test-inventory.ts"
+    "server:inventory": "bun scripts/server-test-inventory.ts",
+    "server:mime": "bun scripts/generate-server-mime.mjs"
   },
   "devDependencies": {
     "@tauri-apps/api": "^2.12.4",

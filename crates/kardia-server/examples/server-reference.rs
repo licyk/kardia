@@ -14,6 +14,31 @@ async fn main() -> kardia_core::Result<()> {
     let server = root.get::<Server>()?;
     match std::env::args().nth(1).as_deref().unwrap_or("core") {
         "core" => core(&root, &server)?,
+        "static" => {
+            use kardia_fs::FsExt;
+            root.plugin::<kardia_fs::FsPlugin>(Default::default())?.settled().await?;
+            root.plugin::<kardia_fs::LocalFsPlugin>(Default::default())?.settled().await?;
+            let config: serde_json::Value = serde_json::from_str(&std::env::var("KARDIA_STATIC_CONFIG")?)?;
+            let base = kardia_fs::Url::parse(&format!("{}/", config["root"].as_str().unwrap()))?;
+            let fs = root.get::<kardia_fs::Fs>()?;
+            server.get("/__file-error", move |req, res, _| {
+                let fs = fs.clone();
+                let base = base.clone();
+                async move {
+                    let path = req.query.iter().find(|(key, _)| key == "path").unwrap().1.as_str();
+                    let result = fs.file(base.join(path)?.as_str())?.bytes().await;
+                    let error =
+                        result.err().map(|e| format!("{:?}", e.downcast_ref::<kardia_fs::FsError>().unwrap().code));
+                    res.set_json(&error)?;
+                    Ok(None)
+                }
+            })?;
+            root.plugin_value::<kardia_server_static::StaticPlugin>(config)?.settled().await?;
+            server.get("{/*path}", |_, res, _| async move {
+                res.set_body("fallback");
+                Ok(None)
+            })?;
+        }
         "echo" => {
             root.plugin::<kardia_server_echo::EchoPlugin>(json!({}))?.settled().await?;
         }

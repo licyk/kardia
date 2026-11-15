@@ -72,6 +72,8 @@ jobs:
         working-directory: js
       - run: bun run server:inventory --check
         working-directory: js
+      - run: bun run server:mime --check
+        working-directory: js
       - run: bun run check
         working-directory: js
       - run: bun run test:server:reference

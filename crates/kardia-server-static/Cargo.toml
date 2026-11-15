@@ -1,0 +1,28 @@
+[package]
+name = "kardia-server-static"
+description = "Lifecycle-owned static file serving for kardia"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+kardia-core.workspace = true
+kardia-fs.workspace = true
+kardia-server.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+bytes = "1"
+percent-encoding = "2"
+picomatch-rs = "=0.1.0"
+flate2 = "1"
+
+[dev-dependencies]
+tokio.workspace = true
+reqwest = { version = "0.13.5", default-features = false, features = ["stream"] }
+tempfile = "3"
+
+[lints]
+workspace = true
