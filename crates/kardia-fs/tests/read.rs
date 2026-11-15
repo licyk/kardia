@@ -71,7 +71,7 @@ async fn local_provider_reads_real_files_and_maps_read_failures() {
     for (path, code) in [
         ("missing", FsCode::NotFound),
         ("./", FsCode::IsADirectory),
-        ("测试.txt/child", FsCode::NotADirectory),
+        ("测试.txt/child", if cfg!(windows) { FsCode::NotFound } else { FsCode::NotADirectory }),
         ("%2Fbad", FsCode::InvalidPath),
     ] {
         let error = fs.file(base.join(path).unwrap().as_str()).unwrap().bytes().await.unwrap_err();
