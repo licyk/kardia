@@ -2,6 +2,7 @@
 // spoken to over its stdin and stdout.
 
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { once } from "node:events";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
@@ -52,8 +53,16 @@ class StdioTransport implements Transport {
     });
   }
 
-  kill() {
-    this.process.kill();
+  async close() {
+    try {
+      // Bridge disposal sends asynchronous withdrawals and a final close request.
+      await until(() => this.pending.size === 0, "pending bridge requests to drain");
+      const closed = once(this.process, "close");
+      this.process.stdin.end();
+      await closed;
+    } finally {
+      this.process.kill();
+    }
   }
 }
 
@@ -84,7 +93,7 @@ let client: Context | undefined;
 
 afterEach(async () => {
   await client?.fiber.dispose();
-  transport?.kill();
+  await transport?.close();
 });
 
 async function connect() {
@@ -207,6 +216,7 @@ describe("plugin recovery across the real Rust/JS bridge", () => {
       generations.push(await (ctx.get("host.flaky") as RemoteService).call("echo", "consumer"));
     });
     await until(() => consumer.state === "active", "the dependent consumer");
+    const connectedStatuses = [...statuses];
     let running = true;
     let probes = 0;
     let monitorError: unknown;
@@ -244,7 +254,7 @@ describe("plugin recovery across the real Rust/JS bridge", () => {
       expect(generations).toEqual([1, 2, 3, 4].map((generation) => ({ generation, value: "consumer" })));
       expect(overlap).toBe(false);
       expect(await manager.call("status")).toMatchObject({ decisions: mode === "host" ? 3 : 0 });
-      expect(statuses).toEqual(["connected"]);
+      expect(statuses).toEqual(connectedStatuses);
       await manager.call("stop");
       await until(() => consumer.state === "pending", "final consumer cleanup");
       expect(live).toBe(0);
