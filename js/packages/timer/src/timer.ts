@@ -1,4 +1,5 @@
 import { type Context, type EffectHandle, Service } from "@kardiajs/core";
+import { Callbacks } from "#/callbacks";
 
 declare module "@kardiajs/core" {
   interface Services {
@@ -36,12 +37,12 @@ export class Timer extends Service {
   }
 
   /** Calls `callback` once after `delay` ms, unless the effect is disposed first. */
-  timeout(delay: number, callback: () => void): EffectHandle {
+  timeout(delay: number, callback: () => unknown): EffectHandle {
     const handle: EffectHandle = this.caller.effect((scope) => {
+      const calls = new Callbacks(this.caller);
+      scope.defer(() => calls.stop());
       const timer = setTimeout(() => {
-        // revert the effect first, as the timer is spent
-        void handle.dispose();
-        callback();
+        void calls.invoke(callback).then(() => handle.dispose()).catch(() => {});
       }, delay);
       scope.defer(() => clearTimeout(timer));
     }, "ctx.timeout()");
@@ -65,9 +66,11 @@ export class Timer extends Service {
   }
 
   /** Calls `callback` every `delay` ms until the effect is disposed. */
-  interval(delay: number, callback: () => void): EffectHandle {
+  interval(delay: number, callback: () => unknown): EffectHandle {
     return this.caller.effect((scope) => {
-      const timer = setInterval(callback, delay);
+      const calls = new Callbacks(this.caller);
+      scope.defer(() => calls.stop());
+      const timer = setInterval(() => { void calls.invoke(callback); }, delay);
       scope.defer(() => clearInterval(timer));
     }, "ctx.interval()");
   }
@@ -77,34 +80,37 @@ export class Timer extends Service {
    * postponed to its end, replacing an earlier postponed call, unless
    * `trailing` is false.
    */
-  throttle<A extends unknown[]>(delay: number, callback: (...args: A) => void, options: ThrottleOptions = {}): Scheduled<A> {
+  throttle<A extends unknown[]>(delay: number, callback: (...args: A) => unknown, options: ThrottleOptions = {}): Scheduled<A> {
     let lastCall = -Infinity;
-    const execute = (args: A) => {
-      lastCall = Date.now();
-      callback(...args);
-    };
-    return this.schedule<A>("ctx.throttle()", (args) => {
+    return this.schedule<A>("ctx.throttle()", callback, (execute) => {
       const remaining = delay - (Date.now() - lastCall);
+      const run = () => {
+        lastCall = Date.now();
+        execute();
+      };
       if (remaining <= 0) {
-        execute(args);
+        run();
       } else if (options.trailing !== false) {
-        return setTimeout(() => execute(args), remaining);
+        return setTimeout(run, remaining);
       }
     });
   }
 
   /** Calls `callback` once `delay` ms have passed without another call. */
-  debounce<A extends unknown[]>(delay: number, callback: (...args: A) => void): Scheduled<A> {
-    return this.schedule<A>("ctx.debounce()", (args) => setTimeout(() => callback(...args), delay));
+  debounce<A extends unknown[]>(delay: number, callback: (...args: A) => unknown): Scheduled<A> {
+    return this.schedule<A>("ctx.debounce()", callback, (execute) => setTimeout(execute, delay));
   }
 
   private schedule<A extends unknown[]>(
     label: string,
-    trigger: (args: A) => ReturnType<typeof setTimeout> | undefined,
+    callback: (...args: A) => unknown,
+    trigger: (execute: () => void) => ReturnType<typeof setTimeout> | undefined,
   ): Scheduled<A> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let disposed = false;
+    const calls = new Callbacks(this.caller);
     const handle = this.caller.effect((scope) => {
+      scope.defer(() => calls.stop());
       scope.defer(() => {
         disposed = true;
         clearTimeout(timer);
@@ -113,7 +119,7 @@ export class Timer extends Service {
     const scheduled = (...args: A) => {
       if (disposed) return;
       clearTimeout(timer);
-      timer = trigger(args);
+      timer = trigger(() => { void calls.invoke(() => callback(...args)); });
     };
     return Object.assign(scheduled, { dispose: () => handle.dispose() });
   }
