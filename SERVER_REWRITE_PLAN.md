@@ -349,3 +349,9 @@
 - Proxy 自身和 HTTP provider 在三种策略下各重复失败三轮；失败连接和流清理归零，共享 Server 身份不变，独立 HTTP 及同一健康 WS 连接持续工作。上游暂时不可用时 HTTP 500、WS 不 accept，Proxy 保持 Active；上游恢复后无需重启即可再次转发。
 - 实测纠正早期假设：上游核心采用返回 Response 时不复制自定义状态文本，重复 Set-Cookie 经 Headers.set 只保留最后一个；`server.proxy.publicUrl` 使用提供插件的上下文（包括挂载前缀），后续消费者的 intercept 不改变它。对照和正式文档按该事实记录，不能擅自改进后声称相同。
 - 修正 Node 默认状态文本的 418/509 拼写，以及 WS 关闭消息与效应清理的发送顺序。原生 CI 待验收；继续 P9 facade/catalog/CLI 和完整生命周期检查。
+
+### P9 集成入口
+
+- `9ad80ef` 已提交推送并核实远端 SHA。facade 重新导出 HTTP 与五个 Server crate；catalog 注册插件名与实际 `@cordisjs/*` 包名，新增 `fs:local`。CLI 启动文件服务及本地只读 provider；新增可直接运行的 `examples/server.yml` 和 Static 页面。
+- 两项真实集成测试通过：catalog 同时加载全部包，HTTP 与 Server 替换后 Proxy 依赖重建；启动实际 CLI 子进程读取文档示例，测试 Static、HTTP Proxy/Echo 及 WS Proxy/Echo。CLI 就绪等待完整配置生效，不把第一个监听端口启动当作所有消费者已就绪。
+- 相关 clippy、格式、架构、差异检查通过。P9 尚需通用 HTTP 回调/流释放审计、补充语义矩阵、全 workspace/feature 与最终三平台 CI；不提前标记完成。
