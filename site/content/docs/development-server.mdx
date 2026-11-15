@@ -37,6 +37,8 @@ Static 使用 FS provider，不直接绑定本地文件系统。内容探测有�
 
 ## 固定对照与复现 [#parity]
 
+上游对照位于独立工作流 `.github/workflows/server-reference.yml`，仅用于手动验证。在 GitHub Actions 中选择 **Server reference → Run workflow**，即可运行 Linux、Windows、macOS 三平台对照。该工作流只有 `workflow_dispatch` 入口，不随 push、PR 或发布自动触发；常规 Rust 检查和故障隔离测试仍由主 CI 执行。
+
 在仓库根目录构建 Rust 宿主，再从 `js/` 运行既有工具：
 
 ```sh

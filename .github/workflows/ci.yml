@@ -47,38 +47,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  server-reference:
-    name: Server reference (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-      - uses: oven-sh/setup-bun@v2.2.0
-        with:
-          bun-version: latest
-      - uses: dtolnay/rust-toolchain@1.99.1
-      - uses: Swatinem/rust-cache@v2.9.3
-      - run: cargo build -p kardia-server --example server-reference
-      - run: npm install --global --force corepack
-      - run: bun install --frozen-lockfile
-        working-directory: js
-      - run: bun run server:prepare
-        working-directory: js
-      - run: bun run server:inventory --check
-        working-directory: js
-      - run: bun run server:mime --check
-        working-directory: js
-      - run: bun run check
-        working-directory: js
-      - run: bun run test:server:reference
-        working-directory: js
-
   rust:
     name: Rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

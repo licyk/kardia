@@ -37,6 +37,8 @@ The containment boundary remains explicit: in-process unwind handling can catch 
 
 ## Fixed comparisons and reproduction [#parity]
 
+Upstream comparisons live in the standalone `.github/workflows/server-reference.yml` workflow for manual verification. Select **Server reference → Run workflow** in GitHub Actions to run the Linux, Windows and macOS matrix. Its only trigger is `workflow_dispatch`; pushes, pull requests and releases do not invoke it. Regular Rust checks and failure-isolation tests remain in the main CI workflow.
+
 Build the Rust host from the repository root, then run the existing tooling from `js/`:
 
 ```sh
