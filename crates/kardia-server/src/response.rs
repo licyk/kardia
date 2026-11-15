@@ -113,6 +113,9 @@ impl Response {
     pub async fn json(&self) -> Result<Value> {
         Ok(serde_json::from_str(&self.text().await?)?)
     }
+    pub(crate) fn take_body(&self) -> Body {
+        std::mem::take(&mut self.0.lock().body)
+    }
     pub(crate) fn take(&self) -> ResponseData {
         std::mem::take(&mut *self.0.lock())
     }

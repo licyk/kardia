@@ -22,6 +22,7 @@ pub(crate) async fn listen(server: Arc<Server>, listener: TcpListener, mut stop:
                 _ = &mut stop => break Ok(()),
                 accepted = listener.accept() => {
                     let (socket, _) = accepted?;
+                    socket.set_nodelay(true)?;
                     let server = server.clone();
                     connections.spawn(async move {
                         let service = service_fn(move |req| serve(server.clone(), req));

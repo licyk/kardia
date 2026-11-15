@@ -153,11 +153,14 @@ impl ServerExt for Svc<Server> {
         });
         let server = self.arc().clone();
         let id = self.next_id();
+        let calls = crate::ownership::Calls::new();
+        let callback = calls.handler(callback);
         let effect = self.caller().effect_sync("server route", |scope| {
             server.routes.lock().push(Arc::new(HttpRoute { id, info: info.clone(), handler: callback }));
-            scope.defer_fn(move || {
+            scope.defer(Disposer::future(move || {
                 server.routes.lock().retain(|route| route.id != id);
-            });
+                calls.close()
+            }));
             Ok(())
         })?;
         Ok(Route::new(info, effect))
@@ -188,22 +191,43 @@ impl ServerExt for Svc<Server> {
     fn use_middleware(&self, handler: Handler) -> Result<EffectHandle> {
         let server = self.arc().clone();
         let id = self.next_id();
+        let calls = crate::ownership::Calls::new();
+        let handler = calls.handler(handler);
         self.caller().effect_sync("server request hook", |scope| {
             server.middleware.lock().insert(0, (id, handler));
-            scope.defer_fn(move || {
+            scope.defer(Disposer::future(move || {
                 server.middleware.lock().retain(|(key, _)| *key != id);
-            });
+                calls.close()
+            }));
             Ok(())
         })
     }
     fn on_route_request(&self, hook: RouteHook) -> Result<EffectHandle> {
         let server = self.arc().clone();
         let id = self.next_id();
+        let calls = crate::ownership::Calls::new();
+        let owner = calls.clone();
+        let hook: RouteHook = Arc::new(move |req, res, info, next| {
+            let calls = owner.clone();
+            let hook = hook.clone();
+            async move {
+                let owner = calls.clone();
+                calls
+                    .run(async move {
+                        let result = crate::dispatch::contain(async { hook(req, res.clone(), info, next).await }).await;
+                        owner.response(result.as_ref().ok().and_then(Option::as_ref).unwrap_or(&res))?;
+                        result
+                    })
+                    .await
+            }
+            .boxed()
+        });
         self.caller().effect_sync("server route request hook", |scope| {
             server.hooks.lock().push((id, hook));
-            scope.defer_fn(move || {
+            scope.defer(Disposer::future(move || {
                 server.hooks.lock().retain(|(key, _)| *key != id);
-            });
+                calls.close()
+            }));
             Ok(())
         })
     }
