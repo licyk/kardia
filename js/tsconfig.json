@@ -14,5 +14,5 @@
       "@kardiajs/vue": ["./packages/vue/src/index.ts"]
     }
   },
-  "include": ["packages/*/src", "packages/*/tests", "scripts", "*.config.ts"]
+  "include": ["packages/*/src", "packages/*/tests", "scripts", "tests", "*.config.ts"]
 }

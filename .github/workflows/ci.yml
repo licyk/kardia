@@ -10,7 +10,9 @@ on:
     paths-ignore:
       - "site/**"
       - ".github/workflows/site.yml"
-      - "js/**"
+      - "js/packages/**"
+      - "js/README.md"
+      - "js/NOTICE"
       - ".github/workflows/js.yml"
       - ".github/workflows/npm-release.yml"
       - "**.md"
@@ -22,7 +24,9 @@ on:
     paths-ignore:
       - "site/**"
       - ".github/workflows/site.yml"
-      - "js/**"
+      - "js/packages/**"
+      - "js/README.md"
+      - "js/NOTICE"
       - ".github/workflows/js.yml"
       - ".github/workflows/npm-release.yml"
       - "**.md"
@@ -43,6 +47,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  server-reference:
+    name: Server reference (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: oven-sh/setup-bun@v2.2.0
+        with:
+          bun-version: latest
+      - run: npm install --global --force corepack
+      - run: bun install --frozen-lockfile
+        working-directory: js
+      - run: bun run server:prepare
+        working-directory: js
+      - run: bun run server:inventory --check
+        working-directory: js
+      - run: bun run check
+        working-directory: js
+      - run: bun run test:server:reference
+        working-directory: js
+
   rust:
     name: Rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

@@ -1,0 +1,530 @@
+{
+  "upstream": "f6290dbbf1558cb3a870a58b1f97bacc0d3a9960",
+  "tests": [
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should start and listen",
+      "rustName": "should_start_and_listen"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should fallback to next port if configured port is in use",
+      "rustName": "should_fallback_to_next_port_if_configured_port_is_in_use"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should handle GET route",
+      "rustName": "should_handle_get_route"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should handle POST route",
+      "rustName": "should_handle_post_route"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should handle route returning Response object",
+      "rustName": "should_handle_route_returning_response_object"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should extract typed path params",
+      "rustName": "should_extract_typed_path_params"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should decode path params",
+      "rustName": "should_decode_path_params"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should handle wildcard path params",
+      "rustName": "should_handle_wildcard_path_params"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should match route with query string",
+      "rustName": "should_match_route_with_query_string"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should not leak query string into path params",
+      "rustName": "should_not_leak_query_string_into_path_params"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should handle regex routes",
+      "rustName": "should_handle_regex_routes"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should support all() to match any method",
+      "rustName": "should_support_all_to_match_any_method"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should return 404 for unmatched path",
+      "rustName": "should_return_404_for_unmatched_path"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should return 405 with Allow header for mismatched method",
+      "rustName": "should_return_405_with_allow_header_for_mismatched_method"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should treat all() as wildcard method in Allow header",
+      "rustName": "should_treat_all_as_wildcard_method_in_allow_header"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should handle OPTIONS with Allow header",
+      "rustName": "should_handle_options_with_allow_header"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should allow setting custom status code",
+      "rustName": "should_allow_setting_custom_status_code"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should preserve status-only response (redirect)",
+      "rustName": "should_preserve_status_only_response_redirect"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should preserve 204 empty response",
+      "rustName": "should_preserve_204_empty_response"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should preserve custom 404 body",
+      "rustName": "should_preserve_custom_404_body"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should run middleware before routes",
+      "rustName": "should_run_middleware_before_routes"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should allow middleware to short-circuit",
+      "rustName": "should_allow_middleware_to_short_circuit"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should propagate a Response returned via next() so catch-alls can forward it",
+      "rustName": "should_propagate_a_response_returned_via_next_so_catch_alls_can_forward_it"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should parse JSON body",
+      "rustName": "should_parse_json_body"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should parse text body",
+      "rustName": "should_parse_text_body"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should pass validated body through",
+      "rustName": "should_pass_validated_body_through"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should respond 422 with issues on validation failure",
+      "rustName": "should_respond_422_with_issues_on_validation_failure"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should support async validators",
+      "rustName": "should_support_async_validators"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should set custom response headers",
+      "rustName": "should_set_custom_response_headers"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should auto-derive content-type from res.text()",
+      "rustName": "should_auto_derive_content_type_from_res_text"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should set content-type application/json for res.json()",
+      "rustName": "should_set_content_type_application_json_for_res_json"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should preserve user content-type when set before body",
+      "rustName": "should_preserve_user_content_type_when_set_before_body"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should preserve user content-type when set after body",
+      "rustName": "should_preserve_user_content_type_when_set_after_body"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should overwrite body on subsequent writes",
+      "rustName": "should_overwrite_body_on_subsequent_writes"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should allow method read then flush via _end()",
+      "rustName": "should_allow_method_read_then_flush_via_end"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should allow two concurrent method reads on the same stream body",
+      "rustName": "should_allow_two_concurrent_method_reads_on_the_same_stream_body"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should allow body getter read then flush via _end()",
+      "rustName": "should_allow_body_getter_read_then_flush_via_end"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should remove route on dispose",
+      "rustName": "should_remove_route_on_dispose"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should compute publicUrl from host and port",
+      "rustName": "should_compute_publicurl_from_host_and_port"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should resolve wildcard host to 127.0.0.1",
+      "rustName": "should_resolve_wildcard_host_to_127_0_0_1"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should prefer config.publicUrl when set",
+      "rustName": "should_prefer_config_publicurl_when_set"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should return 500 when route throws",
+      "rustName": "should_return_500_when_route_throws"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should not override status if already set before throw",
+      "rustName": "should_not_override_status_if_already_set_before_throw"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should accept ws connection on matched route",
+      "rustName": "should_accept_ws_connection_on_matched_route"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should return 404 for unmatched ws route",
+      "rustName": "should_return_404_for_unmatched_ws_route"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should track clients and clean up on close",
+      "rustName": "should_track_clients_and_clean_up_on_close"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should close clients on route dispose",
+      "rustName": "should_close_clients_on_route_dispose"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should support ws handler with accept",
+      "rustName": "should_support_ws_handler_with_accept"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should return 500 when ws handler throws",
+      "rustName": "should_return_500_when_ws_handler_throws"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should destroy socket when handler does not accept",
+      "rustName": "should_destroy_socket_when_handler_does_not_accept"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should scope route under intercept path",
+      "rustName": "should_scope_route_under_intercept_path"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should expose per-route options to server/route-request listeners",
+      "rustName": "should_expose_per_route_options_to_server_route_request_listeners"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should allow route-request listener to short-circuit before callback",
+      "rustName": "should_allow_route_request_listener_to_short_circuit_before_callback"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "intercept.routes should override per-route options on same key",
+      "rustName": "intercept_routes_should_override_per_route_options_on_same_key"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "intercept scalar should override per-route scalar",
+      "rustName": "intercept_scalar_should_override_per_route_scalar"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "per-route keys absent from intercept are preserved",
+      "rustName": "per_route_keys_absent_from_intercept_are_preserved"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "intercept key is method-specific",
+      "rustName": "intercept_key_is_method_specific"
+    },
+    {
+      "source": "packages/server/acl/tests/index.spec.ts",
+      "name": "no component loaded: any host allowed",
+      "rustName": "no_component_loaded_any_host_allowed"
+    },
+    {
+      "source": "packages/server/acl/tests/index.spec.ts",
+      "name": "undefined / true: any host allowed",
+      "rustName": "undefined_true_any_host_allowed"
+    },
+    {
+      "source": "packages/server/acl/tests/index.spec.ts",
+      "name": "false: loopback allowed, others denied",
+      "rustName": "false_loopback_allowed_others_denied"
+    },
+    {
+      "source": "packages/server/acl/tests/index.spec.ts",
+      "name": "string[]: allow listed + loopback",
+      "rustName": "string_allow_listed_loopback"
+    },
+    {
+      "source": "packages/server/acl/tests/index.spec.ts",
+      "name": "subdomain wildcard .example.com",
+      "rustName": "subdomain_wildcard_example_com"
+    },
+    {
+      "source": "packages/server/acl/tests/index.spec.ts",
+      "name": "host header with port is stripped before matching",
+      "rustName": "host_header_with_port_is_stripped_before_matching"
+    },
+    {
+      "source": "packages/server/acl/tests/index.spec.ts",
+      "name": "route true overrides component false",
+      "rustName": "route_true_overrides_component_false"
+    },
+    {
+      "source": "packages/server/acl/tests/index.spec.ts",
+      "name": "route false overrides component true",
+      "rustName": "route_false_overrides_component_true"
+    },
+    {
+      "source": "packages/server/acl/tests/index.spec.ts",
+      "name": "route list adds to component behavior",
+      "rustName": "route_list_adds_to_component_behavior"
+    },
+    {
+      "source": "packages/server/acl/tests/index.spec.ts",
+      "name": "intercept routes merge into route.options",
+      "rustName": "intercept_routes_merge_into_route_options"
+    },
+    {
+      "source": "packages/server/acl/tests/index.spec.ts",
+      "name": "component-level false denies remote WS, allows loopback",
+      "rustName": "component_level_false_denies_remote_ws_allows_loopback"
+    },
+    {
+      "source": "packages/server/acl/tests/index.spec.ts",
+      "name": "route-level allowedHosts for WS",
+      "rustName": "route_level_allowedhosts_for_ws"
+    },
+    {
+      "source": "packages/server/acl/tests/index.spec.ts",
+      "name": "vetoed route falls through to the next matching route",
+      "rustName": "vetoed_route_falls_through_to_the_next_matching_route"
+    },
+    {
+      "source": "packages/server/acl/tests/index.spec.ts",
+      "name": "vetoed sole route yields 404, not 405 (no information leak)",
+      "rustName": "vetoed_sole_route_yields_404_not_405_no_information_leak"
+    },
+    {
+      "source": "packages/server/acl/tests/index.spec.ts",
+      "name": "vetoed WS route falls through to next matching WS route",
+      "rustName": "vetoed_ws_route_falls_through_to_next_matching_ws_route"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "should proxy a simple GET request",
+      "rustName": "should_proxy_a_simple_get_request"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "should proxy nested paths",
+      "rustName": "should_proxy_nested_paths"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "should forward query string",
+      "rustName": "should_forward_query_string"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "should proxy root path",
+      "rustName": "should_proxy_root_path"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "should forward request body",
+      "rustName": "should_forward_request_body"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "should forward JSON body",
+      "rustName": "should_forward_json_body"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "should forward upstream status codes",
+      "rustName": "should_forward_upstream_status_codes"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "should forward upstream response headers",
+      "rustName": "should_forward_upstream_response_headers"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "should correctly join with target path",
+      "rustName": "should_correctly_join_with_target_path"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should resolve a relative root against the base URL of fs",
+      "rustName": "should_resolve_a_relative_root_against_the_base_url_of_fs"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should serve an existing file",
+      "rustName": "should_serve_an_existing_file"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should return 404 for missing file",
+      "rustName": "should_return_404_for_missing_file"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should serve file without extension",
+      "rustName": "should_serve_file_without_extension"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should not try extensions by default",
+      "rustName": "should_not_try_extensions_by_default"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should try .html extension when configured",
+      "rustName": "should_try_html_extension_when_configured"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should prefer exact file over extension fallback",
+      "rustName": "should_prefer_exact_file_over_extension_fallback"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should serve index file for root",
+      "rustName": "should_serve_index_file_for_root"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should serve index file for subdirectory with trailing slash",
+      "rustName": "should_serve_index_file_for_subdirectory_with_trailing_slash"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should redirect directory without trailing slash",
+      "rustName": "should_redirect_directory_without_trailing_slash"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should not redirect when redirect is disabled",
+      "rustName": "should_not_redirect_when_redirect_is_disabled"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should return 403 for path traversal",
+      "rustName": "should_return_403_for_path_traversal"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should not fallthrough by default",
+      "rustName": "should_not_fallthrough_by_default"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should fallthrough when enabled",
+      "rustName": "should_fallthrough_when_enabled"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should serve custom error page with original status",
+      "rustName": "should_serve_custom_error_page_with_original_status"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should display the error page regardless of disposition",
+      "rustName": "should_display_the_error_page_regardless_of_disposition"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should block files matching exclude pattern",
+      "rustName": "should_block_files_matching_exclude_pattern"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should serve files not matching exclude pattern",
+      "rustName": "should_serve_files_not_matching_exclude_pattern"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should support multiple exclude patterns",
+      "rustName": "should_support_multiple_exclude_patterns"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should match exclude patterns against paths separated by slashes",
+      "rustName": "should_match_exclude_patterns_against_paths_separated_by_slashes"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should set an attachment disposition",
+      "rustName": "should_set_an_attachment_disposition"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should set an inline disposition",
+      "rustName": "should_set_an_inline_disposition"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should detect the type of content split into small chunks",
+      "rustName": "should_detect_the_type_of_content_split_into_small_chunks"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should detect the type of content beyond the first chunk",
+      "rustName": "should_detect_the_type_of_content_beyond_the_first_chunk"
+    }
+  ]
+}

@@ -10,7 +10,10 @@
     "test": "vitest run",
     "test:e2e": "cargo build -p kardia-bridge --example stdio_host && vitest run --config vitest.e2e.config.ts",
     "build": "bun run scripts/build.ts",
-    "clean": "bun run scripts/build.ts --clean"
+    "clean": "bun run scripts/build.ts --clean",
+    "test:server:reference": "vitest run --config vitest.server.config.ts",
+    "server:prepare": "bun scripts/prepare-server-reference.ts",
+    "server:inventory": "bun scripts/server-test-inventory.ts"
   },
   "devDependencies": {
     "@tauri-apps/api": "^2.12.4",
