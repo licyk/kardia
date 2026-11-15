@@ -28,13 +28,14 @@ ryu-js = "1.0.3"
 tokio-tungstenite = "0.30"
 
 [dev-dependencies]
-kardia-server-proxy.workspace = true
+# These test fixtures depend on server; omit the back-edges from published metadata.
+kardia-server-proxy = { path = "../kardia-server-proxy" }
 kardia-loader.workspace = true
-kardia-server-echo.workspace = true
-kardia-server-acl.workspace = true
-kardia-server-static.workspace = true
+kardia-server-echo = { path = "../kardia-server-echo" }
+kardia-server-acl = { path = "../kardia-server-acl" }
+kardia-server-static = { path = "../kardia-server-static" }
 kardia-fs.workspace = true
-kardia-http.workspace = true
+kardia-http = { path = "../kardia-http" }
 rcgen = "0.14"
 reqwest = { version = "0.13.5", default-features = false, features = ["stream", "json"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
