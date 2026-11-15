@@ -1491,6 +1491,7 @@ dependencies = [
  "kardia-core",
  "kardia-http",
  "kardia-server",
+ "percent-encoding",
  "reqwest",
  "serde",
  "serde_json",

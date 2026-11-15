@@ -91,7 +91,7 @@ impl Pattern {
         let mut params = Map::new();
         for (index, name) in keys.iter().enumerate() {
             if let Some(range) = capture.group(index + 1) {
-                let raw = String::from_utf16_lossy(&text[range]).replace('+', " ");
+                let raw = String::from_utf16_lossy(&text[range]);
                 let bytes = raw.as_bytes();
                 for (i, byte) in bytes.iter().enumerate() {
                     if *byte == b'%'

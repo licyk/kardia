@@ -93,7 +93,7 @@ case!(should_decode_path_params, f, {
         })
         .unwrap();
     assert_eq!(f.get("/files/hello%20world").await.json::<Value>().await.unwrap(), json!({"name":"hello world"}));
-    assert_eq!(f.get("/files/a+b%2Fc").await.json::<Value>().await.unwrap(), json!({"name":"a b/c"}));
+    assert_eq!(f.get("/files/a+b%2Fc").await.json::<Value>().await.unwrap(), json!({"name":"a+b/c"}));
     assert_eq!(f.get("/files/%ZZ").await.status(), 500);
 });
 case!(should_handle_wildcard_path_params, f, {
