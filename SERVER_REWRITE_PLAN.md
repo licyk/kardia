@@ -355,3 +355,9 @@
 - `9ad80ef` 已提交推送并核实远端 SHA。facade 重新导出 HTTP 与五个 Server crate；catalog 注册插件名与实际 `@cordisjs/*` 包名，新增 `fs:local`。CLI 启动文件服务及本地只读 provider；新增可直接运行的 `examples/server.yml` 和 Static 页面。
 - 两项真实集成测试通过：catalog 同时加载全部包，HTTP 与 Server 替换后 Proxy 依赖重建；启动实际 CLI 子进程读取文档示例，测试 Static、HTTP Proxy/Echo 及 WS Proxy/Echo。CLI 就绪等待完整配置生效，不把第一个监听端口启动当作所有消费者已就绪。
 - 相关 clippy、格式、架构、差异检查通过。P9 尚需通用 HTTP 回调/流释放审计、补充语义矩阵、全 workspace/feature 与最终三平台 CI；不提前标记完成。
+
+### P9 HTTP 生命周期审计
+
+- `d52ce8966dac208d560fe43a8986105d13387be2` 已提交推送并核实远端 SHA。实测发现移除路由后 pending handler 和未结束 body 仍存活（释放后计数为 2）；新增调用/流任务归属后，两者在 dispose 返回前销毁，计数为 0。中间件及 route-request hook 同样取消并等待自己的任务，客户端取消也会终止其调用/流。
+- 新增 2 项真实网络生命周期测试通过；Echo、Proxy、HTTP provider、Static 的三种恢复策略回归及 CLI/catalog 集成通过，177 项双端对照通过。clippy、格式、架构及差异检查通过。保持一块有界流传递，不先缓存整个响应。
+- 对照 Node 24 内置 HTTP Server 源码，TCP 默认 noDelay 为 true；Rust 对齐该设置，避免新增分离流任务触发 Nagle 延迟。最终原生验收及剩余语义审计继续进行。
