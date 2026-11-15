@@ -225,12 +225,12 @@ impl Loader {
 
     /// Resolves the entry's plugin; failures are reported here.
     pub(crate) async fn import(&self, entry: EntryId, name: &str) -> Option<PluginDef> {
-        let resolver = self.with(|st| {
-            let tree = st.groups[&st.entries.get(&entry)?.parent].tree;
-            st.trees[&tree].backend.resolver()
-        });
+        let (resolver, ctx) = self.with(|st| {
+            let group = &st.groups[&st.entries.get(&entry)?.parent];
+            Some((st.trees[&group.tree].backend.resolver(), group.ctx.clone()))
+        })?;
         let resolver = resolver.unwrap_or_else(|| self.0.resolver.clone());
-        match resolver.resolve(name).await {
+        match resolver.resolve(&ctx, name).await {
             Ok(def) => Some(def),
             Err(error) => {
                 self.report(entry, &error);

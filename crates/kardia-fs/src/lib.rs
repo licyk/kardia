@@ -7,8 +7,10 @@ mod file;
 mod filter;
 mod local;
 mod service;
+mod url;
 mod watcher;
 
+pub use ::url::Url;
 pub use access::FsExt;
 pub use bytes::Bytes;
 pub use error::{FsCode, FsError};
@@ -16,5 +18,4 @@ pub use file::{FileRef, FileStream, FsProvider};
 pub use filter::{Filter, Predicate, admits, compile};
 pub use local::{LocalFs, LocalFsConfig, LocalFsPlugin};
 pub use service::{Fs, FsConfig, FsPlugin, WatchOptions};
-pub use url::Url;
 pub use watcher::{Subscription, Watcher};

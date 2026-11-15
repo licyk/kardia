@@ -191,3 +191,45 @@ async fn mount_owner_recovery_leaves_an_independent_provider_available() {
         root.fiber().dispose().await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn directory_bases_clear_query_and_fragment_at_every_scope() {
+    let root = Context::new();
+    root.plugin_value::<FsPlugin>(json!({"baseUrl":"file:///app?ignored#ignored", "unknown":true}))
+        .unwrap()
+        .settled()
+        .await
+        .unwrap();
+    assert_eq!(root.get::<Fs>().unwrap().base_url().unwrap().as_str(), "file:///app/");
+    let ctx = root.intercept("fs", json!({"baseUrl":"data"})).intercept("fs", json!({"baseUrl":"logs?x#y"}));
+    let fs = ctx.get::<Fs>().unwrap();
+    assert_eq!(fs.base_url().unwrap().as_str(), "file:///app/data/logs/");
+    assert_eq!(fs.resolve("a.txt?q#h").unwrap().as_str(), "file:///app/data/logs/a.txt?q#h");
+    assert_eq!(fs.resolve("memory:bucket").unwrap().as_str(), "memory:bucket");
+    let bad = ctx.intercept("fs", json!({"baseUrl":"memory:bucket"}));
+    assert!(bad.get::<Fs>().unwrap().base_url().unwrap_err().is::<kardia_core::ValidationError>());
+    root.fiber().dispose().await.unwrap();
+}
+
+#[tokio::test]
+async fn opaque_base_is_a_configuration_failure_without_retry() {
+    let root = Context::new();
+    let plugin = root.plugin_value::<FsPlugin>(json!({"baseUrl":"memory:bucket"})).unwrap();
+    plugin.set_recovery(RecoveryPolicy::Retry { delay: Duration::from_millis(1) }).unwrap();
+    assert!(plugin.settled().await.unwrap_err().is::<kardia_core::ValidationError>());
+    assert!(root.get::<Fs>().is_err());
+    root.fiber().dispose().await.unwrap();
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_drive_paths_are_file_urls_in_config_intercepts_and_resolution() {
+    let root = Context::new();
+    root.plugin_value::<FsPlugin>(json!({"baseUrl":r"C:\app space#%"})).unwrap().settled().await.unwrap();
+    let fs = root.get::<Fs>().unwrap();
+    assert_eq!(fs.base_url().unwrap().as_str(), "file:///C:/app%20space%23%25/");
+    assert_eq!(fs.resolve(r"D:\data\file#%.txt").unwrap().as_str(), "file:///D:/data/file%23%25.txt");
+    let scoped = root.intercept("fs", json!({"baseUrl":"D:/data"}));
+    assert_eq!(scoped.get::<Fs>().unwrap().base_url().unwrap().as_str(), "file:///D:/data/");
+    root.fiber().dispose().await.unwrap();
+}

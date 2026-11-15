@@ -23,13 +23,16 @@ impl FsExt for Svc<Fs> {
         let mut base = self.base.clone();
         for meta in self.intercepts() {
             if let Some(value) = meta.get("baseUrl").and_then(|v| v.as_str()) {
-                base = base.join(value).map_err(|e| FsError::new(FsCode::InvalidPath, None, e.to_string()))?;
+                base = crate::url::resolve(Some(&base), value)
+                    .and_then(crate::url::directory)
+                    .map_err(|e| kardia_core::ValidationError::message(format!("baseUrl: {e}")))?;
             }
         }
         Ok(base)
     }
     fn resolve(&self, path: &str) -> Result<Url> {
-        self.base_url()?.join(path).map_err(|e| FsError::new(FsCode::InvalidPath, None, e.to_string()).into())
+        crate::url::resolve(Some(&self.base_url()?), path)
+            .map_err(|e| FsError::new(FsCode::InvalidPath, None, e.to_string()).into())
     }
     fn file(&self, path: &str) -> Result<FileRef> {
         Ok(FileRef { url: self.resolve(path)?, fs: self.clone() })

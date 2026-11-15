@@ -14,8 +14,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use futures::future::join_all;
-use kardia_core::{Context, Error, Fiber, FiberId, PluginDef, Result, RuntimeKey, Service, Svc};
-use kardia_loader::Loader;
+use kardia_core::{Context, Error, Fiber, FiberId, Inject, PluginDef, Result, RuntimeKey, Service, Svc};
+use kardia_fs::{Fs, FsExt};
 use parking_lot::Mutex;
 use serde::Deserialize;
 
@@ -63,10 +63,6 @@ pub struct ImportFailure {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct HmrConfig {
-    /// The base directory, relative to the directory of the config file that
-    /// loads hmr (else the working directory), and defaulting to it.
-    /// `watch.files` and logged paths are relative to it.
-    pub base: Option<PathBuf>,
     pub watch: WatchConfig,
 }
 
@@ -76,8 +72,12 @@ impl Hmr {
         PluginDef::typed(move |ctx, config: Arc<HmrConfig>| {
             let graph = graph.clone();
             async move {
-                let base = config.base.as_deref().unwrap_or(Path::new("."));
-                let base = normalize(&std::path::absolute(entry_dir(&ctx).join(base))?);
+                let base = ctx
+                    .get::<Fs>()?
+                    .base_url()?
+                    .to_file_path()
+                    .map_err(|_| kardia_core::ValidationError::message("hmr requires a local file baseUrl"))?;
+                let base = normalize(&base);
                 let hmr = Hmr {
                     graph,
                     base: base.clone(),
@@ -95,6 +95,7 @@ impl Hmr {
             }
         })
         .name("hmr")
+        .inject(Inject::new().with("fs"))
         .provides([Hmr::NAME])
     }
 
@@ -151,13 +152,6 @@ impl Hmr {
         }
         false
     }
-}
-
-/// The directory that relative paths of the loader entry running `ctx`
-/// resolve against (the config file's, for an included tree).
-fn entry_dir(ctx: &Context) -> PathBuf {
-    let entry = ctx.live::<Loader>().and_then(|loader| loader.entry_of(ctx));
-    entry.map(|entry| entry.parent().tree().base_dir()).unwrap_or_default()
 }
 
 /// A registered plugin whose modules have changed.

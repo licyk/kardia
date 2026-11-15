@@ -44,7 +44,7 @@ impl Plugin for IncludePlugin {
     type Config = IncludeConfig;
 
     fn inject() -> Inject {
-        Inject::new().with(<Loader as kardia_core::Service>::NAME)
+        Inject::new().with(<Loader as kardia_core::Service>::NAME).with("fs")
     }
 
     async fn apply(ctx: Context, config: Arc<IncludeConfig>) -> Result<()> {
@@ -175,8 +175,10 @@ const RENAME_BACKOFF: Duration = Duration::from_millis(20);
 impl Include {
     async fn run(ctx: Context, config: IncludeConfig, rename: Rename) -> Result<()> {
         let loader = (*ctx.get::<Loader>()?).clone();
-        let base = loader.entry_of(&ctx).map(|entry| entry.parent().tree().base_dir()).unwrap_or_default();
-        let filename = std::path::absolute(base.join(&config.path))?;
+        let url = ctx.get::<Fs>()?.resolve(&config.path)?;
+        let filename = url
+            .to_file_path()
+            .map_err(|_| kardia_core::ValidationError::message("include.path must resolve to a local file URL"))?;
         let kind = match filename.extension().and_then(|ext| ext.to_str()) {
             Some("json") => Kind::Json,
             Some("yaml" | "yml") => Kind::Yaml,
@@ -195,7 +197,8 @@ impl Include {
             seq: AtomicU64::new(0),
             rename,
         }));
-        let tree = loader.create_tree(&ctx, Arc::new(Backend(Arc::downgrade(&include.0))));
+        let tree_ctx = ctx.intercept("fs", serde_json::json!({"baseUrl": url.join(".")?.as_str()}));
+        let tree = loader.create_tree(&tree_ctx, Arc::new(Backend(Arc::downgrade(&include.0))));
         let _ = include.0.tree.set(tree);
 
         // new patches are applied in place; another path or watch mode restarts
@@ -828,10 +831,6 @@ impl TreeBackend for Backend {
         if let Some(inner) = self.0.upgrade() {
             Include(inner).commit(change);
         }
-    }
-
-    fn base_dir(&self) -> Option<PathBuf> {
-        Some(self.0.upgrade()?.filename.parent()?.to_path_buf())
     }
 
     fn handle(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {

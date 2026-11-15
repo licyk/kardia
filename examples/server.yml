@@ -22,7 +22,7 @@
 - id: static
   name: server:static
   config:
-    root: examples/server-public
+    root: server-public
   intercept:
     server:
       path: /static

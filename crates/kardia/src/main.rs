@@ -11,12 +11,15 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use futures::future::BoxFuture;
-use kardia::fs::{FsPlugin, LocalFsPlugin};
+use futures::{FutureExt, future::BoxFuture};
+use kardia::fs::{Fs, FsExt, FsPlugin, LocalFsPlugin};
 use kardia::hmr::{DylibSource, Hmr, ModuleCode, ModuleGraph, ModuleSource, WasmSource};
 use kardia::loader::{Catalog, Resolver};
 use kardia::logger_console::{ConsoleConfig, ConsoleExporter};
 use kardia::prelude::*;
+
+#[cfg(test)]
+mod cli_tests;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -37,9 +40,8 @@ async fn run(root: &Context, path: &str) -> Result<()> {
     let graph = ModuleGraph::new(GuestFiles { wasm: WasmSource::new() });
     catalog.register_def("hmr", Hmr::plugin(graph.clone()));
     catalog.alias("@cordisjs/plugin-hmr", "hmr");
-    let base = std::path::absolute(path)?.parent().map(Path::to_path_buf).unwrap_or_default();
-    let plugins = Plugins { catalog, graph, base };
-    root.plugin_def(&Loader::plugin(plugins), Value::Null)?.settled().await?;
+    let plugins = Plugins { catalog, graph };
+    root.plugin_def(&Loader::plugin(plugins).inject(Inject::new().with("fs")), Value::Null)?.settled().await?;
     let loader = (*root.get::<Loader>()?).clone();
     loader.set_logs(true);
     let entry = json!({ "name": "include", "config": { "path": path, "watch": true } });
@@ -55,18 +57,24 @@ async fn run(root: &Context, path: &str) -> Result<()> {
 struct Plugins {
     catalog: Catalog,
     graph: ModuleGraph,
-    /// The directory of the configuration file.
-    base: PathBuf,
 }
 
 impl Resolver for Plugins {
-    fn resolve(&self, name: &str) -> BoxFuture<'static, Result<PluginDef>> {
+    fn resolve(&self, ctx: &Context, name: &str) -> BoxFuture<'static, Result<PluginDef>> {
         if self.catalog.get(name).is_some() {
-            return self.catalog.resolve(name);
+            return self.catalog.resolve(ctx, name);
         }
         // module ids are clean absolute paths, as the watch reports them
-        let id: PathBuf = self.base.join(name).components().collect();
-        self.graph.resolve(&id.to_string_lossy())
+        let path = ctx.get::<Fs>().map_err(Error::from).and_then(|fs| fs.resolve(name)).and_then(|url| {
+            url.to_file_path().map_err(|_| Error::msg("guest module must resolve to a local file URL"))
+        });
+        match path {
+            Ok(path) => {
+                let id: PathBuf = path.components().collect();
+                self.graph.resolve(ctx, &id.to_string_lossy())
+            }
+            Err(error) => futures::future::ready(Err(error)).boxed(),
+        }
     }
 }
 

@@ -11,6 +11,7 @@ use crate::{Filter, FsProvider};
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FsConfig {
+    #[serde(default, deserialize_with = "crate::url::deserialize_base")]
     pub base_url: Option<Url>,
 }
 
@@ -43,6 +44,8 @@ impl Plugin for FsPlugin {
             None => Url::from_directory_path(std::env::current_dir()?)
                 .map_err(|_| kardia_core::Error::msg("cannot represent working directory as a file URL"))?,
         };
+        let base = crate::url::directory(base)
+            .map_err(|error| kardia_core::ValidationError::message(format!("baseUrl: {error}")))?;
         ctx.provide(Fs { base, mounts: Mutex::new(Vec::new()) })?;
         Ok(())
     }

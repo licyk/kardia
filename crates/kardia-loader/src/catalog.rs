@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use kardia_core::{Error, Plugin, PluginDef};
+use kardia_core::{Context, Error, Plugin, PluginDef};
 use parking_lot::RwLock;
 
 use crate::group::group_plugin;
@@ -11,7 +11,7 @@ use crate::group::group_plugin;
 /// Turns an entry's `name` into a plugin definition (the analogue of a
 /// module import). Resolution may be asynchronous.
 pub trait Resolver: Send + Sync + 'static {
-    fn resolve(&self, name: &str) -> BoxFuture<'static, Result<PluginDef, Error>>;
+    fn resolve(&self, ctx: &Context, name: &str) -> BoxFuture<'static, Result<PluginDef, Error>>;
 }
 
 /// No plugin is registered under the requested name.
@@ -56,7 +56,7 @@ impl Catalog {
 }
 
 impl Resolver for Catalog {
-    fn resolve(&self, name: &str) -> BoxFuture<'static, Result<PluginDef, Error>> {
+    fn resolve(&self, _ctx: &Context, name: &str) -> BoxFuture<'static, Result<PluginDef, Error>> {
         let result = self.get(name).ok_or_else(|| ModuleNotFound { name: name.to_string() }.into());
         futures::future::ready(result).boxed()
     }

@@ -53,7 +53,7 @@ struct Delayed {
 }
 
 impl Resolver for Delayed {
-    fn resolve(&self, name: &str) -> BoxFuture<'static, kardia_core::Result<PluginDef>> {
+    fn resolve(&self, ctx: &Context, name: &str) -> BoxFuture<'static, kardia_core::Result<PluginDef>> {
         let delay = self.delay.load(Ordering::SeqCst) as u64;
         let hold = self.hold.lock().clone().filter(|hold| {
             let mut skip = hold.skip.lock();
@@ -63,7 +63,7 @@ impl Resolver for Delayed {
             }
             held
         });
-        let resolved = self.catalog.resolve(name);
+        let resolved = self.catalog.resolve(ctx, name);
         let name = name.to_string();
         async move {
             if let Some(hold) = hold {

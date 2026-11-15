@@ -155,7 +155,7 @@ impl ModuleGraph {
 }
 
 impl Resolver for ModuleGraph {
-    fn resolve(&self, name: &str) -> BoxFuture<'static, Result<PluginDef>> {
+    fn resolve(&self, _ctx: &kardia_core::Context, name: &str) -> BoxFuture<'static, Result<PluginDef>> {
         let result = match self.import(name) {
             Ok(Exports::Plugin(def)) => Ok(def),
             Ok(_) => Err(Error::msg(format!("module {name} does not export a plugin"))),

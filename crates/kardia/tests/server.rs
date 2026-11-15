@@ -90,6 +90,12 @@ async fn cli_runs_the_documented_server_configuration() {
     drop(reservation);
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("server.yml");
+    std::fs::create_dir(directory.path().join("server-public")).unwrap();
+    std::fs::write(
+        directory.path().join("server-public/index.html"),
+        include_str!("../../../examples/server-public/index.html"),
+    )
+    .unwrap();
     std::fs::write(&config, include_str!("../../../examples/server.yml").replace("5140", &port.to_string())).unwrap();
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let child = std::process::Command::new(env!("CARGO_BIN_EXE_kardia"))

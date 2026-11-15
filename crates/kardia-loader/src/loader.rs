@@ -128,11 +128,6 @@ pub trait TreeBackend: Send + Sync + 'static {
         None
     }
 
-    /// The directory relative paths inside this tree resolve against.
-    fn base_dir(&self) -> Option<std::path::PathBuf> {
-        None
-    }
-
     /// The object behind the tree, for its owner to find it again.
     fn handle(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
         None
@@ -705,20 +700,6 @@ impl GroupHandle {
 }
 
 impl TreeHandle {
-    /// The directory relative paths in this tree resolve against: the
-    /// backend's, else the enclosing tree's, else the working directory.
-    pub fn base_dir(&self) -> std::path::PathBuf {
-        let (backend, owner) = self.loader.with(|st| (st.trees[&self.id].backend.clone(), st.trees[&self.id].owner));
-        if let Some(dir) = backend.base_dir() {
-            return dir;
-        }
-        let parent = owner.map(|owner| EntryHandle { loader: self.loader.clone(), id: owner });
-        match parent.and_then(|entry| self.loader.with(|st| st.entries.contains_key(&entry.id)).then_some(entry)) {
-            Some(entry) => entry.parent().tree().base_dir(),
-            None => std::env::current_dir().unwrap_or_default(),
-        }
-    }
-
     /// See [`TreeBackend::handle`].
     pub fn handle(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
         self.loader.with(|st| st.trees.get(&self.id).map(|tree| tree.backend.clone()))?.handle()

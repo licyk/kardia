@@ -25,15 +25,8 @@ pub(super) struct Files {
 }
 impl Files {
     pub fn new(ctx: &Context, config: Arc<StaticConfig>) -> Result<Self> {
-        let fs = ctx.get::<Fs>()?;
-        let resolved = fs
-            .resolve(&config.root)
-            .map_err(|error| kardia_core::ValidationError::message(format!("root: {error}")))?;
-        let root = Url::parse(&format!(
-            "{}{suffix}",
-            resolved,
-            suffix = if resolved.as_str().ends_with('/') { "" } else { "/" }
-        ))?;
+        let fs = ctx.intercept("fs", serde_json::json!({"baseUrl": config.root})).get::<Fs>()?;
+        let root = fs.base_url().map_err(|error| kardia_core::ValidationError::message(format!("root: {error}")))?;
         let exclude =
             config.exclude.iter().map(|p| crate::exclude::compile(p).map_err(Error::from)).collect::<Result<_>>()?;
         Ok(Self { fs, root, config, exclude })

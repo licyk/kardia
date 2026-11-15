@@ -13,7 +13,7 @@ use common::scratch;
 use kardia_core::{Context, Error, Event, PluginDef, Result, Svc};
 use kardia_fs::FsPlugin;
 use kardia_hmr::{Exports, Hmr, ModuleCode, ModuleGraph, ModuleSource};
-use kardia_loader::{Catalog, Loader, TreeBackend};
+use kardia_loader::{Catalog, Loader};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 
@@ -85,9 +85,11 @@ impl App {
         let graph = ModuleGraph::new(files.clone());
         root.plugin_def(&Loader::plugin(graph.clone()), Value::Null).unwrap().settled().await.unwrap();
         root.plugin::<FsPlugin>(Default::default()).unwrap().settled().await.unwrap();
-        let config = json!({ "base": base, "watch": watch });
+        let config = json!({ "watch": watch });
         // batches are logged at the debug level
-        let verbose = root.intercept("logger", json!({ "level": 3 }));
+        let verbose = root
+            .intercept("logger", json!({ "level": 3 }))
+            .intercept("fs", json!({"baseUrl": kardia_fs::Url::from_directory_path(base).unwrap()}));
         verbose.plugin_def(&Hmr::plugin(graph.clone()), config).unwrap().settled().await.unwrap();
         let loader = (*root.get::<Loader>().unwrap()).clone();
         let hmr = root.get::<Hmr>().unwrap();
@@ -127,49 +129,51 @@ async fn eventually(mut check: impl FnMut() -> bool) {
 }
 
 /// The base directory of hmr loaded without a loader entry.
-async fn base_without_entry(config: Value) -> PathBuf {
+async fn base_without_entry(base: Option<&str>) -> PathBuf {
     let root = Context::new();
     let graph = ModuleGraph::new(Files::default());
-    root.plugin_def(&Hmr::plugin(graph), config).unwrap().settled().await.unwrap();
+    root.plugin::<FsPlugin>(Default::default()).unwrap().settled().await.unwrap();
+    let ctx = match base {
+        Some(base) => root.intercept("fs", json!({"baseUrl": base})),
+        None => root.clone(),
+    };
+    ctx.plugin_def(&Hmr::plugin(graph), json!({})).unwrap().settled().await.unwrap();
     root.get::<Hmr>().unwrap().base_dir().to_path_buf()
 }
 
 #[tokio::test]
 async fn defaults_to_the_working_directory_without_a_context_directory() {
-    assert_eq!(base_without_entry(json!({})).await, std::env::current_dir().unwrap());
+    assert_eq!(base_without_entry(None).await, std::env::current_dir().unwrap());
 }
 
 #[tokio::test]
 async fn accepts_a_relative_path_without_a_context_directory() {
     let cwd = std::env::current_dir().unwrap();
-    assert_eq!(base_without_entry(json!({ "base": "../hmr base" })).await, cwd.parent().unwrap().join("hmr base"));
+    assert_eq!(base_without_entry(Some("../hmr base")).await, cwd.parent().unwrap().join("hmr base"));
 }
 
 #[tokio::test]
 async fn accepts_an_absolute_path_without_a_context_directory() {
     let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join("base with spaces # %");
-    assert_eq!(base_without_entry(json!({ "base": base })).await, base);
-}
-
-/// A tree read from a config file in `0`.
-struct FileTree(PathBuf);
-
-impl TreeBackend for FileTree {
-    fn base_dir(&self) -> Option<PathBuf> {
-        Some(self.0.clone())
-    }
+    assert_eq!(base_without_entry(Some(kardia_fs::Url::from_directory_path(&base).unwrap().as_str())).await, base);
 }
 
 /// The base directory of hmr loaded by an entry of a config file in `dir`
 /// (the context directory of the reference).
-async fn base_of_entry(dir: &Path, config: Value) -> PathBuf {
+async fn base_of_entry(dir: &Path, base: Option<&str>) -> PathBuf {
     let root = Context::new();
     let catalog = Catalog::new();
     catalog.register_def("hmr", Hmr::plugin(ModuleGraph::new(Files::default())));
-    let loader = Loader::plugin_with(Arc::new(catalog), Arc::new(FileTree(dir.to_path_buf())));
-    root.plugin_def(&loader, Value::Null).unwrap().settled().await.unwrap();
+    root.plugin::<FsPlugin>(Default::default()).unwrap().settled().await.unwrap();
+    let ctx = root.intercept("fs", json!({"baseUrl": kardia_fs::Url::from_directory_path(dir).unwrap()}));
+    let ctx = match base {
+        Some(base) => ctx.intercept("fs", json!({"baseUrl": base})),
+        None => ctx,
+    };
+    let loader = Loader::plugin(catalog);
+    ctx.plugin_def(&loader, Value::Null).unwrap().settled().await.unwrap();
     let loader = (*root.get::<Loader>().unwrap()).clone();
-    loader.create(json!({ "name": "hmr", "config": config }), None, None).await.unwrap();
+    loader.create(json!({ "name": "hmr" }), None, None).await.unwrap();
     loader.settled().await;
     root.get::<Hmr>().unwrap().base_dir().to_path_buf()
 }
@@ -177,13 +181,13 @@ async fn base_of_entry(dir: &Path, config: Value) -> PathBuf {
 #[tokio::test]
 async fn resolves_a_relative_base_against_the_context() {
     let dir = scratch("watch-entry-base");
-    assert_eq!(base_of_entry(&dir, json!({ "base": "./plugins" })).await, dir.join("plugins"));
+    assert_eq!(base_of_entry(&dir, Some("./plugins")).await, dir.join("plugins"));
 }
 
 #[tokio::test]
 async fn defaults_to_the_context_directory() {
     let dir = scratch("watch-entry-default");
-    assert_eq!(base_of_entry(&dir, json!({})).await, dir);
+    assert_eq!(base_of_entry(&dir, None).await, dir);
 }
 
 #[tokio::test]

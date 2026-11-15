@@ -489,7 +489,7 @@ impl TreeBackend for TreeBackendImpl {
     fn resolver(&self) -> Option<Arc<dyn Resolver>> {
         struct Groups;
         impl Resolver for Groups {
-            fn resolve(&self, _: &str) -> BoxFuture<'static, kardia_core::Result<PluginDef>> {
+            fn resolve(&self, _: &kardia_core::Context, _: &str) -> BoxFuture<'static, kardia_core::Result<PluginDef>> {
                 futures::future::ready(Ok(group_plugin())).boxed()
             }
         }

@@ -16,6 +16,7 @@ pub struct App {
 impl App {
     pub async fn setup(source: impl ModuleSource) -> Self {
         let root = Context::new();
+        root.plugin::<kardia_fs::FsPlugin>(Default::default()).unwrap().settled().await.unwrap();
         let graph = ModuleGraph::new(source);
         root.plugin_def(&Loader::plugin(graph.clone()), Value::Null).unwrap().settled().await.unwrap();
         root.plugin_def(&Hmr::plugin(graph), Value::Null).unwrap().settled().await.unwrap();

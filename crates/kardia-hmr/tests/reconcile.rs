@@ -139,6 +139,7 @@ struct App {
 impl App {
     async fn setup() -> Self {
         let root = Context::new();
+        root.plugin::<kardia_fs::FsPlugin>(Default::default()).unwrap().settled().await.unwrap();
         let files = Files::default();
         let graph = ModuleGraph::new(files.clone());
         root.plugin_def(&Loader::plugin(graph.clone()), Value::Null).unwrap().settled().await.unwrap();
