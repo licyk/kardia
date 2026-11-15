@@ -76,11 +76,13 @@ impl Disposer {
 /// polled: the synchronous part has already run, and any asynchronous rest
 /// runs as a spawned task, so dropping a `Disposal` does not cancel it.
 #[must_use = "a disposal completes on its own; await it to observe the result"]
+#[derive(Clone)]
 pub struct Disposal(DisposalInner);
 
+#[derive(Clone)]
 enum DisposalInner {
     Ready(Option<Result<()>>),
-    Task(JoinHandle<Result<()>>),
+    Task(Shared<BoxFuture<'static, Result<()>>>),
 }
 
 impl Disposal {
@@ -89,13 +91,13 @@ impl Disposal {
     }
 
     pub(crate) fn spawn(future: impl Future<Output = Result<()>> + Send + 'static) -> Self {
-        Self(DisposalInner::Task(tokio::spawn(future)))
+        Self(DisposalInner::Task(join(tokio::spawn(future)).boxed().shared()))
     }
 
     pub(crate) fn into_result(self) -> DisposeResult {
         match self.0 {
             DisposalInner::Ready(result) => DisposeResult::Done(result.unwrap_or(Ok(()))),
-            DisposalInner::Task(task) => DisposeResult::Pending(join(task).boxed()),
+            DisposalInner::Task(task) => DisposeResult::Pending(task.boxed()),
         }
     }
 
@@ -111,7 +113,7 @@ impl Future for Disposal {
     fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Result<()>> {
         match &mut self.0 {
             DisposalInner::Ready(result) => Poll::Ready(result.take().unwrap_or(Ok(()))),
-            DisposalInner::Task(task) => task.poll_unpin(cx).map(join_result),
+            DisposalInner::Task(task) => task.poll_unpin(cx),
         }
     }
 }
@@ -180,6 +182,7 @@ struct CellInner {
     disposers: Vec<Disposer>,
     children: Vec<Arc<EffectCell>>,
     setup: Option<SetupFuture>,
+    disposal: Option<Disposal>,
 }
 
 impl EffectCell {
@@ -194,6 +197,7 @@ impl EffectCell {
                 disposers: Vec::new(),
                 children: Vec::new(),
                 setup: None,
+                disposal: None,
             }),
         })
     }
@@ -233,20 +237,25 @@ impl EffectCell {
 
     /// Starts disposal at most once; waits for an in-flight setup first.
     pub(crate) fn dispose(self: &Arc<Self>, root: Option<&Arc<RootInner>>) -> Disposal {
-        let (entry, setup) = {
+        let (entry, setup, complete) = {
             let mut inner = self.inner.lock();
-            if !inner.active {
-                return Disposal::ready(Ok(()));
+            if let Some(disposal) = &inner.disposal {
+                return disposal.clone();
             }
+            // Publish completion before invoking callbacks outside the lock.
+            let (complete, completion) = tokio::sync::oneshot::channel::<Result<()>>();
+            inner.disposal = Some(Disposal(DisposalInner::Task(
+                async move { completion.await.map_err(Error::new)? }.boxed().shared(),
+            )));
             inner.active = false;
-            (inner.entry.take(), inner.setup.clone())
+            (inner.entry.take(), inner.setup.clone(), complete)
         };
         if let (Some(entry), Some(root)) = (entry, root) {
             let fiber = self.fiber;
             let removed = root.run(|st| st.detach_effect(fiber, entry));
             drop(removed);
         }
-        match setup {
+        let cleanup = match setup {
             Some(setup) => {
                 let cell = self.clone();
                 Disposal::spawn(async move {
@@ -255,7 +264,20 @@ impl EffectCell {
                 })
             }
             None => run_sequence(self.take_disposers(true)),
-        }
+        };
+        let disposal = match cleanup.into_result() {
+            DisposeResult::Done(result) => {
+                let _ = complete.send(result.clone());
+                Disposal::ready(result)
+            }
+            DisposeResult::Pending(future) => Disposal::spawn(async move {
+                let result = future.await;
+                let _ = complete.send(result.clone());
+                result
+            }),
+        };
+        self.inner.lock().disposal = Some(disposal.clone());
+        disposal
     }
 }
 

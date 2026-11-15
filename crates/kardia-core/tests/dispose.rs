@@ -285,3 +285,65 @@ async fn disposers_run_in_reverse_and_survive_failures() {
     assert_eq!(disposal.await.unwrap_err().to_string(), "failed");
     assert_eq!(seq.get(), vec![3, 2, 1]);
 }
+
+#[tokio::test]
+async fn repeated_disposal_waits_for_cleanup_and_shares_failure() {
+    use futures::FutureExt;
+    use kardia_core::Disposer;
+    for async_setup in [false, true] {
+        let root = Context::new();
+        let seq = Seq::new();
+        let calls = seq.clone();
+        let error = Error::msg("cleanup failed");
+        let failure = error.clone();
+        let (release, gate) = tokio::sync::oneshot::channel();
+        let disposer = Disposer::try_future(move || {
+            calls.push(1);
+            async move {
+                gate.await.unwrap();
+                Err(failure)
+            }
+        });
+        let (setup_release, setup_gate) = tokio::sync::oneshot::channel();
+        let handle = if async_setup {
+            root.effect("pending setup", |scope| async move {
+                setup_gate.await.unwrap();
+                scope.defer(disposer);
+                Ok(())
+            })
+            .unwrap()
+        } else {
+            root.defer("sync setup", disposer).unwrap()
+        };
+        let first = handle.dispose();
+        let second = handle.dispose();
+        assert!(!second.is_ready());
+        let mut second = Box::pin(second);
+        assert!(second.as_mut().now_or_never().is_none());
+        if async_setup {
+            setup_release.send(()).unwrap();
+            handle.ready().await.unwrap();
+            assert!(second.as_mut().now_or_never().is_none());
+        }
+        drop(first);
+        release.send(()).unwrap();
+        assert!(second.await.unwrap_err().ptr_eq(&error));
+        assert!(handle.dispose().await.unwrap_err().ptr_eq(&error));
+        assert_eq!(seq.get(), vec![1]);
+        root.fiber().dispose().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn repeated_sync_disposal_preserves_error_and_immediate_completion() {
+    let root = Context::new();
+    let error = Error::msg("sync cleanup failed");
+    let failure = error.clone();
+    let handle = root.defer("sync", kardia_core::Disposer::fallible(move || Err(failure))).unwrap();
+    let first = handle.dispose();
+    assert!(first.is_ready());
+    assert!(first.await.unwrap_err().ptr_eq(&error));
+    let second = handle.dispose();
+    assert!(second.is_ready());
+    assert!(second.await.unwrap_err().ptr_eq(&error));
+}
