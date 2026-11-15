@@ -18,7 +18,7 @@
 | P5 Static 所需文件服务能力 | 阶段验收通过 | `98711c3`；6 项读流/挂载/隔离测试及 watch/include/hmr 回归通过 |
 | P6 Static | 阶段验收通过 | `f6e4e9e`；24 个迁移用例、流故障/三种恢复策略、完整 MIME 清单和共享配置对照通过 |
 | P7 Proxy 所需 HTTP 客户端能力 | 实现已推送，原生 CI 待验收 | `ac87dd9`；28 项客户端双端及三种恢复策略通过 |
-| P8 Proxy | 未开始 | — |
+| P8 Proxy | 实现已推送，原生 CI 待验收 | `45a765d`；9 项迁移、25 项双端及三种恢复策略通过 |
 | P9 集成、全量实机对照与故障验收 | 未开始 | — |
 | P10 正式文档、站点发布与计划删除 | 未开始 | — |
 
@@ -130,7 +130,7 @@
 - 响应保留状态、body 与其余 header，但移除已解压后不再匹配的 `content-encoding` / `content-length`；真实 gzip 等压缩及 redirect 默认行为纳入对照。
 - WS 将 http/https 转为 ws/wss，过滤握手专用 header，等待上游连接成功后才接受下游；保留文本/二进制，双向传播关闭与错误。
 - 关闭码允许 1000 或 3000–4999，否则按上游转为 1000；保留上游错误导致的对应关闭行为，不自行给未 accept 的失败补成 502。
-- `server.proxy.publicUrl` 随当前 server 与调用者 intercept 解析；替换 `http` 或 `server` 必须经依赖关系重建 proxy，不影响无关组件。
+- `server.proxy.publicUrl` 随提供插件上下文的当前 server 与挂载 intercept 解析；替换 `http` 或 `server` 必须经依赖关系重建 proxy，不影响无关组件。
 
 ## 6. 强制故障隔离与可配置恢复：设计与验收
 
@@ -341,3 +341,11 @@
 - 本机客户端 7 项 Rust 测试、Server 67 项回归通过；客户端新增 28 项真实双端对照，包括 HTTPS/WSS 证书夹具、header、方法大小写、stream redirect、timeout 和子协议，完整 JS 对照共 152 项通过。类型、clippy、格式、架构与差异检查通过。
 - HTTP provider 三种恢复策略各三轮故障：依赖消费者重建、活动操作归零，独立插件持续正常响应。另验证未知证书/错误主机名拒绝、调用方释放和失败握手的清理。辅助服务不声明完整 decoder/file/data/SOCKS 生态；WS 不协商 permessage-deflate，文本/二进制应用语义已对照。
 - P7 原生 CI 待验收；继续 P8 Proxy，完成前不关闭最终集成。
+
+### P8 Proxy
+
+- `45a765d4e9e5f756e219da7487a4012803233071` 已提交推送并核实远端 SHA。新增 `kardia-server-proxy`，通过 `http` 服务转发 HTTP/WS，提供 `server.proxy`，保留 POST/PUT/PATCH body、query 序列化、压缩 header 移除、连接前等待及关闭码规则。
+- 本机 9 个原始声明对应测试、2 项故障测试通过；25 项 Proxy 双端场景通过，总 JS 网络测试 177 项通过。Server 67 项回归、类型、clippy、格式、架构及差异检查通过。
+- Proxy 自身和 HTTP provider 在三种策略下各重复失败三轮；失败连接和流清理归零，共享 Server 身份不变，独立 HTTP 及同一健康 WS 连接持续工作。上游暂时不可用时 HTTP 500、WS 不 accept，Proxy 保持 Active；上游恢复后无需重启即可再次转发。
+- 实测纠正早期假设：上游核心采用返回 Response 时不复制自定义状态文本，重复 Set-Cookie 经 Headers.set 只保留最后一个；`server.proxy.publicUrl` 使用提供插件的上下文（包括挂载前缀），后续消费者的 intercept 不改变它。对照和正式文档按该事实记录，不能擅自改进后声称相同。
+- 修正 Node 默认状态文本的 418/509 拼写，以及 WS 关闭消息与效应清理的发送顺序。原生 CI 待验收；继续 P9 facade/catalog/CLI 和完整生命周期检查。
