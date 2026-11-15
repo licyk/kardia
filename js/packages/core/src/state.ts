@@ -3,6 +3,7 @@ import type { EffectCell } from "#/effect";
 import type { Level } from "#/logger";
 import type { PluginDef } from "#/plugin";
 import type { Root } from "#/root";
+import type { Recovery } from "#/recovery";
 import { type FiberId, type Realm, ROOT_FIBER, Scope } from "#/scope";
 
 /** The paper's θ. */
@@ -44,6 +45,7 @@ export interface FiberData {
   /** A reload or unload transition is in flight. */
   inertia: boolean;
   error: Error | undefined;
+  recovery: Recovery | undefined;
   /** The fiber's own bindings, in provision order. */
   provisions: ImplId[];
   /** Set while the accumulator is being disposed during an unload. */
@@ -90,6 +92,7 @@ export interface UpdateHook {
 export type EventFilter = (st: State, listener: Scope) => boolean;
 
 export type Action =
+  | { type: "recovery"; fiber: FiberId }
   | { type: "reload"; fiber: FiberId }
   | { type: "unload"; fiber: FiberId }
   | { type: "emit"; name: string; args: (root: Root) => unknown[]; filter?: EventFilter }
@@ -206,6 +209,7 @@ export function newFiber(
     committed: undefined,
     inertia: false,
     error: undefined,
+    recovery: undefined,
     provisions: [],
     draining: false,
     withdrawn: [],

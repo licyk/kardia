@@ -57,6 +57,9 @@ export class Root {
 
   private execute(action: Action) {
     switch (action.type) {
+      case "recovery":
+        this.state.fiber(action.fiber)?.recovery?.check();
+        break;
       case "reload":
         void reload(this, action.fiber);
         break;

@@ -26,6 +26,7 @@ export {
   type StandardSchemaV1,
 } from "#/plugin";
 export { Registry } from "#/registry";
+export type { Failure, RecoveryAction, RecoveryPolicy } from "#/recovery";
 export type { FiberId, Realm } from "#/scope";
 export { Service, type ServiceOf, type Services } from "#/service";
 export type { Check, FiberState } from "#/state";

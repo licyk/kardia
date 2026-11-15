@@ -98,6 +98,7 @@ function retireFiber(st: State, id: FiberId) {
 /** The inverse of an instantiation: retire the fiber, then wait for its transitions to settle. */
 function retire(root: Root, id: FiberId): Disposer {
   return () => {
+    root.state.fiber(id)?.recovery?.cancel();
     root.run((st) => retireFiber(st, id));
     return root
       .waitUntil((st) => !st.fiber(id)?.inertia)

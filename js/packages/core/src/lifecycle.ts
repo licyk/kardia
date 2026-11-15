@@ -79,6 +79,7 @@ export function updateState(st: State, id: FiberId, next?: FiberState) {
   const scope = fiber.scope;
   const name = st.fiberName(id);
   st.emit("internal/status", (root) => [fiberHandle(root, id, scope, name), old, state]);
+  st.actions.push({ type: "recovery", fiber: id });
   if (old !== "active" && state !== "active") return;
   for (const implId of [...fiber.provisions]) {
     const impl = st.impls.get(implId)!;
@@ -102,6 +103,19 @@ function beginReload(st: State, id: FiberId) {
 function beginUnload(st: State, id: FiberId) {
   st.fiber(id)!.inertia = true;
   st.actions.push({ type: "unload", fiber: id });
+}
+
+/** Marks an unusable instance failed; cleanup completes before supervision sees `failed`. */
+export function fail(st: State, id: FiberId, error: unknown) {
+  const fiber = st.fiber(id);
+  if (!fiber || fiber.removed || fiber.error || (fiber.state !== "active" && fiber.state !== "loading")) return;
+  fiber.error = toError(error);
+  fiber.target = null;
+  st.log(id, Level.error, fiber.error);
+  if (!fiber.inertia) {
+    beginUnload(st, id);
+    updateState(st, id, "unloading");
+  }
 }
 
 /** Re-resolves every fiber that declares `key` in `realm`. */

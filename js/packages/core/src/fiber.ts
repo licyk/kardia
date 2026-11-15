@@ -1,6 +1,7 @@
 import { Context } from "#/context";
 import type { EffectMeta } from "#/effect";
-import { refresh } from "#/lifecycle";
+import { fail, refresh } from "#/lifecycle";
+import { Recovery, type RecoveryPolicy, validateDelay } from "#/recovery";
 import type { Plugin } from "#/plugin";
 import type { Root } from "#/root";
 import { type FiberId, ROOT_FIBER, type Scope } from "#/scope";
@@ -68,6 +69,24 @@ export class Fiber {
   /** The failure of the last load, if the fiber is `failed`. */
   get error(): Error | undefined {
     return this.read((fiber) => fiber.error);
+  }
+
+  /** Changes supervision for this fiber, cancelling the previous pending decision or retry. */
+  setRecovery(policy: RecoveryPolicy): void {
+    if (this.isRoot) throw new Error("the root context cannot be automatically recovered");
+    if (policy.type === "retry") validateDelay(policy.delay);
+    this.root.with((st) => st.assertActive(this.id));
+    const data = this.root.state.fiber(this.id)!;
+    const previous = data.recovery;
+    data.recovery = policy.type === "manual" ? undefined : new Recovery(this, { ...policy });
+    previous?.cancel();
+    data.recovery?.check();
+  }
+
+  /** Reports an unusable instance. Cleanup is asynchronous; this never resets the root. */
+  fail(error: unknown): void {
+    if (this.isRoot) throw new Error("cannot fail the root context");
+    this.root.run((st) => fail(st, this.id, error));
   }
 
   /** The plugin's name, or its nearest named ancestor's. */
