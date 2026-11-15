@@ -228,7 +228,7 @@ mod tests {
     /// Sends the errors that the notify watcher reports, which a test cannot provoke.
     async fn watcher() -> (Context, Watcher) {
         let root = Context::new();
-        root.plugin::<FsPlugin>(()).unwrap().settled().await.unwrap();
+        root.plugin::<FsPlugin>(Default::default()).unwrap().settled().await.unwrap();
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let watcher = root.get::<Fs>().unwrap().watch(path, WatchOptions::default()).unwrap();
         (root, watcher)

@@ -1,6 +1,6 @@
 [package]
 name = "kardia-fs"
-description = "File-watching service for kardia"
+description = "File streams, provider mounts and file watching for kardia"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,10 +9,16 @@ rust-version.workspace = true
 
 [dependencies]
 kardia-core.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util"] }
 parking_lot.workspace = true
 notify.workspace = true
 globset.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+bytes = "1"
+url = { version = "2", features = ["serde"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }

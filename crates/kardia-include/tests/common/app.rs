@@ -52,7 +52,7 @@ impl App {
         let root = Context::new();
         let messages = Messages::default();
         root.add_exporter(Arc::new(messages.clone())).unwrap();
-        root.plugin::<FsPlugin>(()).unwrap().settled().await.unwrap();
+        root.plugin::<FsPlugin>(Default::default()).unwrap().settled().await.unwrap();
         let applied = Arc::new(Mutex::new(Vec::new()));
         let catalog = builtins();
         catalog.register_def("include", include);

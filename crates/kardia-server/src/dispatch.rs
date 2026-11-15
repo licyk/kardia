@@ -3,20 +3,13 @@ use std::sync::Arc;
 
 use futures::FutureExt;
 use http::{HeaderValue, Method, StatusCode, header};
-use kardia_core::{Panicked, Result};
+use kardia_core::{Error, Result};
 
 use crate::route::{HttpRoute, RouteCheck, RouteHook};
 use crate::{Next, Request, Response, Server, ValidationError};
 
 pub(crate) async fn contain<T>(future: impl Future<Output = Result<T>>) -> Result<T> {
-    AssertUnwindSafe(future).catch_unwind().await.unwrap_or_else(|panic| {
-        let message = panic
-            .downcast_ref::<String>()
-            .cloned()
-            .or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
-            .unwrap_or_else(|| "plugin callback panicked".into());
-        Err(Panicked(message).into())
-    })
+    AssertUnwindSafe(future).catch_unwind().await.unwrap_or_else(|panic| Err(Error::from_panic(panic)))
 }
 
 impl Server {

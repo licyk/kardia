@@ -971,12 +971,17 @@ dependencies = [
 name = "kardia-fs"
 version = "0.2.3"
 dependencies = [
+ "bytes",
+ "futures",
  "globset",
  "kardia-core",
  "notify",
  "parking_lot",
+ "serde",
  "serde_json",
+ "thiserror",
  "tokio",
+ "url",
 ]
 
 [[package]]
@@ -2167,6 +2172,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]

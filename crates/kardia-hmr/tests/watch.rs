@@ -84,7 +84,7 @@ impl App {
         root.set_log_buffer_size(1000);
         let graph = ModuleGraph::new(files.clone());
         root.plugin_def(&Loader::plugin(graph.clone()), Value::Null).unwrap().settled().await.unwrap();
-        root.plugin::<FsPlugin>(()).unwrap().settled().await.unwrap();
+        root.plugin::<FsPlugin>(Default::default()).unwrap().settled().await.unwrap();
         let config = json!({ "base": base, "watch": watch });
         // batches are logged at the debug level
         let verbose = root.intercept("logger", json!({ "level": 3 }));

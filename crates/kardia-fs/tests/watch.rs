@@ -25,7 +25,7 @@ fn write(path: PathBuf) -> PathBuf {
 
 async fn consumer() -> (Context, Fiber) {
     let root = Context::new();
-    root.plugin::<FsPlugin>(()).unwrap().settled().await.unwrap();
+    root.plugin::<FsPlugin>(Default::default()).unwrap().settled().await.unwrap();
     let fiber =
         root.plugin_def(&PluginDef::new(|_, _| async { Ok(()) }).inject(Inject::of::<(Fs,)>()), Value::Null).unwrap();
     fiber.settled().await.unwrap();

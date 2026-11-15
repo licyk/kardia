@@ -31,7 +31,7 @@ async fn main() -> ExitCode {
 
 async fn run(root: &Context, path: &str) -> Result<()> {
     root.add_exporter(Arc::new(ConsoleExporter::new(ConsoleConfig::default())))?;
-    root.plugin::<FsPlugin>(())?;
+    root.plugin::<FsPlugin>(Default::default())?;
     let catalog = kardia::catalog();
     let graph = ModuleGraph::new(GuestFiles { wasm: WasmSource::new() });
     catalog.register_def("hmr", Hmr::plugin(graph.clone()));

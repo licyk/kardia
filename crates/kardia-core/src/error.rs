@@ -44,7 +44,8 @@ impl Error {
         Arc::ptr_eq(&self.0, &other.0)
     }
 
-    pub(crate) fn from_panic(payload: Box<dyn std::any::Any + Send>) -> Self {
+    /// Converts a caught unwind payload at a plugin callback boundary.
+    pub fn from_panic(payload: Box<dyn std::any::Any + Send>) -> Self {
         let message = payload
             .downcast_ref::<&str>()
             .map(|s| s.to_string())
