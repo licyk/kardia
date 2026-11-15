@@ -324,3 +324,4 @@
 - `98711c3` 已提交推送并核实远端 SHA。扩展 `kardia-fs`：分层 baseUrl、URL 解析、最长前缀挂载、类型化错误、调用方所属的只读流；新增显式 `fs:local` provider。原生 watch 保持既有行为，本轮不移植 FS 写入生态。
 - 本机 6 项读取/挂载测试通过：真实本地文件、非本地流 provider、动态挂载、调用方释放/读取取消/provider 释放、同步及轮询 panic，以及三种恢复策略下独立 provider 持续可用。流采用有界传递，释放等待资源退出。
 - FS、include、HMR 全套回归，相关 clippy、格式、架构、差异检查及 facade 编译通过。复用核心 panic 转换入口，未改变其错误语义。此提交三平台 CI 待验收，继续 Static。
+- 首轮 [CI #43698822193](https://github.com/licyk/kardia/actions/runs/43698822193)：Linux/macOS Rust 和全部三平台网络对照成功；Windows Rust 在 FS 断言失败，实际原生系统把“父路径是文件”报告为 NotFound，而 Unix 为 NotADirectory。`931a8a9` 将该测试按原生平台区分，已提交推送并核实远端 SHA；本地 FS 6 项通过，修订的原生 CI 待验收。未改动错误映射，也未将首轮 CI 标记成功。
