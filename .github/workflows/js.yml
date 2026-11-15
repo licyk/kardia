@@ -9,11 +9,13 @@ on:
     paths:
       - "js/**"
       - "crates/kardia-bridge/**"
+      - "crates/kardia-core/**"
       - ".github/workflows/js.yml"
   pull_request:
     paths:
       - "js/**"
       - "crates/kardia-bridge/**"
+      - "crates/kardia-core/**"
       - ".github/workflows/js.yml"
   workflow_dispatch:
   workflow_call:
@@ -29,13 +31,20 @@ concurrency:
 
 jobs:
   packages:
-    name: Types, tests and build
-    runs-on: ubuntu-latest
+    name: Types, tests and build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     defaults:
       run:
         working-directory: js
     steps:
       - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
       - uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version: latest
@@ -45,10 +54,17 @@ jobs:
       - run: bun run build
 
   e2e:
-    name: Bridge end to end
-    runs-on: ubuntu-latest
+    name: Bridge end to end (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
       # pinned like ci.yml: rust-toolchain.toml names the same version
       - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2.9.3

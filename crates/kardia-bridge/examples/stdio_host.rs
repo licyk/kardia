@@ -21,6 +21,9 @@ use parking_lot::Mutex;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+#[path = "stdio_host/recovery.rs"]
+mod recovery;
+
 #[tokio::main]
 async fn main() -> kardia_core::Result<()> {
     let root = Context::new();
@@ -29,6 +32,7 @@ async fn main() -> kardia_core::Result<()> {
     let mounted = Arc::new(Mutex::new(root.plugin_def(&bridge.plugin(), Value::Null)?));
     root.plugin_def(&echo(), Value::Null)?;
     root.plugin_def(&control(root.clone(), bridge.clone(), mounted), Value::Null)?;
+    root.plugin_def(&recovery::controller(root.clone()), Value::Null)?;
 
     let stdout = Arc::new(Stdout);
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
