@@ -990,6 +990,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "kardia-core",
+ "kardia-loader",
  "parking_lot",
  "percent-encoding",
  "regress",

@@ -128,3 +128,45 @@ async fn automatic_recovery_isolates_three_failures_over_real_http() {
 async fn host_recovery_isolates_three_failures_over_real_http() {
     recovery(2).await;
 }
+
+#[tokio::test]
+async fn catalog_listener_recovery_preserves_an_independent_server_in_every_mode() {
+    use kardia_loader::{Catalog, Loader};
+    for mode in ["manual", "retry", "host"] {
+        let root = Context::new();
+        let url = healthy(&root).await;
+        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = occupied.local_addr().unwrap().port();
+        let catalog = Catalog::new();
+        catalog.register::<ServerPlugin>();
+        root.plugin_def(&Loader::plugin(catalog), Value::Null).unwrap().settled().await.unwrap();
+        let loader = root.get::<Loader>().unwrap();
+        loader
+            .register_recovery_handler("retry", |_| async { Ok(RecoveryAction::RetryAfter(Duration::from_millis(5))) });
+        loader.create(json!({"id":"listener","name":"server","isolate":{"server":true},"config":{"port":port},"recovery":{"mode":mode,"delayMs":5,"handler":"retry"}}),None,None).await.unwrap();
+        loader.settled().await;
+        let fiber = loader.resolve("listener").unwrap().inner_fiber().unwrap();
+        assert_eq!(fiber.state(), FiberState::Failed);
+        let client = reqwest::Client::builder().timeout(Duration::from_secs(2)).build().unwrap();
+        for _ in 0..5 {
+            assert_eq!(client.get(format!("{url}/healthy")).send().await.unwrap().text().await.unwrap(), "healthy");
+        }
+        drop(occupied);
+        if mode == "manual" {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            assert_eq!(fiber.state(), FiberState::Failed);
+            fiber.update(json!({"port":port})).unwrap().await.unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while fiber.state() != FiberState::Active {
+                assert_eq!(client.get(format!("{url}/healthy")).send().await.unwrap().status(), 200);
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(client.get(format!("http://127.0.0.1:{port}/")).send().await.unwrap().status(), 404);
+        assert_eq!(client.get(format!("{url}/healthy")).send().await.unwrap().text().await.unwrap(), "healthy");
+        root.fiber().dispose().await.unwrap();
+    }
+}

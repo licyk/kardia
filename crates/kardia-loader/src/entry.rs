@@ -271,21 +271,33 @@ impl Loader {
             }
             let (admitted, failures) = st.admit(entry, ctx);
             let data = &st.entries[&entry];
-            (admitted.then(|| (data.intercept.clone(), data.read().config)), failures)
+            (admitted.then(|| (data.intercept.clone(), data.read())), failures)
         });
         for error in &failures {
             self.report(entry, error);
         }
-        let Some((intercept, config)) = prepared else { return };
+        let Some((intercept, options)) = prepared else { return };
+        let policy = match self.recovery_policy(&options.recovery) {
+            Ok(policy) => policy,
+            Err(error) => {
+                self.report(entry, &error);
+                return;
+            }
+        };
         self.show_log(entry, "apply");
         let inner_ctx = ctx.extend_with(&intercept);
-        match inner_ctx.plugin_def(&def, config) {
-            Ok(fiber) => self.with(|st| {
-                st.inner_fibers.insert(fiber.id(), entry);
-                if let Some(data) = st.entries.get_mut(&entry) {
-                    data.inner = Some(fiber);
+        match inner_ctx.plugin_def(&def, options.config) {
+            Ok(fiber) => {
+                if let Err(error) = fiber.set_recovery(policy) {
+                    self.report(entry, &error);
                 }
-            }),
+                self.with(|st| {
+                    st.inner_fibers.insert(fiber.id(), entry);
+                    if let Some(data) = st.entries.get_mut(&entry) {
+                        data.inner = Some(fiber);
+                    }
+                });
+            }
             Err(error) => self.report(entry, &error),
         }
     }
@@ -366,6 +378,10 @@ impl Loader {
         if !admitted {
             drop(self.dispose_fiber(entry, &inner));
             return Ok(());
+        }
+        if diff.iter().any(|key| key == "recovery") {
+            inner.set_recovery(kardia_core::RecoveryPolicy::Manual)?;
+            inner.set_recovery(self.recovery_policy(&options.recovery)?)?;
         }
         if !diff.iter().any(|key| key == "config") && !options.group {
             return Ok(());

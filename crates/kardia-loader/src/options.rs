@@ -40,6 +40,7 @@ pub struct EntryOptions {
     pub config: Value,
     pub group: bool,
     pub disabled: Option<Disabled>,
+    pub recovery: crate::RecoveryConfig,
     pub inject: Inject,
     pub intercept: Map<String, Value>,
     pub isolate: Vec<(String, IsolateLabel)>,
@@ -59,6 +60,7 @@ impl EntryOptions {
                 Some(source) => Disabled::Expr(source.to_string()),
                 None => Disabled::Bool(value.as_bool().unwrap_or(false)),
             }),
+            recovery: crate::RecoveryConfig::read(get("recovery")),
             inject: get("inject").map(read_inject).unwrap_or_default(),
             intercept: get("intercept").and_then(Value::as_object).cloned().unwrap_or_default(),
             isolate: get("isolate")
@@ -159,6 +161,9 @@ pub fn validate_options(options: &Value, deep: bool) -> Vec<Issue> {
     check("inject", "an array or an object", &|value| value.is_array() || plain(value), false);
     check("intercept", "an object", &plain, false);
     check("isolate", "an object", &plain, false);
+    if let Some(value) = map.get("recovery").filter(|v| !v.is_null()) {
+        issues.extend(crate::recovery::validate(value));
+    }
     if let Some(id) = map.get("id").and_then(Value::as_str)
         && id.contains(SEP)
     {

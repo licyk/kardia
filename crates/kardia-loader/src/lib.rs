@@ -18,6 +18,7 @@ mod loader;
 mod locate;
 mod options;
 mod realm;
+mod recovery;
 
 pub use catalog::{Catalog, ModuleNotFound, Resolver, builtins};
 pub use entry::OUTER_TAG;
@@ -28,3 +29,4 @@ pub use options::{
     Disabled, EXPR_KEY, EntryOptions, EntryValidationError, IsolateLabel, SEP, diff_keys, expr_source, is_expr, merge,
     sort_keys, validate_options,
 };
+pub use recovery::RecoveryConfig;

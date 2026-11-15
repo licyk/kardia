@@ -38,6 +38,7 @@ pub(crate) struct LoaderInner {
     next_id: AtomicU64,
     pub(crate) root_tree: TreeId,
     pub(crate) enable_logs: AtomicBool,
+    pub(crate) recovery_handlers: Mutex<HashMap<String, kardia_core::RecoveryPolicy>>,
 }
 
 #[derive(Default)]
@@ -244,6 +245,7 @@ impl Loader {
             next_id: AtomicU64::new(3),
             root_tree,
             enable_logs: AtomicBool::new(false),
+            recovery_handlers: Mutex::new(HashMap::new()),
         }));
         let pending = loader.0.pending.clone();
         // `inject: { loader: { await: true } }` waits until every entry has settled
