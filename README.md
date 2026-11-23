@@ -4,6 +4,7 @@
 
 [![CI](https://github.com/licyk/kardia/actions/workflows/ci.yml/badge.svg)](https://github.com/licyk/kardia/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/kardia.svg)](https://crates.io/crates/kardia)
+[![npm](https://img.shields.io/npm/v/@kardiajs/core.svg)](https://www.npmjs.com/package/@kardiajs/core)
 [![docs.rs](https://img.shields.io/docsrs/kardia)](https://docs.rs/kardia)
 [![License: GPL-3.0-only](https://img.shields.io/crates/l/kardia.svg)](LICENSE)
 
