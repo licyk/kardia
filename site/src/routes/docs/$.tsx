@@ -1,18 +1,28 @@
 import { createFileRoute, notFound } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
-import { staticFunctionMiddleware } from "@tanstack/start-static-server-functions";
 import { useFumadocsLoader } from "fumadocs-core/source/client";
 import { DocsLayout } from "fumadocs-ui/layouts/docs";
-import { DocsBody, DocsDescription, DocsPage, DocsTitle } from "fumadocs-ui/layouts/docs/page";
+import {
+  DocsBody,
+  DocsDescription,
+  DocsPage,
+  DocsTitle,
+} from "fumadocs-ui/layouts/docs/page";
 import { Suspense, use } from "react";
 
 import { DocsComments } from "@/components/docs-comments";
 import { useMDXComponents } from "@/components/mdx";
 import { useDocumentMetadata } from "@/lib/document-metadata";
-import { DEFAULT_LOCALE, languageIndependentPath, LOCALES, type Locale } from "@/lib/i18n";
+import {
+  DEFAULT_LOCALE,
+  languageIndependentPath,
+  LOCALES,
+  type Locale,
+} from "@/lib/i18n";
 import { docsOptions } from "@/lib/layout.shared";
 import { useSiteLocale } from "@/lib/site-copy";
 import { docs, source } from "@/lib/source";
+import { loadPageMiddleware } from "@/lib/static-fn-cache";
 
 interface LocalizedPageData {
   description: string;
@@ -42,14 +52,19 @@ export const Route = createFileRoute("/docs/$")({
   loader: async ({ params }) => {
     const slugs = params._splat?.split("/").filter(Boolean) ?? [];
     const data = await loadPage({ data: slugs });
-    await Promise.all(LOCALES.map((locale) => docs.getPage(data[locale].path)?.preload()));
+    await Promise.all(
+      LOCALES.map((locale) => docs.getPage(data[locale].path)?.preload()),
+    );
     return data;
   },
   head: ({ loaderData }) => {
     const data = loaderData?.[DEFAULT_LOCALE];
     return {
       meta: data
-        ? [{ title: data.headTitle }, { name: "description", content: data.description }]
+        ? [
+            { title: data.headTitle },
+            { name: "description", content: data.description },
+          ]
         : [],
     };
   },
@@ -57,30 +72,32 @@ export const Route = createFileRoute("/docs/$")({
 
 const loadPage = createServerFn({ method: "GET" })
   .validator((slugs: string[]) => slugs)
-  .middleware([staticFunctionMiddleware])
+  .middleware(loadPageMiddleware)
   .handler(async ({ data: slugs }) => {
     const entries = await Promise.all(
-      LOCALES.map(async (locale): Promise<readonly [Locale, LocalizedPageData]> => {
-        const page = source.getPage(slugs, locale);
-        if (!page) throw notFound();
+      LOCALES.map(
+        async (locale): Promise<readonly [Locale, LocalizedPageData]> => {
+          const page = source.getPage(slugs, locale);
+          if (!page) throw notFound();
 
-        return [
-          locale,
-          {
-            description: page.data.description ?? "",
-            headTitle:
-              slugs.length === 0
-                ? locale === "zh-CN"
-                  ? "kardia 文档"
-                  : "kardia Documentation"
-                : `${page.data.title} — kardia`,
-            path: page.path,
-            pageTree: makePageTreeLanguageIndependent(
-              await source.serializePageTree(source.getPageTree(locale)),
-            ),
-          },
-        ];
-      }),
+          return [
+            locale,
+            {
+              description: page.data.description ?? "",
+              headTitle:
+                slugs.length === 0
+                  ? locale === "zh-CN"
+                    ? "kardia 文档"
+                    : "kardia Documentation"
+                  : `${page.data.title} — kardia`,
+              path: page.path,
+              pageTree: makePageTreeLanguageIndependent(
+                await source.serializePageTree(source.getPageTree(locale)),
+              ),
+            },
+          ];
+        },
+      ),
     );
 
     return Object.fromEntries(entries) as Record<Locale, LocalizedPageData>;
