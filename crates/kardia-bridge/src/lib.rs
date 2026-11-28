@@ -85,7 +85,7 @@
 //!
 //! | `type` | Fields | Result |
 //! |---|---|---|
-//! | `open` | `protocol`, `client` (a label; a new session replaces older ones of the same client) | `{ session, protocol, services }` |
+//! | `open` | `protocol`, `client` (a label; a new session replaces older ones of the same client) | `{ session, protocol, client, services }` |
 //! | `close` | `session` | `null` |
 //! | `call` | `session`, `service`, `method`, `args` | the method's result |
 //! | `resolve` | `session`, `id`, `value` | `null` (answers a host `request`) |

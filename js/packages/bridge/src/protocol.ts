@@ -64,6 +64,12 @@ export interface OpenRequest {
 export interface OpenReply {
   session: number;
   protocol: number;
+  /**
+   * The identity in effect for this session, which is not necessarily the one
+   * the request carried: a host may name its client itself, e.g. from the window
+   * that sent the request, instead of trusting the claimed label.
+   */
+  client: string;
   services: ServiceInfo[];
 }
 

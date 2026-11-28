@@ -283,8 +283,10 @@ impl Hub {
         let mut state = self.state.lock();
         state.next_session += 1;
         let id = state.next_session;
-        state.sessions.insert(id, Arc::new(Session::new(id, client, outbox, fiber, self.timeout)));
-        Ok(json!({ "session": id, "protocol": PROTOCOL, "services": state.services() }))
+        state.sessions.insert(id, Arc::new(Session::new(id, client.clone(), outbox, fiber, self.timeout)));
+        // The identity in effect, which is not necessarily the one the request
+        // carried: a host may name its client through `handle_as`.
+        Ok(json!({ "session": id, "protocol": PROTOCOL, "client": client, "services": state.services() }))
     }
 
     fn session(&self, id: u64) -> Result<Arc<Session>, BridgeError> {

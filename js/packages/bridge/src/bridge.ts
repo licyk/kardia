@@ -25,7 +25,12 @@ export type BridgeStatus = "connecting" | "connected" | "disconnected" | "replac
 
 export interface BridgeConfig {
   transport: Transport;
-  /** This client's label. A new session replaces the host's older sessions with the same label (default `main`). */
+  /**
+   * This client's label, which the `open` request carries (default `main`). A new
+   * session replaces the host's older sessions with the same label. A host that
+   * names its clients itself may report another label in the reply, and the
+   * bridge then adopts it, so replacement keeps working.
+   */
   client?: string;
   /** Host services appear as `<prefix>.<name>`, host events as `<prefix>/<name>` (default `host`). */
   prefix?: string;
@@ -163,6 +168,12 @@ export class Bridge extends Service {
 
   private opened(reply: OpenReply) {
     this.session = reply.session;
+    // The host may name the client itself; the label it reports is the one this
+    // session belongs to, which a host-side replacement relies on.
+    if (reply.client && reply.client !== this.options.client) {
+      this.log.debug(`the host named this client "${reply.client}", not "${this.options.client}"`);
+      this.options.client = reply.client;
+    }
     this.reconcile(reply.services);
     for (const [name, service] of this.local) this.sendProvide(name, service);
     this.setStatus("connected");

@@ -30,8 +30,8 @@ class ScriptedTransport implements Transport {
   }
 
   /** Answers the latest `open`. */
-  accept(session: number, services: ServiceInfo[] = []) {
-    this.opens.at(-1)!.resolve({ session, protocol: 1, services });
+  accept(session: number, services: ServiceInfo[] = [], client = "main") {
+    this.opens.at(-1)!.resolve({ session, protocol: 1, client, services });
   }
 
   push(message: HostMessage) {
@@ -61,6 +61,20 @@ describe("Bridge client", () => {
   it("opens a session with the protocol version and its label", async () => {
     const { transport } = await setup();
     expect(transport.opens.map((open) => open.request)).toEqual([{ type: "open", protocol: 1, client: "main" }]);
+  });
+
+  it("adopts the label the host reports, which a host that names its clients uses", async () => {
+    const { transport } = await setup();
+    // The request carried `main`; the host says the session belongs to `real`.
+    transport.accept(1, [], "real");
+    await vi.advanceTimersByTimeAsync(0);
+
+    // A reconnect then claims the host's name, so it replaces its own session
+    // instead of opening a second one under a label the host does not use.
+    transport.push({ type: "closed", reason: "stopped" });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(transport.opens).toHaveLength(2);
+    expect(transport.opens.map((open) => open.request.client)).toEqual(["main", "real"]);
   });
 
   it("mirrors host services, so plugins depending on them run while they are exposed", async () => {

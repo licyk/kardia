@@ -151,6 +151,31 @@
 
 结论：不做 `file:`，替代方案是直接使用 `std:fs`。若将来出现「同一段代码既要读 http 又要读 file」的真实需求，再引入 scheme handler，届时它不是推测性抽象。
 
+## 5.5 JS 侧跟进：不需要新增包
+
+问：Rust 侧这些新接口，JS 侧是否需要新增包来公开？
+
+**结论：不需要新增包。** `@kardiajs/*` 是 Cordis 的 **TypeScript 移植**（独立实现，不是 Rust 的绑定层），Rust crate 的 API 不会自动映射过去。逐项核对：
+
+| Rust 新增 | JS 侧对应物 | 结论 |
+| --- | --- | --- |
+| `EffectHandle::leak()` | 无（JS 的 `DisposableList` 本来就可 `delete`） | 无需暴露 |
+| `Panicked` 带 `FiberId` | JS 的 `Event` 没有 `Panicked` 类型，失败直接抛 `AggregateError` | 无对应物 |
+| `emit_scoped` / `handle_as` | 见下 | **需要跟进，但已在 `@kardiajs/bridge` 内** |
+| fs 的区间读/条件写/`DirRef`/内存 provider | JS 侧无 fs 服务 | 不适用 |
+| `data:` URL | JS 侧无 http 服务 | 不适用 |
+| SSE 解析器 | JS 有原生 `EventSource` | 不适用 |
+
+唯一需要跟进的是 **`handle_as`**：宿主可以自己命名客户端，但 JS 客户端过去只知道自己上报的 `client`。若宿主覆盖了它，客户端的重连会以旧名再开一个会话，而不是替换掉自己的上一个——同一窗口因此会有两个会话。
+
+这一轮补的就是这个：
+
+- `open` 回执增加 `client`，报告**实际生效**的身份（`crates/kardia-bridge`）
+- `@kardiajs/bridge` 读取该字段并在被覆盖时采用它，重连因此仍能替换自己的会话
+- 新增 1 个测试：请求带 `main`、宿主答 `real`、断线重连后请求改为带 `real`
+
+版本变化：`@kardiajs/bridge` 的公开类型 `OpenReply` 多了一个必填字段，属于破坏性变更，应在下次 `cargo xtask js-version minor` 时体现。
+
 ## 6. 下游反馈状态
 
 | 编号 | 状态 |
