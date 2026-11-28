@@ -27,6 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       pending: ${{ steps.plan.outputs.pending }}
+      anything: ${{ steps.plan.outputs.anything }}
     steps:
       - uses: actions/checkout@v7.0.1
       - id: plan
@@ -48,14 +49,19 @@ jobs:
             fi
           done
           if [ "${#pending[@]}" -eq 0 ]; then
-            echo "::error::Every crate version on $GITHUB_SHA is already on crates.io: bump the changed crates before releasing"
-            exit 1
+            # Nothing to publish is not a failure: the release already ran, or it ran for this commit before. The
+            # jobs after this one skip, so the run reports success without publishing anything.
+            echo "::notice::Every crate version on $GITHUB_SHA is already on crates.io: nothing to release"
+            echo "anything=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          echo "anything=true" >> "$GITHUB_OUTPUT"
           printf 'pending=%s\n' "${pending[*]}" >> "$GITHUB_OUTPUT"
 
   ci-result:
     name: CI of this commit
     needs: plan
+    if: needs.plan.outputs.anything == 'true'
     runs-on: ubuntu-latest
     permissions:
       actions: read
