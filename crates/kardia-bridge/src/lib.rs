@@ -15,7 +15,10 @@
 //!   sees it as a [`RemoteService`] provided by the client's session fiber,
 //!   withdrawn when the session ends. A client can close at any time, so host
 //!   plugins should look these up with `live_as` rather than depend on them.
-//! * **Events, host to client.** [`Bridge::emit`] reaches every client.
+//! * **Events, host to client.** [`Bridge::emit`] reaches every client, and
+//!   [`Bridge::emit_scoped`] the sessions a predicate selects, so a host that
+//!   keeps one client's events to itself does not filter them outside the
+//!   bridge, where a forgotten filter is a leak.
 //! * **Calls** go both ways and are asynchronous: a call into a client fails
 //!   with `Timeout` after [`BridgeOptions::timeout`], and with `Unavailable`
 //!   once the client is gone.
@@ -24,9 +27,11 @@
 //! keeps the other side's view in step.
 //!
 //! The host trusts its clients: any connected client may call every exposed
-//! service and provide services under any free name. An app that runs
-//! third-party client code must gate those requests itself before they reach
-//! [`Bridge::handle`].
+//! service and provide services under any free name, and an `open` request
+//! names its client. An app that runs third-party client code must gate those
+//! requests itself before they reach [`Bridge::handle`]; a host that can name
+//! the client itself, such as from the window that sent the request, passes
+//! that name to [`Bridge::handle_as`] instead of trusting the claimed one.
 //!
 //! # Wiring it up
 //!

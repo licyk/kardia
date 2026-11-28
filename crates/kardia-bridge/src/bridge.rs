@@ -11,6 +11,13 @@ use crate::endpoint::Endpoint;
 use crate::protocol::{BridgeError, ClientRequest, HostMessage, PROTOCOL, ServiceInfo};
 use crate::session::{Outbox, Session};
 
+/// What a scope predicate of [`Bridge::emit_scoped`] may see of a session:
+/// enough to pick recipients, without a handle on its streams.
+pub struct SessionView<'a> {
+    pub id: u64,
+    pub client: &'a str,
+}
+
 /// Options of a [`Bridge`].
 #[derive(Debug, Clone)]
 pub struct BridgeOptions {
@@ -88,9 +95,37 @@ impl Bridge {
         })?
     }
 
+    /// Handles one client request with the identity the host knows, which
+    /// replaces the `client` field of an `open` request. A host that can name a
+    /// client itself, such as from the window that sent the request, does not
+    /// have to trust the name the client claims.
+    pub async fn handle_as(
+        &self,
+        request: Value,
+        client: &str,
+        outbox: Option<Arc<dyn Outbox>>,
+    ) -> Result<Value, BridgeError> {
+        let runtime = self.hub.runtime()?;
+        let hub = self.hub.clone();
+        let client = client.to_owned();
+        runtime.spawn(async move { hub.dispatch_as(request, Some(client), outbox).await }).await.map_err(|error| {
+            if error.is_cancelled() {
+                BridgeError::unavailable("the bridge is not running")
+            } else {
+                BridgeError::failed(error.to_string())
+            }
+        })?
+    }
+
     /// Sends an event to every client.
     pub fn emit(&self, name: &str, payload: &Value) {
         self.hub.broadcast(&HostMessage::Event { name, payload });
+    }
+
+    /// Sends an event to the sessions that `scope` selects. A session whose
+    /// message stream is gone is closed, as an unscoped `emit` closes it.
+    pub fn emit_scoped(&self, name: &str, payload: &Value, scope: impl Fn(&SessionView<'_>) -> bool) {
+        self.hub.broadcast_scoped(&HostMessage::Event { name, payload }, &scope);
     }
 
     /// Closes every session of `client`, for example when its window is destroyed.
@@ -179,10 +214,21 @@ impl Hub {
     }
 
     async fn dispatch(self: Arc<Self>, request: Value, outbox: Option<Arc<dyn Outbox>>) -> Result<Value, BridgeError> {
+        self.dispatch_as(request, None, outbox).await
+    }
+
+    /// `dispatch` with the identity the host knows, which an `open` request
+    /// takes instead of the name it carries.
+    async fn dispatch_as(
+        self: Arc<Self>,
+        request: Value,
+        identity: Option<String>,
+        outbox: Option<Arc<dyn Outbox>>,
+    ) -> Result<Value, BridgeError> {
         let request: ClientRequest = serde_json::from_value(request)
             .map_err(|error| BridgeError::invalid(format!("invalid request: {error}")))?;
         match request {
-            ClientRequest::Open { protocol, client } => self.open(protocol, client, outbox),
+            ClientRequest::Open { protocol, client } => self.open(protocol, identity.unwrap_or(client), outbox),
             ClientRequest::Close { session } => {
                 for session in self.take_sessions(|s| s.id == session) {
                     session.close(None);
@@ -310,6 +356,23 @@ impl Hub {
 
     fn broadcast(&self, message: &HostMessage<'_>) {
         self.send_all(self.state.lock(), message);
+    }
+
+    fn broadcast_scoped(&self, message: &HostMessage<'_>, scope: &dyn Fn(&SessionView<'_>) -> bool) {
+        let mut state = self.state.lock();
+        let selected: Vec<u64> = state
+            .sessions
+            .values()
+            .filter(|session| scope(&SessionView { id: session.id, client: &session.client }))
+            .map(|session| session.id)
+            .collect();
+        let gone: Vec<u64> = selected
+            .into_iter()
+            .filter(|id| state.sessions.get(id).is_some_and(|session| !session.send(message)))
+            .collect();
+        let sessions: Vec<_> = gone.iter().filter_map(|id| state.sessions.shift_remove(id)).collect();
+        drop(state);
+        self.close_later(sessions, None);
     }
 
     fn send_all(&self, mut state: parking_lot::MutexGuard<'_, HubState>, message: &HostMessage<'_>) {

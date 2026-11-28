@@ -262,6 +262,42 @@ async fn close_client_ends_its_sessions() {
     .unwrap();
 }
 
+#[tokio::test]
+async fn emit_scoped_reaches_only_the_selected_sessions() {
+    let (_root, bridge) = host(BridgeOptions::default()).await;
+    let mut first = Client::open(&bridge, "first").await;
+    let mut second = Client::open(&bridge, "second").await;
+    bridge.emit_scoped("tick", &json!({ "n": 1 }), |session| session.client == "first");
+    let message = first.next().await;
+    assert_eq!(message["type"], "event");
+    assert_eq!(message["name"], "tick");
+    assert_eq!(message["payload"], json!({ "n": 1 }));
+    // The other session receives nothing: the next message it sees is the one an
+    // unscoped emit sends afterwards.
+    bridge.emit("all", &json!({}));
+    let message = second.next().await;
+    assert_eq!(message["name"], "all", "{message}");
+}
+
+#[tokio::test]
+async fn handle_as_uses_the_identity_the_host_knows() {
+    let (_root, bridge) = host(BridgeOptions::default()).await;
+    let (tx, _messages) = mpsc::unbounded_channel();
+    let opened = bridge
+        .handle_as(json!({ "type": "open", "protocol": 1, "client": "forged" }), "real", Some(Arc::new(Stream(tx))))
+        .await
+        .expect("open");
+    let session = opened["session"].as_u64().unwrap();
+    // The session belongs to the name the host gave: closing the claimed one
+    // leaves it open, and closing the host's name ends it.
+    bridge.close_client("forged");
+    let alive = bridge.handle(json!({ "type": "resolve", "session": session, "id": 0, "value": null }), None).await;
+    assert!(alive.is_ok(), "the session is still open: {alive:?}");
+    bridge.close_client("real");
+    let closed = bridge.handle(json!({ "type": "resolve", "session": session, "id": 0, "value": null }), None).await;
+    assert!(closed.is_err(), "the session is closed: {closed:?}");
+}
+
 #[test]
 fn handle_runs_on_the_bridge_runtime_from_any_thread() {
     let host_runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
