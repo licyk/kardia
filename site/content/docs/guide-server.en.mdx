@@ -113,6 +113,21 @@ fiber.set_recovery(RecoveryPolicy::host(|failure| async move {
 }))?;
 ```
 
+`Failure` says what failed: `phase` is `Phase::Start` when the constructor's `apply` returned an error or panicked, and `Phase::Running` when a running instance faulted. A start failure repeats identically on every retry, so a policy that wants to stop there returns `KeepFailed` for it. `attempts` is the automatic restarts this supervisor made before the failure.
+
+A delay table waits each entry in turn, and its end is the limit; `window` starts the count over, so a plugin that faults once a day is not spent after its third fault forever:
+
+```rust
+fiber.set_recovery(RecoveryPolicy::retry_delays(
+    [Duration::from_secs(2), Duration::from_secs(10), Duration::from_secs(30)],
+    Some(Duration::from_secs(600)),
+))?;
+let state = fiber.recovery_state();   // attempts, and the pending retry's due time
+fiber.retry_now()?;                   // a user's retry, without waiting out the delay
+```
+
+The same table is configuration: `{"mode":"delays","delayMs":[2000,10000,30000],"windowMs":600000}`. Every scheduled restart emits `RecoveryScheduled` with its `due_in` and `attempt`, so an interface shows a plugin that keeps failing before it stops.
+
 Automatic supervision outlives the failed instance, waits for cleanup, and retries at a bounded rate. In manual mode, use `fiber.update(config)` to recover explicitly; `restart()` does not clear failure. Host handlers can keep the instance failed or return `RetryAfter`; handler errors and unwind panics are contained too. Disabling, removing, disposing or changing policy cancels the previous recovery action. Recovery does not write configuration back automatically.
 
 Every policy must keep unrelated plugins operational. An ordinary request error stays local to that request; an instance failure withdraws its services and affects their consumers. Unwind containment cannot isolate a process-wide native crash: use the existing process or WASM guest boundary when required. See [architecture and acceptance](/docs/development-server) and the [behavior reference](/docs/reference-server).

@@ -151,6 +151,7 @@ impl State {
             // a superseded load still needs cleanup, but cannot fail the new target
             if fiber.episode.as_ref() == Some(&fiber.target) {
                 fiber.error = Some(error);
+                fiber.phase = Some(crate::recovery::Phase::Start);
                 fiber.target = Target::Inactive;
             }
         }
@@ -172,6 +173,9 @@ impl State {
             return;
         }
         fiber.error = Some(error.clone());
+        // `fail` is the running instance reporting itself unusable, or a panic
+        // caught while it ran; neither is a failed constructor.
+        fiber.phase = Some(crate::recovery::Phase::Running);
         let old = std::mem::replace(&mut fiber.target, Target::Inactive);
         let inertia = fiber.inertia;
         self.log(id, Level::Error, error);

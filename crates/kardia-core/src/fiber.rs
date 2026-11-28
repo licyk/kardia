@@ -212,6 +212,7 @@ impl Fiber {
             if let Some(fiber) = st.fiber_mut(id) {
                 fiber.config = config;
                 fiber.error = None;
+                fiber.phase = None;
             }
         });
         if let Some(resolved) = resolved

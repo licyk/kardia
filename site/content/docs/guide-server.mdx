@@ -113,6 +113,21 @@ fiber.set_recovery(RecoveryPolicy::host(|failure| async move {
 }))?;
 ```
 
+`Failure` 会说明失败发生在哪里：构造器的 `apply` 返回错误或 panic 时 `phase` 为 `Phase::Start`；运行中的实例失效时为 `Phase::Running`。启动失败在每次重试中都会同样失败，策略若不愿继续，可为它返回 `KeepFailed`。`attempts` 是本次失败前已完成的自动重启次数。
+
+延迟表会依次等待每一项，表尾即上限；`window` 到期后重新计数，因此每天只崩一次的插件不会在第四次之后永久失败：
+
+```rust
+fiber.set_recovery(RecoveryPolicy::retry_delays(
+    [Duration::from_secs(2), Duration::from_secs(10), Duration::from_secs(30)],
+    Some(Duration::from_secs(600)),
+))?;
+let state = fiber.recovery_state();   // 已重启次数，以及待执行重启的剩余时间
+fiber.retry_now()?;                   // 等价于用户点“重试”，不必等完当前延迟
+```
+
+同一张表也可由配置指定：`{"mode":"delays","delayMs":[2000,10000,30000],"windowMs":600000}`。每次安排重启都会发出 `RecoveryScheduled`，带有 `due_in` 和 `attempt`，界面因此能在插件彻底停止前显示它反复失败的状态。
+
 自动模式的监督任务位于失败实例之外，等待清理后再恢复，并限制重试频率。手动模式通过 `fiber.update(config)` 明确恢复；`restart()` 不清除失败状态。宿主模式可以保持失败或返回 `RetryAfter`；回调自身的错误和 unwind panic 也被隔离。禁用、删除、释放或切换策略会取消旧的恢复动作，恢复不自动回写用户配置。
 
 三种方式都必须保持无关插件正常工作。请求异常通常只影响该请求；实例失效才撤回服务并处理依赖消费者。原生库的进程级崩溃不受 unwind 隔离保护，需要这种边界时使用已有进程或 WASM guest 机制。详见[架构与验收](/docs/development-server)和[行为参考](/docs/reference-server)。

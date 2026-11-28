@@ -126,3 +126,36 @@ fn recovery_options_validate_only_required_fields() {
         assert!(!validate_options(&json!({"name":"test","recovery":recovery}), false).is_empty());
     }
 }
+
+#[tokio::test]
+async fn a_delay_table_is_read_from_configuration_and_stops_at_its_end() {
+    let (root, catalog, loader) = setup().await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    catalog.register_def("bad", failing(calls.clone(), 10));
+    loader
+        .create(
+            json!({"id":"bad","name":"bad","recovery":{"mode":"delays","delayMs":[2,4],"windowMs":60000}}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    // two delays allow two restarts, so the constructor is called three times
+    until(|| calls.load(Ordering::SeqCst) >= 3).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    root.fiber().dispose().await.unwrap();
+}
+
+#[test]
+fn a_delay_table_rejects_an_empty_or_non_positive_list() {
+    for recovery in [
+        json!({"mode":"delays"}),
+        json!({"mode":"delays","delayMs":[]}),
+        json!({"mode":"delays","delayMs":[2,0]}),
+        json!({"mode":"delays","delayMs":[2],"windowMs":0}),
+    ] {
+        assert!(!validate_options(&json!({"name":"test","recovery":recovery}), false).is_empty());
+    }
+    assert!(validate_options(&json!({"name":"test","recovery":{"mode":"delays","delayMs":[2,10]}}), false).is_empty());
+}

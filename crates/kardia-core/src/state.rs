@@ -69,6 +69,8 @@ pub(crate) struct FiberData {
     /// A reload or unload transition is in flight.
     pub(crate) inertia: bool,
     pub(crate) error: Option<Error>,
+    /// The phase the failure came from, beside `error`.
+    pub(crate) phase: Option<crate::recovery::Phase>,
     /// The fiber's own bindings (σ_n), in provision order.
     pub(crate) provisions: Vec<ImplId>,
     /// Set while the accumulator is being disposed during an unload.
@@ -230,6 +232,7 @@ impl FiberData {
             committed: None,
             inertia: false,
             error: None,
+            phase: None,
             provisions: Vec::new(),
             draining: false,
             withdrawn: Vec::new(),

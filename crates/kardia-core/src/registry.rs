@@ -209,6 +209,7 @@ impl State {
         }
         let fiber = self.fibers.get_mut(&id).expect("registered fiber exists");
         fiber.error = None;
+        fiber.phase = None;
         fiber.revision += 1;
         self.refresh(id);
     }

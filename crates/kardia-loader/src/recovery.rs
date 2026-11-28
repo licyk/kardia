@@ -17,6 +17,12 @@ pub enum RecoveryConfig {
         max_retries: Option<u32>,
         backoff: Backoff,
     },
+    Delays {
+        /// The wait before the n-th automatic restart; the list's end is the limit.
+        delays_ms: Vec<u64>,
+        /// How long one restart is counted before it no longer uses up the next delay.
+        window_ms: Option<u64>,
+    },
     Host {
         handler: String,
     },
@@ -35,6 +41,13 @@ impl RecoveryConfig {
                 },
             },
             Some("host") => Self::Host { handler: value["handler"].as_str().unwrap_or_default().into() },
+            Some("delays") => Self::Delays {
+                delays_ms: value["delayMs"]
+                    .as_array()
+                    .map(|delays| delays.iter().filter_map(Value::as_u64).collect())
+                    .unwrap_or_default(),
+                window_ms: value["windowMs"].as_u64(),
+            },
             _ => Self::Manual,
         }
     }
@@ -57,6 +70,10 @@ impl Loader {
             RecoveryConfig::Retry { delay_ms, max_retries, backoff } => {
                 Ok(RecoveryPolicy::retry_with(Duration::from_millis(*delay_ms), *max_retries, *backoff))
             }
+            RecoveryConfig::Delays { delays_ms, window_ms } => Ok(RecoveryPolicy::retry_delays(
+                delays_ms.iter().map(|delay| Duration::from_millis(*delay)).collect::<Vec<_>>(),
+                window_ms.map(Duration::from_millis),
+            )),
             RecoveryConfig::Host { handler } => self
                 .0
                 .recovery_handlers
@@ -101,6 +118,19 @@ pub(crate) fn validate(value: &Value) -> Vec<Issue> {
                 Vec::new()
             }
         }
-        _ => issue("mode must be manual, retry or host", Some("mode")),
+        Some("delays") => {
+            let mut issues = Vec::new();
+            let delays = value["delayMs"].as_array();
+            if delays.is_none_or(|delays| {
+                delays.is_empty() || delays.iter().any(|delay| delay.as_u64().is_none_or(|n| n == 0))
+            }) {
+                issues.extend(issue("delayMs must be a non-empty list of positive integers", Some("delayMs")));
+            }
+            if value.get("windowMs").is_some_and(|v| v.as_u64().is_none_or(|n| n == 0)) {
+                issues.extend(issue("windowMs must be a positive integer", Some("windowMs")));
+            }
+            issues
+        }
+        _ => issue("mode must be manual, retry, delays or host", Some("mode")),
     }
 }
