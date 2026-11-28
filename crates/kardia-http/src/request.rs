@@ -18,7 +18,7 @@ pub trait HttpExt {
 impl HttpExt for Svc<Http> {
     async fn request(&self, url: &str, config: RequestConfig) -> Result<HttpResponse> {
         let request = config.resolve(self, url)?;
-        let client = self.client(request.proxy_agent.as_deref())?;
+        let client = self.client(request.proxy_agent.as_deref(), &request.url, &request.no_proxy)?;
         let timeout = request.timeout;
         let method = request.method.clone();
         let mut stop = self.stop.subscribe();

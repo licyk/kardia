@@ -41,7 +41,7 @@ impl WebSocketExt for Svc<Http> {
             _ => return Err(Error::msg("invalid WebSocket URL")),
         };
         request.url.set_scheme(scheme).map_err(|_| Error::msg("invalid WebSocket URL"))?;
-        let client = self.client(request.proxy_agent.as_deref())?;
+        let client = self.client(request.proxy_agent.as_deref(), &request.url, &request.no_proxy)?;
         let protocols = request
             .headers
             .get("sec-websocket-protocol")

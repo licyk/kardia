@@ -16,7 +16,12 @@ impl Http {
     pub fn active_operations(&self) -> usize {
         *self.active.borrow()
     }
-    pub(crate) fn client(&self, proxy: Option<&str>) -> Result<reqwest::Client> {
+    /// The client for a request: the cached one when its proxy applies, and a
+    /// direct one when the target bypasses `noProxy`.
+    pub(crate) fn client(&self, proxy: Option<&str>, url: &url::Url, no_proxy: &[String]) -> Result<reqwest::Client> {
+        if crate::config::bypass_proxy(url, no_proxy) {
+            return build(&self.config, None);
+        }
         if proxy == self.config.proxy_agent.as_deref() { Ok(self.client.clone()) } else { build(&self.config, proxy) }
     }
 }
