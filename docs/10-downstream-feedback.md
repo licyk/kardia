@@ -277,7 +277,7 @@ pub trait HostAction: Send + Sync + 'static {
 
 一个实例同一时刻只跑一个 export，`process/instance.rs` 的 `exchange` 是串行消息回路。
 
-### 核对
+### 核对（跟进前）
 
 `crates/kardia-hmr/src/process/instance.rs:90`：
 
@@ -295,19 +295,28 @@ fn exchange(
 
 ### 结论
 
-成立。要并发，需要把独占模型改成多路复用：
+成立。要并发，需要把独占模型改成多路复用：消息带 `id`；一个读循环按 `id` 派发到各 export 的等待者；host call 的反向请求带 `seq` 并支持并发。这是协议级改动，必须同步 Python SDK（`pykardia`）与所有 guest 侧实现。工作量 XL。
 
-1. 消息带 `id`（`kardia-guest/2` 已有该字段）。
-2. 拆分发送与接收分发：一个读循环把消息按 `id` 派发到各 export 的 oneshot。
-3. host call 的反向请求也要带 `id` 并支持并发。
+### 已跟进：`kardia-guest/3`
 
-这是协议级改动，必须同步 Python SDK（`pykardia`）与所有 guest 侧实现。
+**握手**。host 以 `{ export: "hello", input: { protocol: "kardia-guest/2" } }` 开场——这是 0.2 版 guest 唯一认识的名字——guest 回答**它能说的最高版本**：`{ ready: "kardia-guest/3" }` 或 `{ ready: "kardia-guest/2" }`，host 按回答服务；回 `{ done: 1 }` 的是版本 1 guest。所以用 kardia-guest 0.2 构建的 guest 在新 host 上照常运行；反过来，新 SDK 构建的 guest 不能在只认版本 2 的旧 host 上运行（旧 host 对 `ready: kardia-guest/3` 报未知协议）。曾尝试「先提供 v3、失败再提供 v2」的两次握手，不可行：0.2 guest 把第一个 hello 当未知 export 后就进入版本 1 回路，不再处理第二个 hello。
 
-工作量：XL（超过 800 行，跨语言）。
+版本 3 之下：
 
-### 建议
+| 方向 | 消息 | 说明 |
+| --- | --- | --- |
+| host→guest | `{ id, export, input }` | 同前，但**多条可同时在途** |
+| guest→host | `{ seq, call, key, …, id? }` | `seq` 由 guest 分配，回复 `{ seq, result/error }`；host 在读线程上同步处理，多条 host call 可交叉在途，且**不要求属于任何 export** |
+| host→guest | `{ event: name, payload }` | K7，随时可发 |
+| host→guest | `{ cancel: id }` / `{ ping: n }` | 同版本 2 |
 
-本轮不做。下游自己也把它排在 P2 并标注工作量大。
+**host 侧**（`process/instance.rs`）。`ProcessInstance::call` 取 `&self`；一个读线程独占 `incoming`，把 `output`/`done` 送到对应 `id` 的等待者，host call 在读线程上直接执行并按 `seq` 回写，`Closed` 广播给所有等待者。`bridge::run` 对 `Export::Call` 不再持 `Slot.instance` 的锁（只 clone 出 `Arc<dyn GuestInstance>`），`meta`/`apply`/`dispose` 仍独占。WASM 与 dylib 后端不多路复用，用 `Serial<T>` 把自身包在锁后，行为与原来一致。
+
+**guest 侧**（`kardia-guest/src/serve.rs`）。读线程处理 ping、cancel、host call 回复、event；每个 `call` export 在自己的线程上跑，`meta`/`apply`/`dispose` 等在途 `call` 归零后独占执行。
+
+**重入**。原来靠 thread-local `ENTERED` 拒绝「guest 调自己」，因为 host call 在调用线程上同步处理。现在 host call 在读线程上处理，`ENTERED` 失效；改为 `Slot` 上的 `answering` 计数：`GuestHost::invoke` 期间 +1，`bridge::run` 入口看到目标 slot 的 `answering > 0` 即拒绝（间接重入 A→B→A 同样覆盖）。检查必须放在拿 `Slot.instance` 锁**之前**，否则 lifecycle export 持锁期间会死锁——这是实现时真实踩到的坑，表现为 WASM 的重入测试挂死。
+
+**验证**。`crates/kardia-hmr/tests/process.rs`：`calls_of_one_instance_run_at_the_same_time`（两个 400 ms 的 `sleep` 并发，总耗时 < 750 ms）、`serves_a_guest_speaking_kardia_guest_2`（手写 v2 fixture：握手降级、ping 可用、`emit` 被拒）；`crates/kardia-guest/tests/serve.rs`：握手、`seq` 回复、cancel。
 
 ## K7 host 到 guest 的 event（下游 P2）
 
@@ -315,17 +324,21 @@ fn exchange(
 
 宿主动作只有 `provide`、`view`、`invoke`、`log`，没有 host 到 guest 的 `event`，也没有流式子消息。
 
-### 核对
+### 核对（跟进前）
 
 `guest/host.rs` 的公开方法：`provide`、`view`、`invoke`（另有内部 `logger`、`begin`、`finish`、`invoke_raw`）。没有 `event`。
 
 ### 结论
 
-成立。但要注意：`event` 与 K6 的并发强耦合。一个脱离某个 export 的 host 到 guest 消息，在串行回路里只能在某个 export 挂起时被处理。因此 K7 必须在 K6 之后，否则事件会延迟到下一个 export 开始。
+成立。`event` 与 K6 的并发强耦合：一个脱离某个 export 的 host 到 guest 消息，在串行回路里只能在某个 export 挂起时被处理。因此在 K6 之后做。
 
-### 建议
+### 已跟进
 
-与 K6 绑定，本轮不做。
+`GuestService::emit(event, payload)` → `GuestInstance::emit` → `{ event, payload }`；guest 侧读线程收下后立即交给 `Guest::event(&self, host, name, payload)`，**不排在 export 队列后**，与正在跑的 `call` 并发（这也是 `Guest::event` 取 `&self` 的原因）。事件自带的 `host` 是「无 export 的 host」，guest 在回调里通过它调 host 就是 K8。
+
+WASM 与 dylib 没有到运行中 guest 的通道，`emit` 在那里返回错误。
+
+**验证**。`process.rs::an_event_reaches_the_guest_between_exports`：先发一条、再在 `sleep` 进行中发一条，两条都到达且各自记录了当时 host 的 view。
 
 ## K8 guest 到 host 在 export 外主动调用（下游 P2）
 
@@ -333,7 +346,7 @@ fn exchange(
 
 现在只有 `log` 能在 export 之外发起。
 
-### 核对
+### 核对（跟进前）
 
 `process/instance.rs` 的 `exchange` 循环里，对 `id` 不匹配的 host call 显式拒绝：
 
@@ -349,11 +362,17 @@ if v2 && message.get("id").and_then(Value::as_u64) != Some(id) {
 
 ### 结论
 
-成立。同 K7，必须在 K6 之后才有意义。
+成立。同 K7，在 K6 之后才有意义。
 
-### 建议
+### 已跟进
 
-与 K6、K7 一起做，本轮不做。
+`Host::detached()` 返回一个可在 `apply` 之后一直保留的句柄；在版本 3 的进程 guest 上它从任何线程、任何时刻都能 `view`/`invoke`/`provide`/`log`——消息带 guest 分配的 `seq`，host 读线程按 `seq` 回复。WASM、dylib 与版本 1 进程 guest 没有这条通道，detached host 上的调用返回错误（而不是静默丢失）。event 回调里拿到的 host 也是 detached 的。
+
+**验证**。`process.rs::a_guest_calls_the_host_from_outside_its_export`；`serve.rs` 里 `detach` 方法用 `apply` 时存下的 host `view` 自己。
+
+### 遗留：guest 侧并发对作者的要求
+
+`Guest::call` 从 `&mut self` 改为 `&self`，是这次唯一的 SDK API 破坏性变更。原因是并发 export 需要同时借用实例；代价是 guest 作者要把 `call` 与 `event` 共享的状态放到 `Mutex`/原子后面（fixture 的 `calls`/`cancelled` 改成了 `AtomicU64`）。WASM 与 dylib 后端虽然不会并发调用，但 trait 签名统一，所以同样受影响。
 
 ## K9 ProcessGuest 重启、退避、崩溃循环（下游 P3）
 
@@ -420,27 +439,31 @@ let action = match &policy {
 
 ## 汇总
 
-| 编号 | 下游定性 | 核对结果 | kardia 应对 | 优先级 |
+| 编号 | 下游定性 | 核对结果 | kardia 应对 | 状态 |
 | --- | --- | --- | --- | --- |
-| K1 | P0 成立 | 准确 | 采纳，`Error` 带 `FiberId` | P0 |
-| K2 | P1 成立 | 准确 | 采纳，加 `emit_scoped` 与 `SessionView` | P1 |
-| K3 | P1 成立 | 部分不成立：`timeout` 已是单次调用上限 | 先澄清时长还是并发 | P1 |
-| K4 | P1 成立 | 准确，属设计选择 | 采纳，新增 `handle_as` | P1 |
-| K5 | P2 成立 | 准确 | 可做，非必需 | P2 |
-| K6 | P2 成立 | 准确 | 协议级改动，XL | 暂缓 |
-| K7 | P2 成立 | 准确，且依赖 K6 | 与 K6 绑定 | 暂缓 |
-| K8 | P2 成立 | 准确，且依赖 K6 | 与 K6 绑定 | 暂缓 |
-| K9 | P3 成立 | 不成立（过时），仅缺熔断与指数退避 | 下游更新文档；kardia 视需补 `maxRetries` | P3 |
+| K1 | P0 成立 | 准确 | `Error` 带 `FiberId`；`Context::fiber_of(FiberId) -> Option<Fiber>` | 已做（`eaedf32`、`f1cd38b`） |
+| K2 | P1 成立 | 准确 | `emit_scoped` + `SessionView{id, client, owner}`；`handle_with(request, client, owner, outbox)`；回执含 `owner` | 已做（`8ff4d17`、`f1cd38b`） |
+| K3 | P1 成立 | 部分不成立：`timeout` 已是单次调用上限 | `BridgeOptions.max_in_flight`（信号量，`None` 不限） | 已做（`f1cd38b`） |
+| K4 | P1 成立 | 准确，属设计选择 | `handle_as` | 已做（`8ff4d17`） |
+| K5 | P2 成立 | 准确 | `HostAction` trait + `register_action`；`GuestHost::invoke` 先查 `GuestService` 再回退 `Registered` | 已做（`d90304b`） |
+| K6 | P2 成立 | 准确 | `kardia-guest/3`：多路复用，单实例 `call` 并发 | 已做（见下） |
+| K7 | P2 成立 | 准确，且依赖 K6 | `GuestService::emit` → `Guest::event(&self, …)` | 已做（见下） |
+| K8 | P2 成立 | 准确，且依赖 K6 | `Host::detached()`，export 外任意线程调 host | 已做（见下） |
+| K9 | P3 成立 | 不成立（过时），仅缺熔断与指数退避 | `Retry { delay, max_retries, backoff }`，`Backoff::{Fixed, Exponential}` | 已做（`27ecc9a`） |
+
+K1–K9 至此**全部落地**。
 
 ## 下游文档需要修正的地方
 
 | 位置 | 现有说法 | 应改为 |
 | --- | --- | --- |
-| 1.3 表格「重启」行 | 「没有自动重启、退避、崩溃循环标记」 | 「已有 manual、retry、host 三种 entry 级恢复策略，默认 manual；缺指数退避与崩溃循环熔断」 |
-| 1.3 表格「并发」行 | 「`try_lock_until` 等待而非直接拒绝」 | 补充「仍建立在 `&mut self` 的串行回路上」 |
-| 1.2 原文 | 「`kardia-bridge` 本身不设上限」 | 「仅有 `BridgeOptions.timeout` 单次调用超时，没有在途并发上限」 |
-| 第 3 节 K9 | 「`ProcessGuest` 重启、退避、崩溃循环」 | 拆分：重启与固定延迟已具备；仅需 `maxRetries` 与退避曲线 |
-| 第 4 节 | 「代价是两套生命周期模型长期并存」 | 仍成立，可补充「entry 级 recovery 已能覆盖 guest 崩溃后的恢复」 |
+| 1.3 表格「重启」行 | 「没有自动重启、退避、崩溃循环标记」 | 「已有 manual、retry、host 三种 entry 级恢复策略，默认 manual；retry 支持 `maxRetries` 与指数退避（6 步封顶）」 |
+| 1.3 表格「并发」行 | 「`try_lock_until` 等待而非直接拒绝」 | 「`kardia-guest/3` 进程 guest 的 `call` 在单实例内并发；lifecycle export 仍串行」 |
+| 1.2 原文 | 「`kardia-bridge` 本身不设上限」 | 「`BridgeOptions.max_in_flight` 限制在途请求数，`timeout` 限制单次时长」 |
+| 第 3 节 K9 | 「`ProcessGuest` 重启、退避、崩溃循环」 | 重启、固定/指数退避、`maxRetries` 均已具备 |
+| K6 表格行 | 「可能破坏：去掉自建的并发上限」 | 成立：guest 侧 `Guest::call` 改 `&self`，共享状态需加锁 |
+| K7 表格行 | 「兼容（新增）」 | 对 WASM/dylib 不适用：无通道，`emit` 返回错误 |
+| K8 表格行 | 「兼容（新增）」 | 对 WASM/dylib 不适用：detached host 上调用返回错误 |
 
 ## 与上游 Cordis 的关系
 
@@ -451,72 +474,57 @@ let action = match &policy {
 
 因此下游反馈必须由 kardia 自己排期，不能指望「跟进上游」顺带解决。
 
-## 待确认项
-
-以下三点需要与下游确认后才能定实现，不宜自行假设：
-
-1. K3 的「上限」指时长还是并发数。若指时长，kardia 已有，下游应删外层；若指并发，需要信号量。
-2. K2 的 owner 隔离是「桥提供过滤能力」还是「桥自己知道 owner」。前者只给谓词；后者需要会话元数据机制。
-3. K9 是否只需要 `maxRetries`，还是要完整的指数退避加抖动。
-
 ## 核对命令
 
 ```bash
 cd /root/code_workspace/kardia
-grep -n "from_panic" -A 10 crates/kardia-core/src/error.rs
-grep -n "fn emit\|fn broadcast\|fn send_all" crates/kardia-bridge/src/bridge.rs
-grep -n "pub struct BridgeOptions" -A 6 crates/kardia-bridge/src/bridge.rs
-grep -n "enum ClientRequest" -A 6 crates/kardia-bridge/src/protocol.rs
-grep -n "pub fn invoke" -A 3 crates/kardia-hmr/src/guest/host.rs
+grep -n "pub fn fiber_of" crates/kardia-core/src/context.rs
+grep -n "pub fn emit_scoped\|pub fn handle_with\|pub fn handle_as\|max_in_flight" crates/kardia-bridge/src/bridge.rs
+grep -n "pub trait HostAction" crates/kardia-hmr/src/guest/action.rs
+grep -n "pub fn emit" crates/kardia-hmr/src/guest/service.rs crates/kardia-hmr/src/guest/host.rs
+grep -n "pub fn detached\|fn event" crates/kardia-guest/src/host.rs crates/kardia-guest/src/guest.rs
+grep -n "pub(crate) const PROTOCOL\|fn exchange\|fn spawn_reader" crates/kardia-hmr/src/process/instance.rs
 grep -n "enum RecoveryPolicy" -A 8 crates/kardia-core/src/recovery.rs
+cargo test -p kardia-hmr --test process
+cargo test -p kardia-guest --test serve
 ```
 
-## 现状复盘点（2026-11-28）
+## 现状复盘点（2026-11-29）
 
-上文的评估写于 K1–K9 尚未落地时。以下按**当前代码**逐条复核，供直接判断还需要做什么。
+上文的评估写于 K1–K9 尚未落地时。以下按**当前代码**逐条列出验证点与对应测试。
 
-### 已完成
+### 全部已落地
 
 | 编号 | 验证点 | 位置 |
 | --- | --- | --- |
-| K1 | `Panicked { fiber: Option<FiberId>, .. }`；`emit`/`bail`/`serial`/`parallel` 四处捕获都带 `entry.fiber` | `crates/kardia-core/src/error.rs:93`、`events.rs:164,184,203` |
-| K2 | `Bridge::emit_scoped(name, payload, scope)`，谓词收到 `SessionView{id, client}` | `crates/kardia-bridge/src/bridge.rs:127` |
-| K4 | `Bridge::handle_as(request, client, outbox)`，覆盖 `open` 携带的 label；回执 `client` 报告生效身份 | `bridge.rs:102`、`bridge.rs:289` |
+| K1 | `Context::fiber_of(FiberId) -> Option<Fiber>` | `crates/kardia-core/src/context.rs:62` |
+| K2 | `handle_with(request, client, owner, outbox)`；`Session.owner`；`SessionView.owner` | `crates/kardia-bridge/src/bridge.rs:21,32,327` |
+| K3 | `BridgeOptions.max_in_flight: Option<usize>` → `Session.slots: Option<Arc<Semaphore>>` | `bridge.rs:32` |
+| K4 | `Bridge::handle_as` | `bridge.rs` |
+| K5 | `HostAction` + `register_action` | `crates/kardia-hmr/src/guest/action.rs:14` |
+| K6 | `ProcessInstance::call(&self)`；读线程按 `id` 派发；`bridge::run` 的 `Call` 分支不持 `Slot.instance` 锁 | `crates/kardia-hmr/src/process/instance.rs`、`guest/bridge.rs` |
+| K7 | `GuestService::emit` → `GuestInstance::emit` → `{ event, payload }` → `Guest::event(&self)` | `guest/service.rs`、`guest/host.rs`、`crates/kardia-guest/src/serve.rs` |
+| K8 | `Host::detached()`；host call 带 `seq`，读线程按 `seq` 回复，不要求属于 export | `crates/kardia-guest/src/host.rs`、`serve.rs`、`process/instance.rs` |
+| K9 | `Retry { delay, max_retries, backoff }` | `crates/kardia-core/src/recovery.rs:38` |
 
-### 仍未做
+### 协议与兼容边界
 
-| 编号 | 缺口 | 证据 | 工作量 |
-| --- | --- | --- | --- |
-| K1 尾巴 | **从 `FiberId` 取不回可用的 `Fiber`**，所以「定位到接收方并停它」仍做不到 | `Fiber::of` 是 `pub(crate)`（`fiber.rs:46`）；没有 `Fn(FiberId) -> Option<Fiber>` 的公开入口 | S |
-| K2 尾巴 | `SessionView` 只暴露 `id` 与 `client`，桥不知道 owner；下游仍要自己维护 client→owner 映射 | `bridge.rs` 的 `SessionView` 只有两个字段 | M（需会话元数据） |
-| K3 | 只有 `BridgeOptions.timeout`，无并发上限 | `bridge.rs` 的 `BridgeOptions` 无第二字段；`ClientRequest::Call` 直接 `await` | S（信号量）或 0（若下游只要超时） |
-| K5 | `GuestHost::invoke` 仍钉死在 `GuestService` 上 | `crates/kardia-hmr/src/guest/host.rs:72`；无 `HostAction` 之类 trait | M |
-| K6 | 单实例仍串行：`ProcessInstance::call(&mut self)` | `crates/kardia-hmr/src/process/instance.rs:206` | XL（协议 + `pykardia`） |
-| K7 | 无 host→guest `event` | `guest/host.rs` 的动作仍只有 provide/view/invoke/log | XL（依赖 K6） |
-| K8 | export 外的 host call 被拒 | `instance.rs:129` 回 `"no such call"` | XL（依赖 K6） |
-| K9 尾巴 | `Retry` 是固定延迟，无 `maxRetries`、无指数退避、无崩溃循环熔断 | `crates/kardia-core/src/recovery.rs` 的 `Retry { delay }` 只有这一个字段 | M |
+| 项 | 现状 |
+| --- | --- |
+| 握手 | host 发 `protocol: "kardia-guest/2"`，guest 回答自己能说的最高版本（`ready: kardia-guest/3` 或 `kardia-guest/2`） |
+| 旧 guest → 新 host | kardia-guest 0.2.x 构建的 guest 按版本 2 串行运行，ping/cancel 可用，`emit` 被拒；`tests/hmr/test_process_guest.py` 与 kardia 的 `serves_a_guest_speaking_kardia_guest_2` 覆盖 |
+| 新 guest → 旧 host | **不兼容**：0.2.x host 对 `ready: kardia-guest/3` 报未知协议 |
+| `Guest::call` 签名 | `&mut self` → `&self`，`Guest: Send + Sync`；所有后端（含 WASM/dylib）统一 |
+| WASM / dylib | 不多路复用，`Serial<T>` 串行；无 `emit`、无 detached 通道 |
+| `pykardia` | host 同时支持 v2/v3 guest；guest SDK 只说 v3；`tests/parity/rust_guest/` 的 0.2.2 固定副本仍作为 v2 验收 |
 
-### 关于 K1 的尾巴
+### 实现时踩到的两个坑
 
-这是最容易误判的一处：`Error` 里已经有 `FiberId`，看起来 K1 就完成了。但下游的诉求是**收到失败就停掉那个模块**，而停掉需要 `Fiber` 句柄：
+1. **lifecycle export 持锁期间重入会死锁**。`bridge::run` 的 lifecycle 分支持有 `Slot.instance` 锁时，guest 调 `host.invoke("自己")` → `GuestService::call_with` → `slot.running()` 要拿同一把锁。表现为 WASM 的 `rejects_calls_back_into_a_running_guest` 挂死。修法：重入检查（`Slot::reentrant()`）放在拿锁之前。
+2. **两次握手不可行**。「先提供 v3、guest 回 `done:1` 再提供 v2」看起来合理，但 0.2 guest 把第一个 hello 当未知 export 后已进入版本 1 回路，不再处理第二个 hello。改为一次握手、guest 自报版本。
 
-```rust
-let panicked = error.downcast_ref::<Panicked>()?;
-let fiber = /* 需要一个 FiberId -> Fiber 的入口 */;
-fiber.fail(error.clone()).await;
-```
+### 验证范围
 
-目前第二行写不出来。补法是在 `Context` 或 `Root` 上提供一个公开的查找：
-
-```rust
-impl Context {
-    /// The fiber of `id`, if it is still active.
-    pub fn fiber(&self, id: FiberId) -> Option<Fiber>;
-}
-```
-
-这不是推测性抽象——它是 K1 让下游「删掉自建 deliver」所需的最后一块。
-
-### 关于 K6–K8 的成本
-
-`pykardia` 在 `/root/code_workspace/pykardia`，其测试已覆盖 `kardia-guest/2` 的握手与协议版本协商（`tests/hmr/test_process_guest.py:182,334`）。K6 改的是消息回路，属于协议级变更，必须同时改 `kardia-hmr`、`kardia-guest` 与 `pykardia` 三方，否则 SDK 立刻失效。这是这三条一直没动的原因，而不是优先级问题。
+- `cargo test --workspace`：98 个目标全绿；其中 `kardia-hmr --test process` 17 项（并发、event、detached、v1、v2、deadline、cancel、ping、frame limit、exit、IO panic）、`kardia-guest --test serve` 3 项。
+- `cargo fmt --check`、`cargo clippy -D warnings`、`cargo xtask arch`：通过。
+- `pykardia`：`unittest discover` 540 项全过（13 skipped），`ruff check/format`、`ty check` 通过。

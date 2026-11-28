@@ -5,6 +5,7 @@ use std::sync::{Arc, Weak};
 use kardia_core::{Context, Error, Level, Result};
 use serde_json::Value;
 
+use crate::guest::bridge::disposed;
 use crate::guest::{GuestMeta, GuestService, Slot};
 
 /// The host side of one guest instance: the fiber it runs in, and the host
@@ -68,6 +69,15 @@ impl GuestHost {
         Ok(self.ctx()?.view(key)?)
     }
 
+    /// Sends an event to this instance's guest outside of any export, while
+    /// it runs: the guest receives it through its own callback, even while
+    /// an export is in progress. A transport without a channel to its guest
+    /// between exports (WASM, dylib) refuses it.
+    pub fn emit(&self, event: &str, payload: Value) -> Result<()> {
+        let instance = self.slot.upgrade().and_then(|slot| slot.running()).ok_or_else(disposed)?;
+        instance.emit(event, payload)
+    }
+
     /// Calls a service at `key`: a [`GuestService`] another guest provides, or a
     /// [`HostAction`] the host registered with [`register`], which lets a guest
     /// reach the host's own implementation instead of only a JSON view.
@@ -77,6 +87,10 @@ impl GuestHost {
     pub fn invoke(&self, key: &str, method: &str, args: Value) -> Result<Value> {
         let ctx = self.ctx()?;
         if let Ok(service) = ctx.get_as::<GuestService>(key) {
+            // a guest calling itself, directly or through other guests, would wait
+            // for the very export that made the host call: the call into the
+            // instance then meets this one answering
+            let _answering = self.slot.upgrade().map(|slot| Slot::answering(&slot));
             return service.call(method, args);
         }
         match ctx.get_as::<super::Registered>(key) {

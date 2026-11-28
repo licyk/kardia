@@ -177,7 +177,7 @@ impl WasmGuest {
 
 impl GuestCode for WasmGuest {
     fn instantiate(&self, host: GuestHost) -> Result<Box<dyn GuestInstance>> {
-        Ok(Box::new(WasmInstance::start(&self.module, &self.shared, host)?))
+        Ok(WasmInstance::start(&self.module, &self.shared, host)? as Box<dyn GuestInstance>)
     }
 }
 

@@ -91,7 +91,7 @@ async fn spawns_the_command_through_the_spawner_only_when_a_fiber_starts() {
     let cwd = greeter.call("cwd", json!(null)).unwrap();
     assert_eq!(Path::new(cwd.as_str().unwrap()).canonicalize().unwrap(), dir.canonicalize().unwrap());
     assert_eq!(recorder.0.lock().len(), 1);
-    assert_eq!(greeter.handle().unwrap().protocol(), 2);
+    assert_eq!(greeter.handle().unwrap().protocol(), 3);
 }
 
 #[tokio::test]
@@ -156,9 +156,17 @@ async fn dropping_an_async_call_cancels_it_in_the_guest() {
     let (_, greeter) = start(&Context::new(), &ProcessGuest::new(GuestCommand::new(executable(&dir)))).await;
     let call = greeter.call_async("sleep", json!(10_000), None);
     assert!(tokio::time::timeout(Duration::from_millis(200), call).await.is_err());
-    // the next call waits for the cancelled one, which the guest ends early
-    let result = greeter.call_async("cancelled", json!(null), Some(Duration::from_secs(5))).await.unwrap();
-    assert_eq!(result, json!(1));
+    // the guest ends the cancelled call early; it polls for the cancellation,
+    // and under kardia-guest/3 the next call need not wait for it
+    let mut counted = 0;
+    for _ in 0..200 {
+        counted = greeter.call("cancelled", json!(null)).unwrap().as_u64().unwrap();
+        if counted == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(counted, 1);
     assert!(greeter.is_available());
 }
 
@@ -274,12 +282,80 @@ async fn serves_a_guest_speaking_protocol_version_1() {
 }
 
 #[tokio::test]
+async fn serves_a_guest_speaking_kardia_guest_2() {
+    let dir = scratch("process-v2");
+    let app = App::setup(ProcessSource).await;
+    let entry = app.load(&install(&dir, &format!("tagged{EXE_SUFFIX}"), "v1", Kind::V2), json!({})).await;
+    assert_eq!(fiber(&entry).state(), FiberState::Active);
+    assert_eq!(app.view("legacy"), json!({ "protocol": 2 }));
+    let legacy = app.root.get_as::<GuestService>("legacy").unwrap();
+    let request = json!({ "key": "legacy", "method": "echo", "args": [1] });
+    assert_eq!(legacy.call_async("echo", json!([1]), Some(Duration::from_secs(5))).await.unwrap(), request);
+    let handle = legacy.handle().unwrap();
+    assert_eq!(handle.protocol(), 2);
+    // version 2 answers pings, but has no events
+    assert!(handle.ping(Duration::from_secs(1)).await.is_ok());
+    assert!(legacy.emit("settings", json!(null)).is_err());
+    app.loader.remove(&entry.id()).unwrap();
+    app.loader.settled().await;
+    assert_eq!(handle.exit().unwrap().cause, ExitCause::Disposed);
+}
+
+#[tokio::test]
 async fn an_error_of_the_guest_is_not_a_failure_of_its_instance() {
     let dir = scratch("process-guest-error");
     let (_, greeter) = start(&Context::new(), &ProcessGuest::new(GuestCommand::new(executable(&dir)))).await;
     let error = greeter.call("fail", json!(null)).unwrap_err();
     assert!(GuestFailure::of(&error).is_none(), "{error}");
     assert!(greeter.is_available());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn calls_of_one_instance_run_at_the_same_time() {
+    let dir = scratch("process-concurrent");
+    let (_, greeter) = start(&Context::new(), &ProcessGuest::new(GuestCommand::new(executable(&dir)))).await;
+    // two calls that each wait for the host's view: the host answers both while
+    // both are in flight, which a serial exchange could not do
+    let (first, second) = (
+        tokio::spawn(greeter.call_async("sleep", json!(400), None)),
+        tokio::spawn(greeter.call_async("sleep", json!(400), None)),
+    );
+    let start = std::time::Instant::now();
+    assert_eq!(first.await.unwrap().unwrap(), json!("slept"));
+    assert_eq!(second.await.unwrap().unwrap(), json!("slept"));
+    assert!(start.elapsed() < Duration::from_millis(750), "{:?}", start.elapsed());
+    // the guest counted both, in whichever order they arrived
+    assert_eq!(greeter.call("hello", json!(null)).unwrap()["calls"], 3);
+}
+
+#[tokio::test]
+async fn an_event_reaches_the_guest_between_exports() {
+    let dir = scratch("process-event");
+    let (_, greeter) = start(&Context::new(), &ProcessGuest::new(GuestCommand::new(executable(&dir)))).await;
+    greeter.emit("settings", json!({ "theme": "dark" })).unwrap();
+    // an event that arrives while a call runs waits for it, then is delivered
+    let sleeping = tokio::spawn(greeter.call_async("sleep", json!(200), None));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    greeter.emit("settings", json!({ "theme": "light" })).unwrap();
+    assert_eq!(sleeping.await.unwrap().unwrap(), json!("slept"));
+    let events = greeter.call("events", json!(null)).unwrap();
+    let view = greeter.value().clone();
+    assert_eq!(
+        events,
+        json!([
+            ["settings", { "payload": { "theme": "dark" }, "seen": view }],
+            ["settings", { "payload": { "theme": "light" }, "seen": view }],
+        ])
+    );
+}
+
+#[tokio::test]
+async fn a_guest_calls_the_host_from_outside_its_export() {
+    let dir = scratch("process-detached");
+    let (_, greeter) = start(&Context::new(), &ProcessGuest::new(GuestCommand::new(executable(&dir)))).await;
+    // the guest kept its host from `apply`: its view of the host comes back
+    // through a channel that is not the export's, by the call's own `seq`
+    assert_eq!(greeter.call("detach", json!(null)).unwrap(), greeter.value().clone());
 }
 
 /// The pipe of a guest whose thread panics once the test arms it.

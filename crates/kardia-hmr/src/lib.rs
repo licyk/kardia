@@ -97,15 +97,35 @@
 //! `{ done: status }` ends it. After `dispose` the process is killed; a
 //! guest exits when its stdin closes.
 //!
-//! **`kardia-guest/2`.** The host's first line offers it as an export:
-//! `{ export: "hello", input: { protocol: "kardia-guest/2" } }`. A version 2
-//! guest answers `{ ready: "kardia-guest/2" }`; a version 1 guest answers
+//! **`kardia-guest/3`.** The host's first line offers it as an export:
+//! `{ export: "hello", input: { protocol: "kardia-guest/3" } }`. A version 3
+//! guest answers `{ ready: "kardia-guest/3" }`; a version 1 guest answers
 //! `{ done: 1 }`, as it does to any export it does not know, and is served
-//! version 1. Under version 2, every export carries an `id`, and every
-//! message about it (host calls, their replies, `output`, `done`) carries the
-//! same `id`. The host may also send `{ cancel: id }` (the guest may stop the
-//! export early; its result is dropped) and `{ ping: n }`, which the guest
-//! answers with `{ pong: n }` even while an export runs.
+//! version 1. Under version 3:
+//!
+//! * Every export carries an `id`, and its `output` and `done` carry the
+//!   same `id`. Exports may be in flight at the same time: the host sends
+//!   the next `call` without waiting for the one before, and the guest
+//!   answers each when it ends. Calls of one instance therefore run
+//!   concurrently; `meta`, `apply` and `dispose` still run alone (the bridge
+//!   serializes them).
+//! * A host call (`provide`, `view`, `invoke`) carries a `seq` the guest
+//!   chooses, and its reply (`{ seq, result }` or `{ seq, error }`) carries
+//!   the same `seq`. The host answers host calls on a thread of its own, so
+//!   several may be in flight, and the guest may send one from any thread
+//!   at any time while the instance runs: outside every export too, through
+//!   a host it kept (`Host::detached` in `kardia-guest`). A host call that
+//!   belongs to an export may also carry its `id`.
+//! * The host may send `{ event: name, payload }` at any time; the guest
+//!   hands it to `Guest::event` as it comes, between or during exports. The
+//!   host's side is [`GuestService::emit`].
+//! * The host may send `{ cancel: id }` (the guest may stop the export
+//!   early; its result is dropped) and `{ ping: n }`, which the guest
+//!   answers with `{ pong: n }` at once.
+//!
+//! A guest that calls back into its own instance (directly, or through
+//! other guests) is refused with "re-entrant call into a guest instance":
+//! its export would wait for itself.
 //!
 //! An export that outlives its deadline kills the process, as does a line
 //! that is not JSON or longer than the frame limit; a process that ends

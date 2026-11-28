@@ -40,8 +40,9 @@
 2. **必须跟进的破坏性变更**有五处：`std:` 前缀、`Fiber.Options` 取代 `getOuterStack` 回调、`ctx.entry` 移到 `ctx[Entry.key]`、fs 包路径与配置项改名、server-proxy 配置从「目录」改成「前缀」。
 3. **上游本轮没有引入**任何与下游 K1–K9 诉求直接对应的能力：事件仍不带 `FiberId`、bridge 仍信任客户端、guest 协议未变。因此下游九条诉求需要本项目自己实现，不能指望上游。
 4. 计划按四条主线推进：核心与加载器对齐、HTTP/Server 语义对齐、fs 能力补齐、下游反馈落地。
-5. **下游九条诉求里有两条不必照做**：K3 的「调用上限」kardia 已有（`BridgeOptions.timeout`），K9 的重启/退避已在 0.3.0 的 entry 级 `recovery` 里实现。这两项需要先与下游澄清，再决定是否补并发上限、熔断与指数退避。
-6. **九个上游修复在 kardia 上同样存在**（分析时的状态）：查询串含 `?`、表单体 content-type、IPv6 主机括号、timer 重入句柄、static 目录顺序、proxy hop-by-hop、FIFO 跳过、entry 转移归属、`Fiber::leak` 缺失。前六项已修，第七项（FIFO 跳过）待定，第八项经实测在 kardia 不存在，第九项已补原语。详见 `12`。
+5. **下游九条诉求里两条的原始表述过时**：K3 的「调用上限」kardia 已有时长上限，补了并发上限 `max_in_flight`；K9 的重启/固定退避已在 0.3.0 具备，补了 `maxRetries` 与指数退避。
+6. **九个上游修复在 kardia 上同样存在**（分析时的状态）：查询串含 `?`、表单体 content-type、IPv6 主机括号、timer 重入句柄、static 目录顺序、proxy hop-by-hop、FIFO 跳过、entry 转移归属、`Fiber::leak` 缺失。前六项已修，第七项（FIFO 跳过）已做，第八项经实测在 kardia 不存在，第九项已补原语。详见 `12`。
+7. **下游 K1–K9 全部落地**。K6–K8 是协议级改动，引入 `kardia-guest/3`：单实例 `call` 并发、host→guest `event`、guest 脱离 export 调 host（`Host::detached()`）。唯一的 SDK API 破坏是 `Guest::call` 从 `&mut self` 改为 `&self`。旧 guest（kardia-guest 0.2.x）在新 host 上照常运行；新 guest 不能在旧 host 上运行。详见 `10` 的 K6–K8 与 `12` 第 5.6 节。
 
 ## 已落地
 
@@ -57,6 +58,8 @@
 
 - fs entry 操作（`stat`/`write`/`rename`/`remove` + `Capabilities`），`include` 改走 provider
 - watcher 跳过 FIFO/socket/设备、include 别名报错区分、http SSE
+- `data:` URL；`@kardiajs/bridge` 采纳 `OpenReply.client`
+- 下游 K1–K9 全部：`fiber_of`、`handle_with`/`owner`、`max_in_flight`、`HostAction`、`kardia-guest/3`（K6/K7/K8）、`maxRetries` + 指数退避
 
 **`bun run test:server:reference` 为 224 / 224 通过。**
 
@@ -64,7 +67,9 @@ fs 已补齐区间读、原子写、`ifMatch`、`DirRef`、`realpath`/`copy`/`mk
 
 http 的 `data:` URL 已支持；`file:` 交由 `std:fs` 处理。
 
-仍未跟进：下游 K5–K8（协议级，需同步 Python SDK）。清单见 `12` 第 5、6 节。
+`pykardia` 的 host 侧同步支持 `kardia-guest/2` 与 `kardia-guest/3`；其 guest SDK 只说 v3。`tests/parity/rust_guest/` 的 0.2.2 固定副本未动，继续作为 v2 验收。
+
+**没有未跟进的项。**
 
 ## 核对方式
 

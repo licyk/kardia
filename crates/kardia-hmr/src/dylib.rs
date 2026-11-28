@@ -12,7 +12,7 @@ use kardia_core::{Error, Result};
 use libloading::Library;
 
 use crate::graph::{ModuleCode, ModuleSource};
-use crate::guest::{CallControl, Export, GuestCode, GuestHost, GuestInstance, guest_module};
+use crate::guest::{CallControl, CallLocked, Export, GuestCode, GuestHost, GuestInstance, Serial, guest_module};
 
 /// Loads dynamic libraries exporting the C guest ABI; module ids are their
 /// paths. Each symbol is found as `kardia_*`, else `cordis_*`.
@@ -99,7 +99,7 @@ impl GuestCode for DylibCode {
     fn instantiate(&self, host: GuestHost) -> Result<Box<dyn GuestInstance>> {
         // SAFETY: see `open`.
         let state = unsafe { (self.0.new)() };
-        Ok(Box::new(DylibInstance { symbols: self.0, state, host: Box::new(host) }))
+        Ok(Box::new(Serial::new(DylibInstance { symbols: self.0, state, host: Box::new(host) })))
     }
 }
 
@@ -113,9 +113,9 @@ struct DylibInstance {
 // owning slot's mutex serializes; guests must not tie it to a thread.
 unsafe impl Send for DylibInstance {}
 
-impl GuestInstance for DylibInstance {
+impl CallLocked for DylibInstance {
     /// A dylib guest runs in the host's own thread: `control` cannot stop it.
-    fn call(&mut self, export: Export, input: Vec<u8>, _: &CallControl) -> Result<Vec<u8>> {
+    fn call_locked(&mut self, export: Export, input: Vec<u8>, _: &CallControl) -> Result<Vec<u8>> {
         self.host.begin(input);
         let len = self.host.message.len();
         let api = HostApi {

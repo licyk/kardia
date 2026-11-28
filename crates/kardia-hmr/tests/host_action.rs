@@ -22,7 +22,7 @@ impl GuestCode for Invoking {
 struct Instance(GuestHost);
 
 impl GuestInstance for Instance {
-    fn call(&mut self, export: Export, input: Vec<u8>, _: &CallControl) -> Result<Vec<u8>> {
+    fn call(&self, export: Export, input: Vec<u8>, _: &CallControl) -> Result<Vec<u8>> {
         match export {
             Export::Meta => Ok(serde_json::to_vec(&json!({ "plugin": meta() }))?),
             Export::Apply => self.0.provide("caller", json!({})).map(|()| Vec::new()),
@@ -34,6 +34,10 @@ impl GuestInstance for Instance {
             }
             _ => Ok(Vec::new()),
         }
+    }
+
+    fn emit(&self, _: &str, _: Value) -> Result<()> {
+        Ok(())
     }
 }
 

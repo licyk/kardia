@@ -239,7 +239,7 @@ kardia-guest = "0.3"
 use kardia_guest::{Guest, Host, Level, Map, Meta, Request, Result, Value, json};
 
 struct Counter {
-    count: u64,
+    count: std::sync::atomic::AtomicU64,
 }
 
 impl Guest for Counter {
@@ -252,14 +252,14 @@ impl Guest for Counter {
     fn apply(host: &Host, config: Value, _imports: Map<String, Value>) -> Result<Self> {
         host.provide("counter", &json!({ "config": config }))?;
         host.log(Level::Info, "counting");
-        Ok(Counter { count: 0 })
+        Ok(Counter { count: std::sync::atomic::AtomicU64::new(0) })
     }
 
-    fn call(&mut self, _: &Host, request: Request) -> Result<Value> {
+    fn call(&self, _: &Host, request: Request) -> Result<Value> {
         match request.method.as_str() {
             "increment" => {
-                self.count += 1;
-                Ok(json!(self.count))
+                let count = self.count.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
+                Ok(json!(count))
             }
             method => Err(format!("unknown method {method}").into()),
         }

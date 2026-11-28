@@ -25,4 +25,6 @@ pub use host::GuestHost;
 pub(crate) use host::level;
 pub use meta::GuestMeta;
 pub use service::GuestService;
+#[cfg(any(feature = "wasm", feature = "dylib"))]
+pub(crate) use transport::{CallLocked, Serial};
 pub use transport::{Export, GuestCode, GuestInstance};

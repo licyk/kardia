@@ -9,7 +9,7 @@ use wasmtime::{
     WasmParams, WasmResults,
 };
 
-use crate::guest::{CallControl, Export, GuestFailure, GuestFailureKind, GuestHost, GuestInstance};
+use crate::guest::{CallControl, CallLocked, Export, GuestFailure, GuestFailureKind, GuestHost, Serial};
 use crate::wasm::source::{Shared, TICK};
 
 /// What a store holds: the instance's host and its memory limit.
@@ -69,7 +69,7 @@ pub(crate) struct WasmInstance {
 
 impl WasmInstance {
     /// Instantiates `module` in a store of its own.
-    pub(crate) fn start(module: &Module, shared: &Shared, host: GuestHost) -> Result<Self> {
+    pub(crate) fn start(module: &Module, shared: &Shared, host: GuestHost) -> Result<Box<Serial<Self>>> {
         let mut limits = StoreLimitsBuilder::new().trap_on_grow_failure(true);
         if let Some(memory) = shared.limits.memory {
             limits = limits.memory_size(memory);
@@ -85,7 +85,7 @@ impl WasmInstance {
             Some(kind) => instance.failure(kind, error),
             None => wasm_error(error),
         })?);
-        Ok(instance)
+        Ok(Box::new(Serial::new(instance)))
     }
 
     /// Gives the next export its fuel and its deadline.
@@ -156,8 +156,8 @@ impl WasmInstance {
     }
 }
 
-impl GuestInstance for WasmInstance {
-    fn call(&mut self, export: Export, input: Vec<u8>, control: &CallControl) -> Result<Vec<u8>> {
+impl CallLocked for WasmInstance {
+    fn call_locked(&mut self, export: Export, input: Vec<u8>, control: &CallControl) -> Result<Vec<u8>> {
         if let Some(stopped) = &self.stopped {
             return Err(stopped.clone().into());
         }

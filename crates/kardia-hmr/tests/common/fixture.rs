@@ -14,6 +14,8 @@ pub enum Kind {
     Wasm,
     /// The guest speaking protocol version 1 by hand.
     V1,
+    /// The guest speaking `kardia-guest/2` by hand.
+    V2,
 }
 
 /// Builds the fixture once per version and kind; returns a link to the
@@ -39,6 +41,7 @@ pub fn artifact(version: &str, kind: Kind) -> PathBuf {
         Kind::Dylib => build.arg("--lib"),
         Kind::Process => build.args(["--bin", "rust-guest-process"]),
         Kind::V1 => build.args(["--bin", "rust-guest-v1"]),
+        Kind::V2 => build.args(["--bin", "rust-guest-v2"]),
         Kind::Wasm => build.args(["--lib", "--target", "wasm32-unknown-unknown"]),
     };
     match version {
@@ -51,6 +54,7 @@ pub fn artifact(version: &str, kind: Kind) -> PathBuf {
         Kind::Dylib => dir.join(format!("debug/{DLL_PREFIX}rust_guest{DLL_SUFFIX}")),
         Kind::Process => dir.join(format!("debug/rust-guest-process{EXE_SUFFIX}")),
         Kind::V1 => dir.join(format!("debug/rust-guest-v1{EXE_SUFFIX}")),
+        Kind::V2 => dir.join(format!("debug/rust-guest-v2{EXE_SUFFIX}")),
         Kind::Wasm => dir.join("wasm32-unknown-unknown/debug/rust_guest.wasm"),
     };
     let copy = dir.join(format!("{key}-{}", output.file_name().unwrap().to_string_lossy()));

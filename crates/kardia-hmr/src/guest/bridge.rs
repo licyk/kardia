@@ -22,8 +22,15 @@ use crate::process::{ExitCause, GuestExited, GuestHandle, GuestStarted};
 /// The instance a fiber owns; empty once the fiber disposed it.
 #[derive(Default)]
 pub(crate) struct Slot {
-    instance: Mutex<Option<Box<dyn GuestInstance>>>,
+    /// The lifecycle exports (`meta`, `apply`, `dispose`) hold this lock and
+    /// the instance it guards; `call` only reads the instance, so it takes a
+    /// clone of the handle and leaves the lock to them.
+    instance: Mutex<Option<Arc<dyn GuestInstance>>>,
     disposed: AtomicBool,
+    /// How many of the guest's host calls a transport is answering right now
+    /// on a thread of its own: a call into the instance meanwhile would wait
+    /// for the very export that made the host call.
+    answering: std::sync::atomic::AtomicUsize,
     #[cfg(feature = "process")]
     handle: std::sync::OnceLock<GuestHandle>,
 }
@@ -42,14 +49,35 @@ impl Slot {
         self.handle.get().cloned()
     }
 
+    /// The running instance, cloned out of the slot so a call need not hold
+    /// the lock a lifecycle export takes; `None` once the slot is empty. A
+    /// lifecycle export holds that lock while the guest runs, so a guest
+    /// reaching back for its own instance must be turned away before this.
+    pub(crate) fn running(&self) -> Option<Arc<dyn GuestInstance>> {
+        self.instance.lock().clone()
+    }
+
+    /// Whether a call into the instance now would re-enter it: it is running
+    /// on this thread, or a transport is answering its host call elsewhere.
+    pub(crate) fn reentrant(&self) -> bool {
+        let id = std::ptr::from_ref(self) as usize;
+        ENTERED.with_borrow(|entered| entered.contains(&id)) || self.answering.load(Ordering::Acquire) > 0
+    }
+
+    /// Counts a host call the transport answers on a thread of its own.
+    pub(crate) fn answering(slot: &Arc<Self>) -> Answering {
+        slot.answering.fetch_add(1, Ordering::AcqRel);
+        Answering(slot.clone())
+    }
+
     /// Why an emptied slot cannot be called.
     #[cfg(feature = "process")]
-    fn gone(&self) -> Error {
+    pub(crate) fn gone(&self) -> Error {
         gone(self.handle.get())
     }
 
     #[cfg(not(feature = "process"))]
-    fn gone(&self) -> Error {
+    pub(crate) fn gone(&self) -> Error {
         disposed()
     }
 }
@@ -67,7 +95,8 @@ pub(crate) fn gone(handle: Option<&GuestHandle>) -> Error {
 /// Reads what a guest module depends on and exports from a fresh instance,
 /// and wraps it as module code; its plugin runs `code` in a bridge plugin.
 pub fn guest_module(id: &str, code: Arc<dyn GuestCode>) -> Result<ModuleCode> {
-    let mut instance = code.instantiate(GuestHost::new(None, Weak::new(), Arc::default()))?;
+    let instance = code.instantiate(GuestHost::new(None, Weak::new(), Arc::default()))?;
+    let instance: Arc<dyn GuestInstance> = instance.into();
     let control = CallControl::default();
     let output = instance.call(Export::Meta, Vec::new(), &control);
     instance.call(Export::Dispose, Vec::new(), &control)?;
@@ -107,10 +136,10 @@ fn bridge(code: Arc<dyn GuestCode>, meta: Arc<GuestMeta>, imports: Value, check:
         async move {
             let slot = Arc::new(Slot::default());
             let host = GuestHost::new(Some(ctx.clone()), Arc::downgrade(&slot), expected.clone());
-            let instance = blocking(move || code.instantiate(host)).await?;
+            let instance: Arc<dyn GuestInstance> = blocking(move || code.instantiate(host)).await?.into();
             #[cfg(feature = "process")]
             let handle = instance.handle();
-            *slot.instance.lock() = Some(instance);
+            *slot.instance.lock() = Some(instance.clone());
             dispose_with(&ctx, &slot)?;
             #[cfg(feature = "process")]
             if let Some(handle) = &handle {
@@ -122,7 +151,7 @@ fn bridge(code: Arc<dyn GuestCode>, meta: Arc<GuestMeta>, imports: Value, check:
                 blocking(move || check_meta(&running, &expected)).await?;
             }
             let input = serde_json::to_vec(&input)?;
-            blocking(move || run(&slot, Export::Apply, input, &CallControl::default())).await?;
+            blocking(move || run(&slot, &instance, Export::Apply, input, &CallControl::default())).await?;
             #[cfg(feature = "process")]
             if let Some(handle) = handle {
                 watch_exit(&ctx, handle)?;
@@ -144,9 +173,14 @@ fn dispose_with(ctx: &Context, slot: &Arc<Slot>) -> Result<()> {
     ctx.defer(
         "guest",
         Disposer::future(move || async move {
-            if let Err(error) = blocking(move || run(&slot, Export::Dispose, Vec::new(), &CallControl::default())).await
-            {
-                logger.log_error(&error);
+            let instance = slot.instance.lock().clone();
+            if let Some(instance) = instance {
+                let slot = slot.clone();
+                if let Err(error) =
+                    blocking(move || run(&slot, &instance, Export::Dispose, Vec::new(), &CallControl::default())).await
+                {
+                    logger.log_error(&error);
+                }
             }
         }),
     )?;
@@ -171,7 +205,10 @@ fn watch_exit(ctx: &Context, handle: GuestHandle) -> Result<()> {
 }
 
 fn check_meta(slot: &Slot, expected: &GuestMeta) -> Result<()> {
-    let output = run(slot, Export::Meta, Vec::new(), &CallControl::default())?;
+    let Some(instance) = slot.instance.lock().clone() else {
+        return Err(disposed());
+    };
+    let output = run(slot, &instance, Export::Meta, Vec::new(), &CallControl::default())?;
     let meta: ModuleMeta = serde_json::from_slice(&output)
         .map_err(|error| Error::msg(format!("invalid metadata of the guest: {error}")))?;
     match meta.plugin {
@@ -188,33 +225,61 @@ thread_local! {
     static ENTERED: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Calls an export of the instance in `slot`; `Dispose` also releases it.
-/// A guest calling back into an instance that is running on this thread
+/// Calls an export of `instance`, the one in `slot`; `Dispose` also releases
+/// it. A guest calling back into an instance that is running on this thread
 /// (directly or through other guests) fails instead of deadlocking.
-pub(crate) fn run(slot: &Slot, export: Export, input: Vec<u8>, control: &CallControl) -> Result<Vec<u8>> {
+pub(crate) fn run(
+    slot: &Slot,
+    instance: &Arc<dyn GuestInstance>,
+    export: Export,
+    input: Vec<u8>,
+    control: &CallControl,
+) -> Result<Vec<u8>> {
     let id = std::ptr::from_ref(slot) as usize;
-    if ENTERED.with_borrow(|entered| entered.contains(&id)) {
+    if slot.reentrant() {
         return Err(Error::msg("re-entrant call into a guest instance"));
     }
     ENTERED.with_borrow_mut(|entered| entered.push(id));
     let _entered = Entered;
-    let mut instance = match control.deadline() {
-        // waiting for another call to finish: this one fails, the guest is not stopped
-        Some(deadline) => slot.instance.try_lock_until(deadline).ok_or_else(timed_out)?,
-        None => slot.instance.lock(),
-    };
-    if control.is_cancelled() {
-        return Err(cancelled());
+    if export.is_lifecycle() {
+        let mut guard = match control.deadline() {
+            // waiting for another lifecycle export to finish: this one fails, the guest is not stopped
+            Some(deadline) => slot.instance.try_lock_until(deadline).ok_or_else(timed_out)?,
+            None => slot.instance.lock(),
+        };
+        if control.is_cancelled() {
+            return Err(cancelled());
+        }
+        let result = match guard.as_ref() {
+            Some(running) if Arc::ptr_eq(running, instance) => running.call(export, input, control),
+            _ => Err(slot.gone()),
+        };
+        if export == Export::Dispose {
+            // a dispose that failed still ends the instance: its transport is broken either way
+            *guard = None;
+            slot.disposed.store(true, Ordering::Release);
+        }
+        result
+    } else {
+        if control.is_cancelled() {
+            return Err(cancelled());
+        }
+        // the instance leaves the slot only through a lifecycle export, which
+        // holds the lock; a `call` that outlives its instance fails on its own
+        if slot.instance.lock().as_ref().is_none_or(|running| !Arc::ptr_eq(running, instance)) {
+            return Err(slot.gone());
+        }
+        instance.call(export, input, control)
     }
-    let result = match instance.as_deref_mut() {
-        Some(running) => running.call(export, input, control),
-        None => Err(slot.gone()),
-    };
-    if export == Export::Dispose {
-        *instance = None;
-        slot.disposed.store(true, Ordering::Release);
+}
+
+/// The span of a host call answered off the calling thread.
+pub(crate) struct Answering(Arc<Slot>);
+
+impl Drop for Answering {
+    fn drop(&mut self) {
+        self.0.answering.fetch_sub(1, Ordering::AcqRel);
     }
-    result
 }
 
 /// Leaves the instance entered last on this thread when dropped, so a call

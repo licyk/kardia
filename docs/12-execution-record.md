@@ -33,9 +33,13 @@
 | `cargo clippy --workspace --all-targets -- -D warnings` | 通过 |
 | `cargo xtask arch` | 通过 |
 | `cargo test --workspace` | 通过，无失败目标 |
+| `cargo test -p kardia-hmr --test process` | 17 / 17（并发、event、detached、v1、v2） |
+| `cargo test -p kardia-guest --test serve` | 3 / 3 |
 | `cargo clippy -p kardia-loader --no-default-features` | 通过 |
 | `cargo test -p kardia-loader --no-default-features` | 通过 |
 | `cargo clippy -p kardia-hmr --no-default-features --features process` | 通过 |
+| `pykardia`: `ruff check` / `ruff format --check` / `ty check` | 通过 |
+| `pykardia`: `unittest discover` | 540 / 540（13 skipped） |
 | `bun run check` / `bun run test` | 通过，155 个测试 |
 | `bun run server:inventory --check` | 通过，156 个用例 |
 | `bun run test:server:reference` | **224 / 224 通过** |
@@ -201,25 +205,62 @@
 
 **什么情况下需要补？** 如果要把 `@kardiajs/core` 当作 **Node 服务端框架**使用（脱离 Rust 宿主、独立跑 Express 式服务），那三个包才有意义。当前仓库没有这个用法。
 
+## 5.6 第六轮：K6–K8，协议 `kardia-guest/3`
+
+`pykardia` 获准破坏性修改后，K6–K8 不再受「必须兼容 `kardia-guest/2`」约束。协议设计、实现细节与踩到的坑见 `10-downstream-feedback.md` 的 K6/K7/K8 章节，这里只记决策与范围。
+
+**改动面**：
+
+| 位置 | 改动 |
+| --- | --- |
+| `kardia-hmr/src/guest/transport.rs` | `GuestInstance::call(&self)`；新增 `emit`；`Export::is_lifecycle()`；`Serial<T>` 供 WASM/dylib 串行 |
+| `kardia-hmr/src/guest/bridge.rs` | `Slot.instance` 改 `Arc`；lifecycle 走锁、`call` 共享句柄；`Slot::answering`/`reentrant()` 做跨线程重入检测 |
+| `kardia-hmr/src/guest/host.rs`、`service.rs` | `GuestHost::emit`、`GuestService::emit`；`invoke` 维护 `answering` 计数 |
+| `kardia-hmr/src/process/instance.rs` | 重写：读线程派发、`seq` 回复、v1/v2 串行分支、v3 多路复用 |
+| `kardia-hmr/src/dylib.rs`、`wasm/instance.rs` | 实现 `CallLocked`，由 `Serial` 包装 |
+| `kardia-guest/src/guest.rs` | `Guest: Send + Sync`；`call(&self)`；新增 `event(&self)` |
+| `kardia-guest/src/host.rs`、`ffi.rs` | `Host` 持 `Arc<dyn HostCalls>`（不再 `Copy`）；`Host::detached()`/`is_detached()`；WASM/dylib/process 三个 `HostCalls` 实现 |
+| `kardia-guest/src/serve.rs` | 重写：v1 串行；v3 读线程 + 每 `call` 一个线程 + event 即时分发 |
+| `tests/fixtures/rust-guest/src/v2.rs` | 新增手写 v2 guest，验证 host 对旧 guest 的兼容 |
+| `pykardia/hmr/process.py`、`guest.py`、`exit.py` | host 侧同步：读线程派发、`emit`、`answering`、v2/v3 握手 |
+| `pykardia/guest/process.py`、`api.py` | guest 侧同步：v3、`Host.detached()`、`Guest.event()` |
+| `pykardia/tests/parity/rust_guest/` | **未动**：仍是 kardia-guest 0.2.2 固定副本，作为 v2 验收 |
+
+**为什么保留 v2 guest 兼容**：`pykardia/tests/parity/rust_guest/` 是上游 cordis-rs `67f1604` 的固定副本，README 要求「不得修改以让 Python 实现通过」。它的意义就是验证「Python host 能跑上游 SDK 构建的 guest」。砍掉它是产品决策而非技术决策，所以 host 侧保留 v2 分支（串行 + ping/cancel），guest SDK 只说 v3。
+
+**为什么新 guest 不兼容旧 host**：0.2.x host 收到 `ready: kardia-guest/3` 会报未知协议。要做双向兼容需要 guest 同时实现 v2 回路，不值得。
+
+**为什么 `Guest::call` 改 `&self`**：并发 export 要求同时借用实例。这是唯一无法避免的 SDK API 破坏。
+
 ## 6. 下游反馈状态
 
 | 编号 | 状态 |
 | --- | --- |
-| K1 事件带 `FiberId` | **已实现**（`eaedf32`） |
-| K2 `emit_scoped` | **已实现**（`8ff4d17`） |
-| K3 调用上限 | kardia 已有 `BridgeOptions.timeout`；并发上限待下游澄清 |
+| K1 事件带 `FiberId` | **已实现**（`eaedf32`）；尾巴 `Context::fiber_of`（`f1cd38b`） |
+| K2 `emit_scoped` | **已实现**（`8ff4d17`）；尾巴 `handle_with` + `owner`（`f1cd38b`） |
+| K3 调用上限 | **已实现** `BridgeOptions.max_in_flight`（`f1cd38b`） |
 | K4 宿主注入 client 标识 | **已实现**（`8ff4d17`） |
-| K5 guest `invoke` 指向宿主服务 | 未做 |
-| K6 单实例并发 export | 未做（协议级） |
-| K7 host→guest `event` | 未做（依赖 K6） |
-| K8 export 外主动调用 | 未做（依赖 K6） |
-| K9 重启/退避 | 0.3.0 已具备；缺熔断与指数退避 |
+| K5 guest `invoke` 指向宿主服务 | **已实现** `HostAction`（`d90304b`） |
+| K6 单实例并发 export | **已实现** `kardia-guest/3`（第六轮） |
+| K7 host→guest `event` | **已实现** `GuestService::emit`（第六轮） |
+| K8 export 外主动调用 | **已实现** `Host::detached()`（第六轮） |
+| K9 重启/退避 | **已实现** `maxRetries` + 指数退避（`27ecc9a`） |
 
-## 6. 复核命令
+K1–K9 全部落地。下游 `KARDIA-ADOPTION-ANALYSIS.md` 中对应各行需要按 `10-downstream-feedback.md` 的「下游文档需要修正的地方」更新。
+
+## 7. 复核命令
 
 ```bash
 cd /root/code_workspace/kardia
 git log --oneline 6b3c9af..HEAD
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo xtask arch
 cargo test --workspace
-cd js && bun run test:server:reference
+cargo test -p kardia-hmr --test process   # K6/K7/K8 + v1/v2
+cargo test -p kardia-guest --test serve
+cd js && bun run check && bun run test:server:reference
+
+cd /root/code_workspace/pykardia
+python -m scripts.check                     # ruff + ty + unittest（需 Rust 与 wasm32 target）
 ```

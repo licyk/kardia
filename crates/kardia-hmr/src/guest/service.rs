@@ -1,7 +1,7 @@
 //! Services provided by guest plugins.
 
 use std::future::Future;
-use std::sync::{Arc, Weak};
+use std::sync::Weak;
 use std::time::{Duration, Instant};
 
 use kardia_core::{Error, Result};
@@ -44,7 +44,9 @@ impl GuestService {
     }
 
     /// Calls the guest's `cordis_call` with `{ key, method, args }`, blocking
-    /// until it answers or the transport's default timeout passes.
+    /// until it answers or the transport's default timeout passes. Calls may
+    /// run at the same time on a transport that multiplexes; one that does
+    /// not answers them one after the other.
     pub fn call(&self, method: &str, args: Value) -> Result<Value> {
         self.call_with(method, args, &CallControl::default())
     }
@@ -68,9 +70,14 @@ impl GuestService {
         let input = request(&key, &method, args);
         let control = CallControl::new(timeout.map(|timeout| Instant::now() + timeout));
         async move {
-            let (input, slot) = (input?, instance.upgrade().ok_or_else(gone)?);
+            let input = input?;
+            let slot = instance.upgrade().ok_or_else(gone)?;
+            if slot.reentrant() {
+                return Err(reentrant());
+            }
+            let instance = slot.running().ok_or_else(|| slot.gone())?;
             let cancel = CancelOnDrop(Some(control.clone()));
-            let output = blocking(move || run(&slot, Export::Call, input, &control)).await;
+            let output = blocking(move || run(&slot, &instance, Export::Call, input, &control)).await;
             cancel.disarm();
             decode(&key, &method, &output?)
         }
@@ -82,6 +89,16 @@ impl GuestService {
         self.instance.upgrade().is_some_and(|slot| slot.is_available())
     }
 
+    /// Sends an event to the guest outside of any call, while the instance
+    /// runs: the guest receives it through its own callback, even while a
+    /// call is in progress. A transport without a channel to its guest
+    /// between calls (WASM, dylib) refuses it.
+    pub fn emit(&self, event: &str, payload: Value) -> Result<()> {
+        let slot = self.instance.upgrade().ok_or_else(self.gone())?;
+        let instance = slot.running().ok_or_else(|| slot.gone())?;
+        instance.emit(event, payload)
+    }
+
     /// The process running the guest, for a transport that has one.
     #[cfg(feature = "process")]
     pub fn handle(&self) -> Option<GuestHandle> {
@@ -89,10 +106,18 @@ impl GuestService {
     }
 
     fn call_with(&self, method: &str, args: Value, control: &CallControl) -> Result<Value> {
-        let slot: Arc<Slot> = self.instance.upgrade().ok_or_else(self.gone())?;
-        let output = run(&slot, Export::Call, request(&self.key, method, args)?, control)?;
+        let slot = self.instance.upgrade().ok_or_else(self.gone())?;
+        if slot.reentrant() {
+            return Err(reentrant());
+        }
+        let instance = slot.running().ok_or_else(|| slot.gone())?;
+        let output = run(&slot, &instance, Export::Call, request(&self.key, method, args)?, control)?;
         decode(&self.key, method, &output)
     }
+}
+
+fn reentrant() -> Error {
+    Error::msg("re-entrant call into a guest instance")
 }
 
 impl GuestService {

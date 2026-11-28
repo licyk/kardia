@@ -26,7 +26,8 @@ impl GuestHandle {
         self.0.id
     }
 
-    /// The protocol the guest speaks: `1` or `2` (`kardia-guest/2`).
+    /// The protocol the guest speaks: `1`, `2` (`kardia-guest/2`) or `3`
+    /// (`kardia-guest/3`).
     pub fn protocol(&self) -> u8 {
         self.0.protocol.load(Ordering::Acquire)
     }
@@ -62,7 +63,7 @@ impl GuestHandle {
         self.0.kill(ExitCause::Killed("killed by the host".into()));
     }
 
-    /// Checks that the guest answers (`kardia-guest/2` only), even while it
+    /// Checks that the guest answers (`kardia-guest/2` and 3), even while it
     /// runs a call; resolves with the round trip. A late answer does not stop
     /// the guest: its host decides.
     pub fn ping(&self, timeout: Duration) -> impl Future<Output = Result<Duration>> + Send + 'static {

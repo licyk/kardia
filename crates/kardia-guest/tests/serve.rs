@@ -1,6 +1,7 @@
 //! The process transport of `serve` (`examples/process_guest.rs`), driven by
 //! hand: protocol version 1 for a host that offers nothing else, and
-//! `kardia-guest/2` after its handshake.
+//! `kardia-guest/3` after its handshake: host calls by `seq`, cancellation,
+//! events, and a host the guest keeps past its export.
 
 use std::env::consts::EXE_SUFFIX;
 use std::io::{BufRead, BufReader, Write};
@@ -82,14 +83,20 @@ fn serves_protocol_1_to_a_host_that_offers_nothing_else() {
 }
 
 #[test]
-fn speaks_kardia_guest_2_after_the_handshake() {
+fn speaks_kardia_guest_3_after_the_handshake() {
     let mut guest = Guest::start();
+    // the host offers the name a version 2 guest knows; the guest names its own version
     guest.send(json!({ "export": "hello", "input": { "protocol": "kardia-guest/2" } }));
-    assert_eq!(guest.receive(), json!({ "ready": "kardia-guest/2" }));
+    assert_eq!(guest.receive(), json!({ "ready": "kardia-guest/3" }));
 
     guest.send(json!({ "id": 1, "export": "apply", "input": { "config": null, "imports": {} } }));
-    assert_eq!(guest.receive(), json!({ "id": 1, "call": "provide", "key": "echo", "value": { "config": null } }));
-    guest.send(json!({ "id": 1, "result": null }));
+    let provide = guest.receive();
+    assert_eq!(
+        (provide["id"].clone(), provide["call"].clone(), provide["seq"].clone()),
+        (json!(1), json!("provide"), json!(0))
+    );
+    assert_eq!(provide["value"], json!({ "config": null }));
+    guest.send(json!({ "seq": 0, "result": null }));
     assert_eq!(guest.receive(), json!({ "id": 1, "done": 0 }));
 
     // a ping is answered while a call runs, and the call sees its cancellation
@@ -100,18 +107,41 @@ fn speaks_kardia_guest_2_after_the_handshake() {
     assert_eq!(guest.receive(), json!({ "id": 2, "output": r#""cancelled""# }));
     assert_eq!(guest.receive(), json!({ "id": 2, "done": 0 }));
 
-    guest.send(json!({ "id": 3, "export": "dispose", "input": null }));
+    // an event reaches the guest between exports, and the host it comes with
+    // reaches the host from outside any export
+    guest.send(json!({ "event": "settings", "payload": { "theme": "dark" } }));
+    guest.send(json!({ "id": 3, "export": "call", "input": { "key": "echo", "method": "events", "args": null } }));
+    let view = guest.receive();
+    assert_eq!((view["id"].clone(), view["call"].clone()), (json!(0), json!("view")));
+    assert_eq!(view["key"], "echo");
+    guest.send(json!({ "seq": view["seq"].clone(), "result": { "config": null } }));
+    let output = guest.receive();
+    let output: Value = serde_json::from_str(output["output"].as_str().unwrap()).unwrap();
+    assert_eq!(output, json!([["settings", { "payload": { "theme": "dark" }, "seen": { "config": null } }]]));
     assert_eq!(guest.receive(), json!({ "id": 3, "done": 0 }));
+
+    // a host the guest kept from `apply` reaches the host outside an export
+    guest.send(json!({ "id": 4, "export": "call", "input": { "key": "echo", "method": "detach", "args": null } }));
+    let view = guest.receive();
+    assert_eq!(view["call"], "view");
+    guest.send(json!({ "seq": view["seq"].clone(), "result": { "config": null } }));
+    let output = guest.receive();
+    assert_eq!(output["output"], json!(r#"{"config":null}"#));
+    assert_eq!(guest.receive(), json!({ "id": 4, "done": 0 }));
+
+    guest.send(json!({ "id": 5, "export": "dispose", "input": null }));
+    assert_eq!(guest.receive(), json!({ "id": 5, "done": 0 }));
     assert!(guest.exits());
 }
 
 #[test]
-fn answers_a_handshake_it_does_not_know_as_protocol_1() {
+fn answers_the_handshake_with_its_own_version_whatever_was_offered() {
     let mut guest = Guest::start();
     guest.send(json!({ "export": "hello", "input": { "protocol": "kardia-guest/9" } }));
-    assert_eq!(guest.receive(), json!({ "done": 1 }));
-    guest.send(json!({ "export": "meta", "input": null }));
-    assert!(guest.receive().get("output").is_some());
-    assert_eq!(guest.receive(), json!({ "done": 0 }));
+    // the host serves the version the guest names; one that knows only a
+    // version of its own then refuses the guest
+    assert_eq!(guest.receive(), json!({ "ready": "kardia-guest/3" }));
+    guest.send(json!({ "id": 1, "export": "dispose", "input": null }));
+    assert_eq!(guest.receive(), json!({ "id": 1, "done": 0 }));
     assert!(guest.exits());
 }

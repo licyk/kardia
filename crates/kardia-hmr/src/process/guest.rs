@@ -17,7 +17,9 @@ const FRAME_LIMIT: usize = 16 * 1024 * 1024;
 
 /// A guest run as a child process: one process per instance, speaking the
 /// guest ABI as JSON lines over its stdin and stdout (protocol version 1 or
-/// `kardia-guest/2`, see the crate docs).
+/// `kardia-guest/3`, see the crate docs). Under version 3, calls of one
+/// instance run at the same time, a guest may call the host from outside
+/// any export, and the host may send events ([`GuestService::emit`]).
 ///
 /// Its [`Spawner`] starts the process ([`StdSpawner`] by default). A call
 /// that outlives its deadline kills the process, as does a message that is

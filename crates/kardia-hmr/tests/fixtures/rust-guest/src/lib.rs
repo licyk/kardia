@@ -1,7 +1,9 @@
 //! Provides `greeter`, whose view is `{ version, input }` and whose calls
 //! answer `{ version, calls, request }`; `fail` fails, `panic` panics,
 //! `exit` ends the process and `print` writes to stdout; `view` and `invoke`
-//! forward their arguments to the host.
+//! forward their arguments to the host; `events` answers the events the host
+//! sent so far, each with what the host's view of `greeter` was when it
+//! arrived; `detach` answers what a host kept from `apply` sees of `greeter`.
 //!
 //! As a process: `args`, `env` and `cwd` answer what the process got;
 //! `sleep` sleeps for `args` milliseconds unless the host cancels it, and
@@ -11,6 +13,8 @@
 //! The plugin is named by `GREETER_NAME` if set. With the `kardia-names`
 //! feature, the dynamic library exports only the `kardia_*` symbols.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use kardia_guest::{Error, Guest, Host, Level, Map, Meta, Request, Result, Value, json};
@@ -18,8 +22,10 @@ use kardia_guest::{Error, Guest, Host, Level, Map, Meta, Request, Result, Value,
 const VERSION: &str = if cfg!(feature = "v2") { "v2" } else { "v1" };
 
 pub struct Greeter {
-    calls: u64,
-    cancelled: u64,
+    calls: AtomicU64,
+    cancelled: AtomicU64,
+    events: Arc<Mutex<Vec<(String, Value)>>>,
+    detached: Option<Host>,
 }
 
 impl Guest for Greeter {
@@ -34,11 +40,16 @@ impl Guest for Greeter {
         host.provide("greeter", &json!({ "version": VERSION, "input": input }))?;
         host.log(Level::Info, &format!("greeter {VERSION} applied"));
         eprintln!("greeter {VERSION} started");
-        Ok(Greeter { calls: 0, cancelled: 0 })
+        Ok(Greeter {
+            calls: AtomicU64::new(0),
+            cancelled: AtomicU64::new(0),
+            events: Arc::default(),
+            detached: Some(host.detached()),
+        })
     }
 
-    fn call(&mut self, host: &Host, request: Request) -> Result<Value> {
-        self.calls += 1;
+    fn call(&self, host: &Host, request: Request) -> Result<Value> {
+        let calls = self.calls.fetch_add(1, Ordering::AcqRel) + 1;
         let args = &request.args;
         match request.method.as_str() {
             "view" => host.view(args.as_str().unwrap_or_default()),
@@ -61,14 +72,23 @@ impl Guest for Greeter {
                 let until = Instant::now() + Duration::from_millis(args.as_u64().unwrap_or_default());
                 while Instant::now() < until {
                     if host.cancelled() {
-                        self.cancelled += 1;
+                        self.cancelled.fetch_add(1, Ordering::AcqRel);
                         return Ok(json!("cancelled"));
                     }
                     std::thread::sleep(Duration::from_millis(5));
                 }
                 Ok(json!("slept"))
             }
-            "cancelled" => Ok(json!(self.cancelled)),
+            "cancelled" => Ok(json!(self.cancelled.load(Ordering::Acquire))),
+            // K7: the events reached the guest between exports
+            "events" => Ok(json!(self.events.lock().unwrap().clone())),
+            // K8: a host kept past `apply` reaches the host outside any export
+            "detach" => Ok(self
+                .detached
+                .as_ref()
+                .expect("kept from apply")
+                .view("greeter")
+                .unwrap_or_else(|error| json!(error.message()))),
             "hang" => loop {
                 std::thread::sleep(Duration::from_secs(60));
             },
@@ -85,12 +105,17 @@ impl Guest for Greeter {
                 });
                 Ok(json!(null))
             }
-            _ => Ok(json!({ "version": VERSION, "calls": self.calls, "request": request })),
+            _ => Ok(json!({ "version": VERSION, "calls": calls, "request": request })),
         }
     }
 
     fn dispose(self, host: &Host) {
         host.log(Level::Info, &format!("greeter {VERSION} disposed"));
+    }
+
+    fn event(&self, host: &Host, name: &str, payload: Value) {
+        let seen = host.view("greeter").unwrap_or_else(|error| json!(error.message()));
+        self.events.lock().unwrap().push((name.to_string(), json!({ "payload": payload, "seen": seen })));
     }
 }
 
