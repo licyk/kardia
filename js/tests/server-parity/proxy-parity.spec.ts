@@ -44,16 +44,14 @@ describe('Cordis and Rust reverse proxy parity',()=>{
     expect(requests).toBe(before);
     await compare('/proxy/healthy');
   });
-  it.each(['?key=value','#fragment'])('target directory with %s',async suffix=>{
-    const pair:typeof hosts=[];
+  // A target is a prefix that ends with `/` and carries no query or fragment;
+  // an upstream rejects either suffix at load, before it serves anything.
+  it.each(['?key=value','#fragment'])('target rejected with %s',async suffix=>{
     const port=(target.address() as {port:number}).port;
-    try {
-      for(const implementation of ['upstream','rust'] as const) pair.push(await startHost('proxy',implementation,{KARDIA_PROXY_TARGET:'http://127.0.0.1:'+port+'/api/v1'+suffix}));
-      for(const host of pair) {
-        const response=await fetch(host.url+'/users?q=a+b');expect(response.status).toBe(200);
-        expect((await response.json()).path).toBe('/api/v1/users?q=a+b');
-      }
-    } finally {await Promise.all(pair.map(host=>host.stop()));}
+    for(const implementation of ['upstream','rust'] as const) {
+      await expect(startHost('proxy',implementation,{KARDIA_PROXY_TARGET:'http://127.0.0.1:'+port+'/api/v1'+suffix}))
+        .rejects.toThrow();
+    }
   });
   it('confines WS paths before connecting and preserves encoded segments',async()=>{
     const before=upgrades;

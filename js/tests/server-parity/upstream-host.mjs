@@ -34,14 +34,14 @@ if (scenario === 'fs') {
       config.data = args.stream ? new ReadableStream({ start(c) { c.enqueue(bytes); c.close(); } }) : bytes;
     }
     try {
-      const response = await ctx.intercept('std:http', args.intercept || {}).http(args.url, config);
+      const response = await ctx.intercept('std:http', args.intercept || {}).std.http(args.url, config);
       res.json({ status: response.status, reason: response.statusText, headers: Object.fromEntries(['content-type','content-encoding','content-length','x-custom','location'].map(k => [k, response.headers.get(k)])), body: [...new Uint8Array(await response.arrayBuffer())] });
     } catch (error) { res.json({ error: true, timeout: error.code === 'TIMEOUT' }); }
   });
   ctx.std.server.post('/socket', async (req, res) => {
     const args = await req.json();
     const config = args.headers ? { headers: args.headers } : {};
-    const socket = ctx.intercept('std:http', args.intercept || {}).http.ws(args.url, config);
+    const socket = ctx.intercept('std:http', args.intercept || {}).std.http.ws(args.url, config);
     try {
       await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });
       const messages = [];

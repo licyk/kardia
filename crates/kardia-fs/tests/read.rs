@@ -41,7 +41,10 @@ async fn resolves_base_urls_in_config_and_outer_to_inner_intercepts() {
     let ctx = root.intercept("fs", json!({"baseUrl":"outer/"})).intercept("fs", json!({"baseUrl":"../inner/"}));
     let fs = ctx.get::<Fs>().unwrap();
     assert_eq!(fs.base_url().unwrap().as_str(), "memory:///base/inner/");
-    assert_eq!(fs.resolve("a%20b").unwrap().as_str(), "memory:///base/inner/a%20b");
+    // A path is made of literal names, so `%` is part of the name and is encoded
+    // once when the URL is formed.
+    assert_eq!(fs.resolve("a b").unwrap().as_str(), "memory:///base/inner/a%20b");
+    assert_eq!(fs.resolve("a%20b").unwrap().as_str(), "memory:///base/inner/a%2520b");
     assert_eq!(fs.resolve("https://example.com/file").unwrap().as_str(), "https://example.com/file");
     root.fiber().dispose().await.unwrap();
 }
@@ -203,8 +206,10 @@ async fn directory_bases_clear_query_and_fragment_at_every_scope() {
     assert_eq!(root.get::<Fs>().unwrap().base_url().unwrap().as_str(), "file:///app/");
     let ctx = root.intercept("fs", json!({"baseUrl":"data"})).intercept("fs", json!({"baseUrl":"logs?x#y"}));
     let fs = ctx.get::<Fs>().unwrap();
-    assert_eq!(fs.base_url().unwrap().as_str(), "file:///app/data/logs/");
-    assert_eq!(fs.resolve("a.txt?q#h").unwrap().as_str(), "file:///app/data/logs/a.txt?q#h");
+    // `?` and `#` are literal name characters in a path, so they are encoded into
+    // the directory rather than ending it.
+    assert_eq!(fs.base_url().unwrap().as_str(), "file:///app/data/logs%3Fx%23y/");
+    assert_eq!(fs.resolve("a.txt?q#h").unwrap().as_str(), "file:///app/data/logs%3Fx%23y/a.txt%3Fq%23h");
     assert_eq!(fs.resolve("memory:bucket").unwrap().as_str(), "memory:bucket");
     let bad = ctx.intercept("fs", json!({"baseUrl":"memory:bucket"}));
     assert!(bad.get::<Fs>().unwrap().base_url().unwrap_err().is::<kardia_core::ValidationError>());

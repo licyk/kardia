@@ -10,7 +10,9 @@ async fn nested_includes_scope_guest_resolution_and_hmr_to_their_own_directory()
         .unwrap();
     std::fs::write(
         directory.path().join("main.json"),
-        r#"[{"id":"child","name":"include","config":{"path":"child%20%23%20%25/child.json"}}]"#,
+        // A path carries literal names: `%`, `?` and `#` are not escapes here, so
+        // the directory is written as it is on disk.
+        r#"[{"id":"child","name":"include","config":{"path":"child # %/child.json"}}]"#,
     )
     .unwrap();
     let root = Context::new();
