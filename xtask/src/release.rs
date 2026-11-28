@@ -260,9 +260,21 @@ fn set_dependency_version(manifest: &str, name: &str, from: Version, new: Versio
     Ok(document.to_string())
 }
 
-/// The batch tag a release gets: `release-<date>`, or the one asked for.
-pub fn tag_name(date: &str, options: &Options) -> String {
-    options.tag.clone().unwrap_or_else(|| format!("release-{date}"))
+/// The batch tag a release gets: the one asked for, or `release-<date>`, with a
+/// counter when that day already released.
+pub fn tag_name(root: &Path, date: &str, options: &Options) -> Result<String, String> {
+    if let Some(tag) = &options.tag {
+        return Ok(tag.clone());
+    }
+    let taken = |tag: &str| git(root, &["tag", "--list", tag]).map(|found| found.trim() == tag).unwrap_or(false);
+    let first = format!("release-{date}");
+    if !taken(&first) {
+        return Ok(first);
+    }
+    (2..)
+        .map(|nth| format!("release-{date}-{nth}"))
+        .find(|tag| !taken(tag))
+        .ok_or_else(|| "cannot name a release tag".into())
 }
 
 fn read(path: &Path) -> Result<String, String> {
@@ -289,6 +301,18 @@ pub fn describe(plan: &Plan) -> String {
 /// Writes the plan, updates the lockfile, and tags the batch. Nothing is
 /// pushed: the tag names a commit the working tree no longer has.
 pub fn apply(root: &Path, plan: &Plan, options: &Options, date: &str) -> Result<(), String> {
+    // Every check that can fail runs before anything is written: a half-applied
+    // release leaves the versions bumped, so a second --apply would bump them
+    // again from the new version.
+    let tag = tag_name(root, date, options)?;
+    if crate::git::git(root, &["tag", "--list", &tag])?.trim() == tag {
+        return Err(format!("tag {tag} already exists: pass --tag with another name"));
+    }
+    let originals: Vec<(PathBuf, String)> = plan
+        .changes
+        .iter()
+        .map(|change| Ok((change.path.clone(), read(&change.path)?)))
+        .collect::<Result<_, String>>()?;
     for change in &plan.changes {
         std::fs::write(&change.path, &change.contents)
             .map_err(|error| format!("{}: {error}", change.path.display()))?;
@@ -300,17 +324,26 @@ pub fn apply(root: &Path, plan: &Plan, options: &Options, date: &str) -> Result<
         .status()
         .map_err(|error| format!("cannot run cargo: {error}"))?;
     if !status.success() {
+        restore(&originals);
         return Err("`cargo update --workspace` failed".into());
     }
-    let tag = tag_name(date, options);
-    if crate::git::git(root, &["tag", "--list", &tag])?.trim() == tag {
-        return Err(format!("tag {tag} already exists"));
-    }
     let message = format!("kardia release {date}: {}", summary(plan));
-    crate::git::git(root, &["tag", "--annotate", &tag, "--message", &message])?;
+    if let Err(error) = crate::git::git(root, &["tag", "--annotate", &tag, "--message", &message]) {
+        restore(&originals);
+        return Err(error);
+    }
     println!("Wrote {} manifests and tagged {tag}.", plan.changes.len());
     println!("Commit the manifests, then move the tag: `git tag -f {tag} && git push --follow-tags`.");
     Ok(())
+}
+
+/// Puts the files back as they were, so a failed `--apply` changes nothing.
+fn restore(originals: &[(PathBuf, String)]) {
+    for (path, contents) in originals {
+        if let Err(error) = std::fs::write(path, contents) {
+            eprintln!("cannot restore {}: {error}", path.display());
+        }
+    }
 }
 
 /// Prints the plan; `--apply` writes it. Releasing is not reversible, so the
@@ -318,7 +351,7 @@ pub fn apply(root: &Path, plan: &Plan, options: &Options, date: &str) -> Result<
 pub fn run(root: &Path, options: &Options) -> Result<(), String> {
     let plan = plan(root, options)?;
     let date = today(root)?;
-    println!("Release {}", tag_name(&date, options));
+    println!("Release {}", tag_name(root, &date, options)?);
     print!("{}", describe(&plan));
     for change in &plan.changes {
         println!("  {}", change.path.strip_prefix(root).unwrap_or(&change.path).display());
@@ -436,9 +469,15 @@ mod tests {
     }
 
     #[test]
-    fn names_the_batch_after_its_date_unless_asked_otherwise() {
-        assert_eq!(tag_name("2026-11-28", &options(&[])), "release-2026-11-28");
-        assert_eq!(tag_name("2026-11-28", &options(&["--tag", "release-rc1"])), "release-rc1");
+    fn names_the_batch_after_its_date_and_numbers_a_second_release_that_day() {
+        let fixture = Fixture::new("tags");
+        let root = &fixture.root;
+        assert_eq!(tag_name(root, "2026-11-28", &options(&[])).unwrap(), "release-2026-11-28");
+        crate::git::git(root, &["tag", "release-2026-11-28"]).unwrap();
+        assert_eq!(tag_name(root, "2026-11-28", &options(&[])).unwrap(), "release-2026-11-28-2");
+        crate::git::git(root, &["tag", "release-2026-11-28-2"]).unwrap();
+        assert_eq!(tag_name(root, "2026-11-28", &options(&[])).unwrap(), "release-2026-11-28-3");
+        assert_eq!(tag_name(root, "2026-11-28", &options(&["--tag", "release-rc1"])).unwrap(), "release-rc1");
     }
 
     #[test]
@@ -480,6 +519,19 @@ mod tests {
 
         let again = apply(&fixture.root, &planned, &options, "2026-11-28").unwrap_err();
         assert!(again.contains("already exists"), "{again}");
+    }
+
+    #[test]
+    fn an_apply_that_cannot_tag_writes_nothing() {
+        let fixture = Fixture::new("untouched");
+        let before = std::fs::read_to_string(fixture.root.join("crates/kardia-core/Cargo.toml")).unwrap();
+        crate::git::git(&fixture.root, &["tag", "release-test"]).unwrap();
+        let options = options(&["--only", "kardia-core", "--apply", "--tag", "release-test"]);
+        let planned = plan(&fixture.root, &options).unwrap();
+        let error = apply(&fixture.root, &planned, &options, "2026-11-28").unwrap_err();
+        assert!(error.contains("already exists"), "{error}");
+        let after = std::fs::read_to_string(fixture.root.join("crates/kardia-core/Cargo.toml")).unwrap();
+        assert_eq!(after, before, "a refused apply leaves the version alone, so a retry cannot bump it twice");
     }
 
     struct Fixture {
