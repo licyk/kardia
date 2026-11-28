@@ -110,6 +110,35 @@ impl Provider {
     pub async fn stat(&self, url: Url) -> Result<crate::Stats> {
         self.0.provider.stat(url).await
     }
+
+    /// Reads a range of the content, or all of it.
+    pub fn read_range(&self, url: Url, options: crate::ReadOptions) -> crate::FileStream {
+        self.0.provider.read_range(url, options)
+    }
+
+    pub async fn mkdir(&self, url: Url, options: crate::MkdirOptions) -> Result<()> {
+        self.0.provider.mkdir(url, options).await
+    }
+
+    pub async fn copy(&self, from: Url, to: Url, options: crate::CopyOptions) -> Result<()> {
+        self.0.provider.copy(from, to, options).await
+    }
+
+    pub async fn realpath(&self, url: Url) -> Result<Url> {
+        self.0.provider.realpath(url).await
+    }
+
+    pub async fn symlink(&self, target: String, url: Url) -> Result<()> {
+        self.0.provider.symlink(target, url).await
+    }
+
+    pub async fn readlink(&self, url: Url) -> Result<String> {
+        self.0.provider.readlink(url).await
+    }
+
+    pub async fn readdir(&self, url: Url) -> Result<Vec<crate::DirEntry>> {
+        self.0.provider.readdir(url).await
+    }
 }
 
 pub struct FsPlugin;

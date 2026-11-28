@@ -115,6 +115,9 @@ fn network(path: &str) -> Option<(String, String)> {
 /// A base URL names a directory: its path ends with `/`, and it has no query or
 /// fragment.
 pub(crate) fn directory(mut url: Url) -> Result<Url> {
+    // A scheme the URL parser does not know is still a base as long as its path is
+    // not opaque, such as `mem:bucket/`. A relative reference cannot resolve
+    // against an opaque path.
     if url.cannot_be_a_base() {
         return Err(Error::msg("baseUrl must be a hierarchical directory URL"));
     }

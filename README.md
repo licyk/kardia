@@ -101,7 +101,8 @@ The file is a list of **entries**. Each entry runs one plugin:
 | `timer` | `timeout`, `interval`, `sleep`, `throttle` and `debounce`, each cancelled when its plugin stops | – |
 | `logger-console` | Prints logs to the terminal | `levels` (name → `0`–`3`, plus `default`), `showTime`, `colors`, `maxLength`, `label` |
 | `fs` | File watching, URL resolution and provider streams | `baseUrl` |
-| `fs:local` | Read-only file: provider | – |
+| `fs:local` | File provider for `file:` | `mount` |
+| `fs:memory` | In-memory provider for `mem:` | `mount`, `files` |
 | `http` | HTTP(S) and WS(S) client | `baseUrl`, `headers`, `timeout`, `rootCertificates`, `proxyAgent`, `noProxy` |
 | `server` | HTTP/WS listener and routes | `host`, `port`, `maxPort`, `publicUrl` |
 | `server:acl` | Host access control | `allowedHosts` |
@@ -315,7 +316,9 @@ The Rust side of the bridge is the [`kardia-bridge`](crates/kardia-bridge/) crat
 | [`kardia-macros`](crates/kardia-macros/) | `#[derive(Service)]` and `#[plugin]` for declaring services and plugin dependencies |
 | [`kardia-timer`](crates/kardia-timer/) | Timeouts, intervals, sleep, throttle and debounce tied to the calling plugin's lifecycle |
 | [`kardia-logger-console`](crates/kardia-logger-console/) | Console log exporter with formatting, colors and configurable log levels |
-| [`kardia-fs`](crates/kardia-fs/) | File watching, URL resolution, provider mounts and lifecycle-owned read streams |
+| [`kardia-fs`](crates/kardia-fs/) | File watching, URL resolution, provider mounts, ranged and conditional reads and writes, atomic writes, and the entry operations providers share |
+| [`kardia-fs-memory`](crates/kardia-fs-memory/) | In-memory provider for `mem:`, versioned per file and useful in tests |
+| [`kardia-fs-conformance`](crates/kardia-fs-conformance/) | The behavior every provider must share, run against a provider by a host or a provider's own tests |
 | [`kardia-http`](crates/kardia-http/) | HTTP(S)/WS(S) client, verified TLS and caller-owned streams |
 | [`kardia-server`](crates/kardia-server/) | HTTP/WS routes, middleware, bodies and lifecycle-owned listeners |
 | [`kardia-server-acl`](crates/kardia-server-acl/) | Host access control shared by HTTP and WS |

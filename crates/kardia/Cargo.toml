@@ -17,6 +17,8 @@ kardia-timer.workspace = true
 kardia-logger-console.workspace = true
 kardia-loader = { workspace = true, features = ["preserve-order"] }
 kardia-fs.workspace = true
+kardia-fs-conformance.workspace = true
+kardia-fs-memory.workspace = true
 kardia-http.workspace = true
 kardia-server.workspace = true
 kardia-server-acl.workspace = true

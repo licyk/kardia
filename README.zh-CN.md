@@ -104,7 +104,8 @@ kardia path/to/kardia.yml
 | `timer` | 提供 `timeout`、`interval`、`sleep`、`throttle` 和 `debounce`，对应操作会在所属插件停止时取消 | – |
 | `logger-console` | 向终端输出日志 | `levels`（名称 → `0`–`3`，以及 `default`）、`showTime`、`colors`、`maxLength`、`label` |
 | `fs` | 文件监听、URL 解析与 provider 读流 | `baseUrl` |
-| `fs:local` | file: 只读 provider | – |
+| `fs:local` | file: provider | `mount` |
+| `fs:memory` | mem: 的内存 provider | `mount`、`files` |
 | `http` | HTTP(S) 与 WS(S) 客户端 | `baseUrl`、`headers`、`timeout`、`rootCertificates` |
 | `server` | HTTP/WS 监听与路由 | `host`、`port`、`maxPort`、`publicUrl` |
 | `server:acl` | Host 访问控制 | `allowedHosts` |
@@ -321,7 +322,9 @@ stdout 用于传输协议数据，因此进程客体插件不能向其打印内�
 | [`kardia-macros`](crates/kardia-macros/) | 用于声明服务和插件依赖的 `#[derive(Service)]` 与 `#[plugin]` 宏 |
 | [`kardia-timer`](crates/kardia-timer/) | 随调用方插件生命周期清理的超时、间隔、休眠、节流和防抖操作 |
 | [`kardia-logger-console`](crates/kardia-logger-console/) | 控制台日志输出，支持格式化、颜色和日志级别配置 |
-| [`kardia-fs`](crates/kardia-fs/) | 文件监听、URL 解析、provider 挂载与随生命周期清理的读流 |
+| [`kardia-fs`](crates/kardia-fs/) | 文件监听、URL 解析、provider 挂载、区间与条件读写、原子写，以及 provider 共享的 entry 操作 |
+| [`kardia-fs-memory`](crates/kardia-fs-memory/) | mem: 的内存 provider，按文件记版本，适合测试 |
+| [`kardia-fs-conformance`](crates/kardia-fs-conformance/) | provider 必须共同满足的行为，宿主或 provider 自己的测试可直接运行 |
 | [`kardia-http`](crates/kardia-http/) | HTTP(S)/WS(S) 客户端、TLS 验证及调用者所属的流 |
 | [`kardia-server`](crates/kardia-server/) | HTTP/WS 路由、中间件、body 及随生命周期清理的监听器 |
 | [`kardia-server-acl`](crates/kardia-server-acl/) | HTTP 与 WS 共用的 Host 访问控制 |

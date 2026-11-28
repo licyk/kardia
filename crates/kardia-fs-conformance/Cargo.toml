@@ -1,0 +1,23 @@
+[package]
+name = "kardia-fs-conformance"
+description = "Behavioral conformance suite for kardia file-system providers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+kardia-core.workspace = true
+kardia-fs.workspace = true
+tokio = { workspace = true, features = ["rt", "sync"] }
+futures.workspace = true
+url = { version = "2", features = ["serde"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+kardia-fs-memory.workspace = true
+tempfile = "3"
+
+[lints]
+workspace = true

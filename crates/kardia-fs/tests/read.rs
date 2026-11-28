@@ -238,3 +238,24 @@ async fn windows_drive_paths_are_file_urls_in_config_intercepts_and_resolution()
     assert_eq!(scoped.get::<Fs>().unwrap().base_url().unwrap().as_str(), "file:///D:/data/");
     root.fiber().dispose().await.unwrap();
 }
+#[test]
+fn a_memory_base_url_is_a_directory() {
+    // A scheme the parser does not know is still a hierarchical base.
+    let url = Url::parse("mem://app/").unwrap();
+    assert!(!url.cannot_be_a_base(), "mem://app/ is hierarchical");
+    assert_eq!(kardia_fs::Url::parse("mem://app/a/b").unwrap().path(), "/a/b");
+}
+
+#[tokio::test]
+async fn a_path_resolves_against_a_memory_base_url() {
+    let root = Context::new();
+    root.plugin::<FsPlugin>(FsConfig { base_url: Some(Url::parse("mem://app/").unwrap()) })
+        .unwrap()
+        .settled()
+        .await
+        .unwrap();
+    let fs = root.get::<Fs>().unwrap();
+    assert_eq!(fs.base_url().unwrap().as_str(), "mem://app/");
+    assert_eq!(fs.resolve("any/thing.txt").unwrap().as_str(), "mem://app/any/thing.txt");
+    root.fiber().dispose().await.unwrap();
+}

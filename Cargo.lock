@@ -1252,6 +1252,8 @@ dependencies = [
  "futures",
  "kardia-core",
  "kardia-fs",
+ "kardia-fs-conformance",
+ "kardia-fs-memory",
  "kardia-hmr",
  "kardia-http",
  "kardia-include",
@@ -1314,6 +1316,33 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "kardia-fs-conformance"
+version = "0.3.0"
+dependencies = [
+ "futures",
+ "kardia-core",
+ "kardia-fs",
+ "kardia-fs-memory",
+ "tempfile",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "kardia-fs-memory"
+version = "0.3.0"
+dependencies = [
+ "futures",
+ "kardia-core",
+ "kardia-fs",
+ "parking_lot",
+ "serde",
+ "serde_json",
  "tokio",
  "url",
 ]

@@ -1,7 +1,8 @@
 //! The catalog of every built-in plugin.
 
 use crate::{
-    fs, http, include, loader, logger_console, server, server_acl, server_echo, server_proxy, server_static, timer,
+    fs, fs_memory, http, include, loader, logger_console, server, server_acl, server_echo, server_proxy, server_static,
+    timer,
 };
 
 /// A catalog with every built-in plugin, under its own name and the name of
@@ -17,6 +18,8 @@ pub fn catalog() -> loader::Catalog {
     catalog.alias("@cordisjs/fs", "fs");
     catalog.register::<fs::LocalFsPlugin>();
     catalog.alias("@cordisjs/fs-node", "fs:local");
+    catalog.register::<fs_memory::MemoryFsPlugin>();
+    catalog.alias("@cordisjs/fs-memory", "fs:memory");
     catalog.register::<http::HttpPlugin>();
     catalog.alias("@cordisjs/http", "http");
     catalog.register::<server::ServerPlugin>();

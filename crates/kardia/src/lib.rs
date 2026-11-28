@@ -8,6 +8,8 @@ pub use kardia_macros::{Service, plugin};
 pub use serde_json::{Value, json};
 
 pub use kardia_fs as fs;
+pub use kardia_fs_conformance as fs_conformance;
+pub use kardia_fs_memory as fs_memory;
 pub use kardia_hmr as hmr;
 pub use kardia_http as http;
 pub use kardia_include as include;

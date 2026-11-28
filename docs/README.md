@@ -60,7 +60,9 @@
 
 **`bun run test:server:reference` 为 224 / 224 通过。**
 
-仍未跟进：fs 的区间读、原子写、`ifMatch`、`DirRef`、内存 provider（无消费者）；下游 K5–K8（协议级）。清单见 `12` 第 5、6 节。
+fs 已补齐区间读、原子写、`ifMatch`、`DirRef`、`realpath`/`copy`/`mkdir`/`readdir`/`symlink`，并新增 `kardia-fs-memory` 与 `kardia-fs-conformance` 两个 crate。
+
+仍未跟进：下游 K5–K8（协议级，需同步 Python SDK）。清单见 `12` 第 5、6 节。
 
 ## 核对方式
 

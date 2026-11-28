@@ -81,9 +81,9 @@
 
 | 项 | 状态 | 说明 |
 | --- | --- | --- |
-| fs `realpath`/`copy`/`mkdir`/`readdir`/`symlink` | 未做 | 仍无消费者；已有 `capabilities` 机制可接入 |
-| fs 区间读、原子写、`ifMatch`、`DirRef` | 未做 | 同上 |
-| fs 内存 provider 与 conformance 套件 | 未做 | 上游有独立包，kardia 无对应生态 |
+| fs `realpath`/`copy`/`mkdir`/`readdir`/`symlink` | **已完成** | 见第 5.3 节 |
+| fs 区间读、原子写、`ifMatch`、`DirRef` | **已完成** | 见第 5.3 节 |
+| fs 内存 provider 与 conformance 套件 | **已完成** | 新增 `kardia-fs-memory` 与 `kardia-fs-conformance` |
 | http `data:`/`file:` URL | 未做 | parity README 已声明不追求完整 decoder 生态；Rust 侧应走 `std:fs` |
 | 上游 `ctx.std.x` 语法糖 | 无法跟进 | Rust 无属性代理；键名已对齐 |
 | 上游 `getStack` 栈帧拼接 | 无法跟进 | Rust 用 `std::backtrace` |
@@ -107,6 +107,26 @@
 | watcher 跳过特殊文件 | FIFO、socket、块/字符设备返回 `NotSupported`，避免平台 watcher 阻塞 |
 | include 别名报错 | 区分「锚点在后」（`must follow its anchor`）与「不存在」（`unresolved alias`） |
 | http SSE | `EventStream` 增量解析器，处理跨 chunk 的 CRLF 与 UTF-8 分裂 |
+
+## 5.3 第三轮：fs 能力补齐
+
+| 项 | 内容 |
+| --- | --- |
+| `Capabilities` | 新增 `mkdir`/`copy`/`copy_recursive`/`realpath`/`symlink`/`readdir`/`links`/`read_range`/`atomic_write` |
+| 区间读 | `FsProvider::read_range` 接收 `ReadOptions{start,end,if_match}`；`FileRef::slice()` 按 `Blob.slice()` 语义解析，负数从末尾算、越界截断，每次读取时解析 |
+| 条件读写 | `Stats.version` 与 `WriteOptions.if_match`，不符时 `VersionMismatch` |
+| 原子写 | `LocalFs` 用同目录临时文件加 rename；内存 provider 天然原子 |
+| `RemoveOptions` | `recursive` 与 `force`，`Provider::remove_with` 转发 |
+| entry 操作 | `mkdir`/`copy`（含 `dereference`）/`realpath`/`symlink`/`readlink`/`readdir` |
+| `DirRef` | `dir()`/`file()`/`list()`，`DirEntryRef` 携带列出时的类型 |
+| `kardia-fs-memory` | 按 URL 路径为键的内存树，逐文件版本号，支持空前缀（服务所有未被其它 mount 认领的位置） |
+| `kardia-fs-conformance` | 11 条规则，`Suite::boot` 与 `Suite::boot_at` 让任意 provider 都能跑；内存与本地 provider 都通过 |
+
+期间修复的三个真实缺陷：
+
+1. **`LocalFs` 的版本粒度不足**。原用 mtime 纳秒值，同一时钟精度内连续两次写入得到相同版本，`if_match` 因此检测不到变化。改为写后 `touch()` 单调递增地设置 mtime。
+2. **空 mount 前缀不可用**。`normalize_prefix("")` 直接 `Url::parse("")` 失败，`fs.mount("")` 无法表达「服务所有位置」。改为返回空前缀。
+3. **`remove` 不支持递归**。目录非空时一律 `DirectoryNotEmpty`，无法清理整棵子树。新增 `RemoveOptions`。
 
 ## 6. 下游反馈状态
 

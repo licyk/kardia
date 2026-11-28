@@ -14,6 +14,8 @@ pub enum FsCode {
     Busy,
     CrossesDevices,
     InvalidPath,
+    VersionMismatch,
+    NotALink,
     Unknown,
 }
 
@@ -38,6 +40,9 @@ impl FsError {
             Io::Unsupported => FsCode::NotSupported,
             Io::InvalidFilename => FsCode::InvalidPath,
             Io::ResourceBusy => FsCode::Busy,
+            Io::AlreadyExists => FsCode::AlreadyExists,
+            Io::DirectoryNotEmpty => FsCode::DirectoryNotEmpty,
+            Io::CrossesDevices => FsCode::CrossesDevices,
             _ => FsCode::Unknown,
         };
         Self::new(code, Some(url.clone()), error.to_string())
