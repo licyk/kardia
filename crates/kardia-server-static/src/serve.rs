@@ -97,6 +97,11 @@ impl Files {
         if matches!(result, Outcome::Response(_)) {
             return Ok(result);
         }
+        // The extensions name alternatives for a missing file. A directory is not
+        // missing: its redirect is decided outside, before any extension is tried.
+        if matches!(result, Outcome::Missing(Some(FsCode::IsADirectory))) {
+            return Ok(result);
+        }
         for ext in &self.config.extensions {
             let candidate = Url::parse(&format!("{}{}", url, utf8_percent_encode(ext, COMPONENT)))?;
             if self.excluded(&candidate)? {

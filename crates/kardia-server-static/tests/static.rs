@@ -17,6 +17,8 @@ impl Fixture {
             ("noext", "plain text\n"),
             ("page", "<h1>Page without extension</h1>\n"),
             ("page.html", "alternative"),
+            ("docs/index.html", "<h1>Docs Index</h1>\n"),
+            ("docs.html", "alternative for the directory\n"),
             ("index.html", "<h1>Index</h1>\n"),
             ("sub/index.html", "<h1>Sub Index</h1>\n"),
             ("errors/404.html", "<h1>Not Found</h1>\n"),
@@ -87,6 +89,13 @@ case!(should_redirect_directory_without_trailing_slash, json!({}), f, {
     let r = f.get("/sub").await;
     assert_eq!(r.status(), 301);
     assert_eq!(r.headers()["location"], "/sub/");
+});
+case!(should_redirect_a_directory_before_trying_its_extensions, json!({"extensions":[".html"]}), f, {
+    // `docs/` and `docs.html` both exist: the directory wins, so the request is
+    // redirected rather than answered with the file of the same name.
+    let r = f.get("/docs").await;
+    assert_eq!(r.status(), 301);
+    assert_eq!(r.headers()["location"], "/docs/");
 });
 case!(should_not_redirect_when_redirect_is_disabled, json!({"redirect":false}), f, {
     assert_eq!(f.get("/sub").await.status(), 404);
