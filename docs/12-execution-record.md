@@ -84,7 +84,8 @@
 | fs `realpath`/`copy`/`mkdir`/`readdir`/`symlink` | **已完成** | 见第 5.3 节 |
 | fs 区间读、原子写、`ifMatch`、`DirRef` | **已完成** | 见第 5.3 节 |
 | fs 内存 provider 与 conformance 套件 | **已完成** | 新增 `kardia-fs-memory` 与 `kardia-fs-conformance` |
-| http `data:`/`file:` URL | 未做 | parity README 已声明不追求完整 decoder 生态；Rust 侧应走 `std:fs` |
+| http `data:` URL | **已完成** | 见第 5.4 节 |
+| http `file:` URL | 未做 | 依赖方向不允许；见第 5.4 节的理由与替代方案 |
 | 上游 `ctx.std.x` 语法糖 | 无法跟进 | Rust 无属性代理；键名已对齐 |
 | 上游 `getStack` 栈帧拼接 | 无法跟进 | Rust 用 `std::backtrace` |
 | 上游发布流程（PR 合并触发） | 未做 | kardia 有自己的发布流程 |
@@ -127,6 +128,28 @@
 1. **`LocalFs` 的版本粒度不足**。原用 mtime 纳秒值，同一时钟精度内连续两次写入得到相同版本，`if_match` 因此检测不到变化。改为写后 `touch()` 单调递增地设置 mtime。
 2. **空 mount 前缀不可用**。`normalize_prefix("")` 直接 `Url::parse("")` 失败，`fs.mount("")` 无法表达「服务所有位置」。改为返回空前缀。
 3. **`remove` 不支持递归**。目录非空时一律 `DirectoryNotEmpty`，无法清理整棵子树。新增 `RemoveOptions`。
+
+## 5.4 第四轮：`data:` URL
+
+`Http` 现在直接应答 `data:`，不经任何传输：
+
+| 形态 | 结果 |
+| --- | --- |
+| `data:,hello` | `200`，`text/plain;charset=US-ASCII` |
+| `data:application/json,%7B%7D` | `200`，`application/json`，内容 `{}` |
+| `data:...;base64,AAEC` | `200`，解码为字节 |
+| 非 GET 方法 | `405 Method Not Allowed`，与上游一致 |
+| 缺少逗号 | 请求失败 |
+
+实现细节：逗号只切分一次，`data` 里的逗号保留；base64 忽略填充与换行；非 base64 部分按 UTF-8 百分号解码。7 个单元测试与 1 个经由真实 `request()` 的集成测试。
+
+### 为什么 `file:` 仍然不做
+
+上游用 `@cordisjs/fetch-file` 直接读操作系统文件。kardia 不能照做，因为那正是我在 `include` 上刚修的错：绕过 `std:fs` 会让拦截与 mount 失效，非 `file:` 的 provider 一律不可用。
+
+正确的实现必须经由 `std:fs`，但 `kardia-http` 不依赖 `kardia-fs`，反过来 `kardia-fs` 也不应依赖 `kardia-http`。打通需要新增一个 scheme handler 注册表（`kardia-http` 定义 trait，宿主注入 `std:fs` 的实现）。这层抽象目前只有一个使用者，且 `std:fs` 本身已经能直接读文件——需要这个能力的地方应当调用 `ctx.std.fs.file(url).text()`，而不是绕道 http。
+
+结论：不做 `file:`，替代方案是直接使用 `std:fs`。若将来出现「同一段代码既要读 http 又要读 file」的真实需求，再引入 scheme handler，届时它不是推测性抽象。
 
 ## 6. 下游反馈状态
 

@@ -18,6 +18,10 @@ pub trait HttpExt {
 impl HttpExt for Svc<Http> {
     async fn request(&self, url: &str, config: RequestConfig) -> Result<HttpResponse> {
         let request = config.resolve(self, url)?;
+        // A `data:` URL carries its content, so no transport is involved.
+        if request.url.scheme() == "data" {
+            return crate::data_url::response(&request.url, &request.method);
+        }
         let client = self.client(request.proxy_agent.as_deref(), &request.url, &request.no_proxy)?;
         let timeout = request.timeout;
         let method = request.method.clone();

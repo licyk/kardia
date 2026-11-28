@@ -100,6 +100,34 @@ async fn idle(http: &Http) {
     .unwrap();
 }
 #[tokio::test]
+async fn a_data_url_answers_from_its_own_content() {
+    let (_, _, client) = setup().await;
+    let http = client.get::<Http>().unwrap();
+
+    let res = http.request("data:text/plain,hello", RequestConfig::default()).await.unwrap();
+    assert_eq!(res.status, 200);
+    assert_eq!(res.headers["content-type"], "text/plain");
+    assert_eq!(res.body.bytes().await.unwrap(), b"hello"[..]);
+
+    // No media type declares the default plain-text type with a charset.
+    let res = http.request("data:,plain", RequestConfig::default()).await.unwrap();
+    assert_eq!(res.headers["content-type"], "text/plain;charset=US-ASCII");
+
+    // Base64 carries bytes that are not text.
+    let res = http.request("data:application/octet-stream;base64,AAEC", RequestConfig::default()).await.unwrap();
+    assert_eq!(res.body.bytes().await.unwrap(), vec![0u8, 1, 2][..]);
+
+    // Only GET is answered, as upstream does.
+    let config = RequestConfig { method: Some(kardia_http::Method::POST), ..Default::default() };
+    let res = http.request("data:text/plain,hello", config).await.unwrap();
+    assert_eq!(res.status, 405);
+
+    // A malformed URL fails the request instead of answering.
+    assert!(http.request("data:text/plain", RequestConfig::default()).await.is_err());
+    idle(&http).await;
+}
+
+#[tokio::test]
 async fn raw_status_headers_query_and_layered_configuration() {
     let (target, _, client) = setup().await;
     let http = client.get::<Http>().unwrap();

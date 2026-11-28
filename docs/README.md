@@ -62,6 +62,8 @@
 
 fs 已补齐区间读、原子写、`ifMatch`、`DirRef`、`realpath`/`copy`/`mkdir`/`readdir`/`symlink`，并新增 `kardia-fs-memory` 与 `kardia-fs-conformance` 两个 crate。
 
+http 的 `data:` URL 已支持；`file:` 交由 `std:fs` 处理。
+
 仍未跟进：下游 K5–K8（协议级，需同步 Python SDK）。清单见 `12` 第 5、6 节。
 
 ## 核对方式

@@ -1,6 +1,7 @@
 //! HTTP(S) and WebSocket clients whose operations belong to the caller's lifecycle.
 mod body;
 mod config;
+mod data_url;
 mod decode;
 mod error;
 mod event_stream;
