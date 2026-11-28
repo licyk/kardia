@@ -92,20 +92,23 @@ impl Pattern {
         for (index, name) in keys.iter().enumerate() {
             if let Some(range) = capture.group(index + 1) {
                 let raw = String::from_utf16_lossy(&text[range]);
+                // `percent_decode_str` leaves a malformed escape as it is, so the
+                // escape itself is checked here.
                 let bytes = raw.as_bytes();
-                for (i, byte) in bytes.iter().enumerate() {
-                    if *byte == b'%'
+                let malformed = bytes.iter().enumerate().any(|(i, byte)| {
+                    *byte == b'%'
                         && (i + 2 >= bytes.len()
                             || !bytes[i + 1].is_ascii_hexdigit()
                             || !bytes[i + 2].is_ascii_hexdigit())
-                    {
-                        return Err(Error::msg("invalid URI parameter escape"));
-                    }
+                });
+                if malformed {
+                    return Ok(None);
                 }
-                params.insert(
-                    name.clone(),
-                    percent_encoding::percent_decode_str(&raw).decode_utf8()?.into_owned().into(),
-                );
+                // A route literal can split a percent escape or a UTF-8 sequence at
+                // the capture boundary; the request is still valid, so the route
+                // does not match it and a later one gets the chance.
+                let Ok(decoded) = percent_encoding::percent_decode_str(&raw).decode_utf8() else { return Ok(None) };
+                params.insert(name.clone(), decoded.into_owned().into());
             }
         }
         Ok(Some(Value::Object(params)))

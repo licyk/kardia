@@ -12,9 +12,33 @@ pub(crate) async fn contain<T>(future: impl Future<Output = Result<T>>) -> Resul
     AssertUnwindSafe(future).catch_unwind().await.unwrap_or_else(|panic| Err(Error::from_panic(panic)))
 }
 
+/// Whether every percent escape of the path is well formed and encodes UTF-8,
+/// as `decodeURI()` decides for Cordis.
+fn is_encoded(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte != b'%' {
+            continue;
+        }
+        let well_formed = bytes.get(index + 1..index + 3).is_some_and(|pair| pair.iter().all(u8::is_ascii_hexdigit));
+        if !well_formed {
+            return false;
+        }
+    }
+    // Every escape is now complete, so the only remaining failure is a sequence
+    // that does not encode UTF-8 as a whole.
+    percent_encoding::percent_decode_str(path).decode_utf8().is_ok()
+}
+
 impl Server {
     pub(crate) async fn dispatch(self: Arc<Self>, req: Request) -> Response {
         let res = Response::new();
+        // A path whose percent escapes are malformed, or whose escapes do not
+        // encode UTF-8, is rejected before any route sees it.
+        if !is_encoded(&req.path) {
+            res.set_status(StatusCode::BAD_REQUEST);
+            return res;
+        }
         let middleware = self.middleware.lock().iter().map(|(_, h)| h.clone()).collect::<Vec<_>>();
         let server = self.clone();
         let request = req.clone();
