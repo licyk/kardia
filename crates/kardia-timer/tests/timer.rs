@@ -220,6 +220,36 @@ async fn throttle_trailing_and_no_trailing() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn throttle_keeps_the_trailing_call_a_re_entering_callback_schedules() {
+    let (_, fiber) = with_context().await;
+    let timer = fiber.context().timer().unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let scheduled: Arc<parking_lot::Mutex<Option<kardia_timer::Scheduled<()>>>> = Default::default();
+    let entered = Arc::new(AtomicUsize::new(0));
+    let (inner_calls, inner_scheduled, inner_entered) = (calls.clone(), scheduled.clone(), entered.clone());
+    let throttled = timer
+        .throttle(SECOND, true, move |()| {
+            inner_calls.fetch_add(1, Ordering::SeqCst);
+            // The first call re-enters once, inside its own window, which schedules
+            // a trailing call before `trigger` returns to the outer call.
+            if inner_entered.fetch_add(1, Ordering::SeqCst) == 0
+                && let Some(scheduled) = inner_scheduled.lock().as_ref()
+            {
+                scheduled.call(());
+            }
+        })
+        .unwrap();
+    *scheduled.lock() = Some(throttled.clone());
+    throttled.call(());
+    assert_eq!(n(&calls), 1, "the outer call runs at once");
+    advance(1000).await;
+    assert_eq!(n(&calls), 2, "the trailing call the re-entry scheduled still runs");
+    advance(2000).await;
+    assert_eq!(n(&calls), 2, "no further call follows");
+    throttled.dispose().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
 async fn throttle_stops_with_its_context_or_disposal() {
     let (_, fiber) = with_context().await;
     let (calls, callback) = counter();

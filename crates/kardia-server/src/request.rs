@@ -27,9 +27,11 @@ pub struct Request {
 
 impl Request {
     pub fn new(method: Method, url: String, headers: HeaderMap, body: Body) -> Self {
-        let mut parts = url.split('?');
-        let path = parts.next().unwrap_or_default().to_owned();
-        let query = url::form_urlencoded::parse(parts.next().unwrap_or_default().as_bytes()).into_owned().collect();
+        // The path ends at the first `?`; the query is everything after it, so a
+        // `?` inside a value stays part of that value.
+        let path = url.split('?').next().unwrap_or_default().to_owned();
+        let query =
+            url::form_urlencoded::parse(url[path.len()..].trim_start_matches('?').as_bytes()).into_owned().collect();
         Self { url, method, path, query, headers, params: Value::Null, body: Arc::new(Mutex::new(Some(body))) }
     }
 

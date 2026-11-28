@@ -18,6 +18,9 @@ pub(crate) struct ResponseData {
     pub headers: HeaderMap,
     pub body: Body,
     claimed: bool,
+    /// The content type written for the last form data body, which a later one
+    /// replaces: its boundary belongs to bytes that are no longer the body.
+    form_type: Option<HeaderValue>,
 }
 impl Default for ResponseData {
     fn default() -> Self {
@@ -27,6 +30,7 @@ impl Default for ResponseData {
             headers: HeaderMap::new(),
             body: Body::default(),
             claimed: false,
+            form_type: None,
         }
     }
 }
@@ -98,7 +102,21 @@ impl Response {
         self.write_typed(blob.into());
     }
     pub fn set_form_data(&self, form: FormData) {
-        self.write_typed(form.into());
+        let body = Body::from(form);
+        let content_type = body.1.as_ref().and_then(|value| HeaderValue::from_str(value).ok());
+        let mut data = self.0.lock();
+        // A new boundary describes bytes that replace the previous body, so the
+        // content type of the previous form data body no longer applies. Any
+        // other content type was set by the caller and stays.
+        if data.form_type.is_some() && data.headers.get(http::header::CONTENT_TYPE) == data.form_type.as_ref() {
+            data.headers.remove(http::header::CONTENT_TYPE);
+        }
+        if let Some(content_type) = &content_type {
+            data.headers.insert(http::header::CONTENT_TYPE, content_type.clone());
+        }
+        data.form_type = content_type;
+        drop(data);
+        self.set_body(body);
     }
     pub async fn blob(&self) -> Result<Blob> {
         let body = self.body();

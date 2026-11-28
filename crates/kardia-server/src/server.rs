@@ -127,10 +127,13 @@ impl ServerExt for Svc<Server> {
             "0.0.0.0" | "::" => "127.0.0.1",
             host => host,
         };
+        // An IPv6 address is bracketed in the authority of a URL, or its colons
+        // would read as the separator before the port.
+        let authority = if host.contains(':') { format!("[{host}]") } else { host.to_owned() };
         match self.address.port() {
-            80 => format!("http://{host}{prefix}"),
-            443 => format!("https://{host}{prefix}"),
-            port => format!("http://{host}:{port}{prefix}"),
+            80 => format!("http://{authority}{prefix}"),
+            443 => format!("https://{authority}{prefix}"),
+            port => format!("http://{authority}:{port}{prefix}"),
         }
     }
 

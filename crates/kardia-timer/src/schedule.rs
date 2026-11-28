@@ -38,12 +38,17 @@ impl<A> Scheduled<A> {
         drop(state);
         let timer = (self.trigger)(args);
         let mut state = self.state.lock();
-        if state.disposed {
-            if let Some(timer) = timer {
-                timer.abort();
+        match timer {
+            _ if state.disposed => {
+                if let Some(timer) = timer {
+                    timer.abort();
+                }
             }
-        } else {
-            state.timer = timer;
+            // A callback that re-enters `call` may have scheduled a trailing call
+            // before `trigger` returned; an immediate call keeps no handle and must
+            // not drop it, so only a new handle replaces the slot.
+            Some(timer) => state.timer = Some(timer),
+            None => {}
         }
     }
 

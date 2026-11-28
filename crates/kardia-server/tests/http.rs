@@ -16,15 +16,18 @@ struct Fixture {
 }
 impl Fixture {
     async fn new(config: ServerConfig) -> Self {
+        Self::try_new(config).await.expect("the server starts")
+    }
+    async fn try_new(config: ServerConfig) -> kardia_core::Result<Self> {
         let root = Context::new();
-        root.plugin::<ServerPlugin>(config).unwrap().settled().await.unwrap();
-        let server = root.get::<Server>().unwrap();
+        root.plugin::<ServerPlugin>(config)?.settled().await?;
+        let server = root.get::<Server>()?;
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(3))
             .build()
             .unwrap();
-        Self { root, server, client }
+        Ok(Self { root, server, client })
     }
     async fn get(&self, path: &str) -> reqwest::Response {
         self.client.get(format!("http://{}{}", self.server.address(), path)).send().await.unwrap()
@@ -126,6 +129,18 @@ case!(should_not_leak_query_string_into_path_params, f, {
         })
         .unwrap();
     assert_eq!(f.get("/a/b?foo=bar").await.json::<Value>().await.unwrap(), json!({"path":"a/b"}));
+});
+case!(should_keep_a_question_mark_inside_the_query_string, f, {
+    f.server
+        .get("/search", |req, res, _| async move {
+            res.set_json(&json!({ "path": req.path, "query": req.query }))?;
+            Ok(None)
+        })
+        .unwrap();
+    assert_eq!(
+        f.get("/search?a=1?b=2").await.json::<Value>().await.unwrap(),
+        json!({ "path": "/search", "query": [["a", "1?b=2"]] })
+    );
 });
 case!(should_handle_regex_routes, f, {
     f.server
@@ -579,6 +594,37 @@ async fn should_prefer_config_public_url_when_set() {
     config.public_url = Some("https://example.com/".into());
     let f = Fixture::new(config).await;
     assert_eq!(f.server.public_url(), "https://example.com");
+    f.close().await;
+}
+#[tokio::test]
+async fn should_match_the_form_boundary_of_the_content_type_after_replacing_the_body() {
+    use kardia_server::{FormData, FormEntry, FormValue};
+    let f = Fixture::new(ServerConfig::local(0)).await;
+    f.server
+        .get("/form", |_, res, _| async move {
+            res.set_form_data(FormData(vec![FormEntry { name: "a".into(), value: FormValue::Text("1".into()) }]));
+            // A second body generates its own boundary, which the header must follow.
+            res.set_form_data(FormData(vec![FormEntry { name: "b".into(), value: FormValue::Text("2".into()) }]));
+            Ok(None)
+        })
+        .unwrap();
+    let res = f.get("/form").await;
+    let header = res.headers().get("content-type").unwrap().to_str().unwrap().to_owned();
+    let body = res.text().await.unwrap();
+    assert!(header.contains("boundary="), "{header}");
+    // Every part of the body is separated by the boundary the header announces.
+    assert!(body.contains(&format!("--{}\r\n", header.split("boundary=").nth(1).unwrap())), "{header}\n{body}");
+    assert!(body.contains("name=\"b\""), "{body}");
+    f.close().await;
+}
+
+#[tokio::test]
+async fn should_bracket_an_ipv6_host_in_the_public_url() {
+    // ::1 may be unavailable, e.g. in a container without IPv6.
+    let mut config = ServerConfig::local(0);
+    config.host = "::1".into();
+    let Ok(f) = Fixture::try_new(config).await else { return };
+    assert!(f.server.public_url().starts_with("http://[::1]:"), "{}", f.server.public_url());
     f.close().await;
 }
 #[tokio::test]
