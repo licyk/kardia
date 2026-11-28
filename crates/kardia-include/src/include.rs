@@ -1,14 +1,14 @@
 use std::fmt;
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
-use futures::FutureExt;
 use futures::future::{BoxFuture, Shared};
+use futures::{FutureExt, TryStreamExt};
+
 use kardia_core::{Context, Disposer, Error, Inject, PathSegment, Plugin, PluginDef, Result};
-use kardia_fs::{Fs, FsExt, WatchOptions};
+use kardia_fs::{Fs, FsExt, Provider, Url, WatchOptions};
 use kardia_loader::{EXPR_KEY, EntryChange, Loader, Location, TreeBackend, TreeHandle, expr_source, value_at};
 use parking_lot::Mutex;
 use serde::Deserialize;
@@ -48,20 +48,14 @@ impl Plugin for IncludePlugin {
     }
 
     async fn apply(ctx: Context, config: Arc<IncludeConfig>) -> Result<()> {
-        Include::run(ctx, (*config).clone(), Arc::new(|from, to| std::fs::rename(from, to))).await
+        Include::run(ctx, (*config).clone()).await
     }
 }
 
-/// How the write-back replaces the file with its temp copy.
-type Rename = Arc<dyn Fn(&Path, &Path) -> std::io::Result<()> + Send + Sync>;
-
 impl IncludePlugin {
-    /// The plugin with `rename` in place of [`std::fs::rename`] (fault injection).
-    pub fn with_rename(rename: impl Fn(&Path, &Path) -> std::io::Result<()> + Send + Sync + 'static) -> PluginDef {
-        let rename: Rename = Arc::new(rename);
-        PluginDef::typed(move |ctx, config: Arc<IncludeConfig>| Include::run(ctx, (*config).clone(), rename.clone()))
-            .name(Self::NAME)
-            .inject(Self::inject())
+    /// The plugin definition, for a host that registers it under a name.
+    pub fn def() -> PluginDef {
+        PluginDef::of::<Self>()
     }
 }
 
@@ -162,20 +156,32 @@ struct Inner {
     loader: Loader,
     tree: OnceLock<TreeHandle>,
     filename: PathBuf,
+    /// The same file as a location of `std:fs`, through which the content is
+    /// read and written, so a provider that is not the local disk works too.
+    url: Url,
+    /// The provider of the file, captured while the plugin is active. The write
+    /// that flushes pending changes runs during disposal, when a mount another
+    /// plugin owns may already be gone; this handle keeps the provider alive.
+    provider: Provider,
     kind: Kind,
     watch: bool,
     state: Mutex<State>,
     seq: AtomicU64,
-    rename: Rename,
 }
 
 const RENAME_RETRIES: u32 = 10;
 const RENAME_BACKOFF: Duration = Duration::from_millis(20);
 
 impl Include {
-    async fn run(ctx: Context, config: IncludeConfig, rename: Rename) -> Result<()> {
+    async fn run(ctx: Context, config: IncludeConfig) -> Result<()> {
         let loader = (*ctx.get::<Loader>()?).clone();
-        let url = ctx.get::<Fs>()?.resolve(&config.path)?;
+        let fs = ctx.get::<Fs>()?;
+        // The write that flushes pending changes runs while the plugin unloads,
+        // which is after a mount another plugin owns may be gone. The provider is
+        // captured now and kept by the entry, so reading and writing never depend
+        // on the mount still being listed.
+        let url = fs.resolve(&config.path)?;
+        let provider = fs.provider_of(&url)?;
         let filename = url
             .to_file_path()
             .map_err(|_| kardia_core::ValidationError::message("include.path must resolve to a local file URL"))?;
@@ -184,6 +190,7 @@ impl Include {
             Some("yaml" | "yml") => Kind::Yaml,
             ext => return Err(Error::msg(format!("extension \"{}\" not supported", ext.unwrap_or_default()))),
         };
+        let base = url.join(".")?;
         let mut patches = config.patches.clone();
         ensure_insert_ids(&mut patches, &mut |_| false);
         let include = Include(Arc::new(Inner {
@@ -191,13 +198,14 @@ impl Include {
             loader: loader.clone(),
             tree: OnceLock::new(),
             filename,
+            url,
+            provider,
             kind,
             watch: config.watch,
             state: Mutex::new(State { patches, ..Default::default() }),
             seq: AtomicU64::new(0),
-            rename,
         }));
-        let tree_ctx = ctx.intercept("std:fs", serde_json::json!({"baseUrl": url.join(".")?.as_str()}));
+        let tree_ctx = ctx.intercept("std:fs", serde_json::json!({"baseUrl": base.as_str()}));
         let tree = loader.create_tree(&tree_ctx, Arc::new(Backend(Arc::downgrade(&include.0))));
         let _ = include.0.tree.set(tree);
 
@@ -311,8 +319,16 @@ impl Include {
                 state.dirty_write = true;
             }
         }
-        self.drain();
-        self.flush().await;
+        // A drain that was already finishing may stop before it sees the write
+        // requested above, so the pending write is checked again after each pass.
+        loop {
+            self.drain();
+            self.flush().await;
+            let state = self.0.state.lock();
+            if !state.dirty_write && !state.dirty_read {
+                break;
+            }
+        }
         self.tree().root().stop();
     }
 
@@ -380,13 +396,33 @@ impl Include {
         }
     }
 
+    /// The current content of the file, read through `std:fs`.
+    async fn read_text(&self) -> Result<String> {
+        let stream = self.0.provider.read(self.0.url.clone());
+        let bytes: Vec<u8> = stream
+            .try_fold(Vec::new(), |mut all, chunk| async move {
+                all.extend_from_slice(&chunk);
+                Ok(all)
+            })
+            .await?;
+        Ok(String::from_utf8(bytes)?)
+    }
+
     async fn read(&self) -> Result<(), ConfigFileError> {
-        let content = std::fs::read_to_string(&self.0.filename).map_err(|error| ConfigFileError {
+        let content = self.read_text().await.map_err(|error| ConfigFileError {
             stage: Stage::Read,
             path: self.0.filename.clone(),
-            cause: Some(error.to_string()),
+            cause: Some(
+                if error.downcast_ref::<kardia_fs::FsError>().is_some_and(|e| e.code == kardia_fs::FsCode::NotFound) {
+                    "not found".to_owned()
+                } else {
+                    error.to_string()
+                },
+            ),
             issues: Vec::new(),
-            not_found: error.kind() == ErrorKind::NotFound,
+            not_found: error
+                .downcast_ref::<kardia_fs::FsError>()
+                .is_some_and(|e| e.code == kardia_fs::FsCode::NotFound),
         })?;
         if self.0.state.lock().cache.as_ref().is_some_and(|cache| cache.content == content) {
             return Ok(());
@@ -463,9 +499,13 @@ impl Include {
                 _ => return Ok(()),
             }
         };
-        let current = match std::fs::read_to_string(&self.0.filename) {
+        let current = match self.read_text().await {
             Ok(current) => current,
-            Err(error) if error.kind() == ErrorKind::NotFound => {
+            Err(error)
+                if error
+                    .downcast_ref::<kardia_fs::FsError>()
+                    .is_some_and(|e| e.code == kardia_fs::FsCode::NotFound) =>
+            {
                 let pending = self.0.state.lock().journal.len();
                 let file = self.0.filename.display();
                 self.0
@@ -501,7 +541,12 @@ impl Include {
             return Ok(());
         }
         let text = self.dump(&data);
-        let read_only = std::fs::metadata(&self.0.filename).map(|m| m.permissions().readonly()).unwrap_or(false);
+        // A provider that reports a mode says whether the file is writable;
+        // one that does not leaves the attempt to the write itself.
+        let read_only = match self.0.provider.stat(self.0.url.clone()).await {
+            Ok(stats) => stats.mode.is_some_and(|mode| mode & 0o200 == 0),
+            Err(_) => false,
+        };
         if read_only {
             let pending = self.restore();
             let file = self.0.filename.display();
@@ -592,23 +637,34 @@ impl Include {
     async fn write_text(&self, text: &str, expected: Option<&str>) -> Result<()> {
         let name = self.0.filename.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let seq = self.0.seq.fetch_add(1, Ordering::Relaxed);
-        let tmp = self.0.filename.with_file_name(format!(".{name}.{}.{seq}.tmp", std::process::id()));
+        // The temporary name holds only the characters a URL path segment keeps
+        // literal: the original name is percent-encoded already, and the rest is
+        // `.`, digits and `tmp`.
+        let tmp_name = format!(".{name}.{}.{seq}.tmp", std::process::id());
+        let tmp = self.0.url.join(&tmp_name)?;
+        let provider = self.0.provider.clone();
         let result = async {
-            std::fs::write(&tmp, text)?;
+            provider.write(tmp.clone(), text.as_bytes().to_vec()).await?;
             for attempt in 0.. {
                 if let Some(expected) = expected {
-                    let current = match std::fs::read_to_string(&self.0.filename) {
+                    let current = match self.read_text().await {
                         Ok(current) => Some(current),
-                        Err(error) if error.kind() == ErrorKind::NotFound => None,
+                        Err(error)
+                            if error
+                                .downcast_ref::<kardia_fs::FsError>()
+                                .is_some_and(|e| e.code == kardia_fs::FsCode::NotFound) =>
+                        {
+                            None
+                        }
                         Err(error) => return Err(error.into()),
                     };
                     if current.as_deref() != Some(expected) {
                         return Err(Error::new(StaleWrite));
                     }
                 }
-                match (self.0.rename)(&tmp, &self.0.filename) {
+                match provider.rename(tmp.clone(), self.0.url.clone()).await {
                     Ok(()) => return Ok(()),
-                    Err(error) if attempt < RENAME_RETRIES && is_transient(&error) => {}
+                    Err(error) if attempt < RENAME_RETRIES && is_transient_fs(&error) => {}
                     Err(error) => return Err(error.into()),
                 }
                 tokio::time::sleep(RENAME_BACKOFF * (attempt + 1)).await;
@@ -617,7 +673,7 @@ impl Include {
         }
         .await;
         if result.is_err() {
-            let _ = std::fs::remove_file(&tmp);
+            let _ = provider.remove(tmp.clone()).await;
         }
         result
     }
@@ -820,8 +876,12 @@ fn find_invalid(entries: &[Value], prefix: &mut Vec<PathSegment>, report: &mut d
 
 /// A rename over a file another process holds open (e.g. a virus scanner)
 /// fails briefly; a bounded retry is cheap.
-fn is_transient(error: &std::io::Error) -> bool {
-    matches!(error.kind(), ErrorKind::PermissionDenied | ErrorKind::ResourceBusy)
+/// Whether a failed rename may succeed when it is retried: another process
+/// holds the destination, or the directory is briefly busy.
+fn is_transient_fs(error: &Error) -> bool {
+    error
+        .downcast_ref::<kardia_fs::FsError>()
+        .is_some_and(|error| matches!(error.code, kardia_fs::FsCode::Busy | kardia_fs::FsCode::PermissionDenied))
 }
 
 struct Backend(Weak<Inner>);

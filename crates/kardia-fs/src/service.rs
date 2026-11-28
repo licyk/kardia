@@ -24,11 +24,92 @@ impl Service for Fs {
     const NAME: &'static str = "std:fs";
 }
 
+impl Fs {
+    /// The provider that serves `url`, as a handle that keeps it alive. A plugin
+    /// that must read or write while it unloads holds this instead of looking the
+    /// provider up again, when a mount that another plugin owns is already gone.
+    pub fn provider_of(&self, url: &Url) -> Result<crate::Provider> {
+        Ok(crate::Provider(self.provider_for(url)?))
+    }
+
+    /// The provider whose mount contains `url`: the longest prefix that does, so
+    /// a provider mounted at the empty string serves only the locations that no
+    /// other mount claims.
+    pub(crate) fn provider_for(&self, url: &Url) -> Result<Arc<Mount>> {
+        self.mounts
+            .lock()
+            .iter()
+            .filter(|mount| {
+                if let Some(scheme) = mount.prefix.strip_suffix(':') {
+                    url.scheme() == scheme
+                } else {
+                    url.as_str().starts_with(&mount.prefix) || format!("{url}/") == mount.prefix
+                }
+            })
+            .max_by_key(|mount| mount.prefix.len())
+            .cloned()
+            .ok_or_else(|| {
+                crate::FsError::new(crate::FsCode::NoProvider, Some(url.clone()), "no provider mounted for file").into()
+            })
+    }
+
+    /// The provider for a location that must support `capability`, or a
+    /// `NotSupported` that names the operation.
+    pub(crate) fn provider_capable(
+        &self,
+        url: &Url,
+        capability: impl Fn(&crate::Capabilities) -> bool,
+        operation: &str,
+    ) -> Result<Arc<Mount>> {
+        let mount = self.provider_for(url)?;
+        if capability(&mount.provider.capabilities()) {
+            return Ok(mount);
+        }
+        Err(crate::FsError::new(
+            crate::FsCode::NotSupported,
+            Some(url.clone()),
+            format!("the provider of {url} does not support {operation}"),
+        )
+        .into())
+    }
+}
+
 pub(crate) struct Mount {
     pub prefix: String,
     pub provider: Arc<dyn FsProvider>,
     pub stop: watch::Sender<bool>,
     pub readers: watch::Sender<usize>,
+}
+
+/// A provider handle that outlives the mount list, for a caller that must keep
+/// working while its owner unloads.
+#[derive(Clone)]
+pub struct Provider(pub(crate) Arc<Mount>);
+
+impl Provider {
+    pub fn capabilities(&self) -> crate::Capabilities {
+        self.0.provider.capabilities()
+    }
+
+    pub fn read(&self, url: Url) -> crate::FileStream {
+        self.0.provider.read(url)
+    }
+
+    pub async fn write(&self, url: Url, data: Vec<u8>) -> Result<()> {
+        self.0.provider.write(url, data).await
+    }
+
+    pub async fn rename(&self, from: Url, to: Url) -> Result<()> {
+        self.0.provider.rename(from, to).await
+    }
+
+    pub async fn remove(&self, url: Url) -> Result<()> {
+        self.0.provider.remove(url).await
+    }
+
+    pub async fn stat(&self, url: Url) -> Result<crate::Stats> {
+        self.0.provider.stat(url).await
+    }
 }
 
 pub struct FsPlugin;

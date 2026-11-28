@@ -4,6 +4,6 @@ mod app;
 mod fixtures;
 mod plugins;
 
-pub use app::App;
+pub use app::{App, Faults};
 pub use fixtures::{Content, fixture, read, write_fixture};
 pub use plugins::{ConfigQuery, Running, config_plugin, group, plugin, schema_plugin};

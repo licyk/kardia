@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use kardia_core::{Context, Exporter, Level, Message, PluginDef};
-use kardia_fs::FsPlugin;
+use kardia_fs::{Fs, FsExt, FsPlugin};
 use kardia_include::{Include, IncludePlugin};
 use kardia_loader::{Loader, TreeHandle, builtins};
 use parking_lot::Mutex;
@@ -37,6 +37,47 @@ pub struct App {
     messages: Messages,
 }
 
+/// A rename that a test can make fail, so the retry of a write-back is exercised
+/// against the real provider.
+#[derive(Clone, Default)]
+pub struct Faults(Arc<Mutex<FaultState>>);
+
+#[derive(Default)]
+pub struct FaultState {
+    pub calls: usize,
+    pub failures: usize,
+    pub kind: Option<std::io::ErrorKind>,
+    pub before_fail: Option<Box<dyn Fn() + Send>>,
+}
+
+impl Faults {
+    pub fn lock(&self) -> parking_lot::MutexGuard<'_, FaultState> {
+        self.0.lock()
+    }
+}
+
+impl kardia_fs::Fault for Faults {
+    fn before_rename(&self) -> Option<kardia_core::Error> {
+        let mut state = self.0.lock();
+        state.calls += 1;
+        if state.failures == 0 {
+            return None;
+        }
+        state.failures -= 1;
+        if let Some(before_fail) = &state.before_fail {
+            before_fail();
+        }
+        let kind = state.kind.unwrap_or(std::io::ErrorKind::ResourceBusy);
+        // Only a busy resource is retried; any other `kind` fails the write.
+        let code = match kind {
+            std::io::ErrorKind::ResourceBusy => kardia_fs::FsCode::Busy,
+            std::io::ErrorKind::PermissionDenied => kardia_fs::FsCode::PermissionDenied,
+            _ => kardia_fs::FsCode::Unknown,
+        };
+        Some(kardia_fs::FsError::new(code, None, std::io::Error::from(kind).to_string()).into())
+    }
+}
+
 impl App {
     /// Boots a loader with one include over a fresh fixture file.
     pub async fn setup(name: &str, data: impl Into<Content>, config: Value) -> Self {
@@ -44,15 +85,34 @@ impl App {
     }
 
     pub async fn boot(filename: PathBuf, config: Value) -> Self {
-        Self::boot_with(filename, config, PluginDef::of::<IncludePlugin>()).await
+        Self::boot_faulty(filename, config, None).await
     }
 
     /// Boots with `include` registered as the `include` plugin.
     pub async fn boot_with(filename: PathBuf, config: Value, include: PluginDef) -> Self {
+        Self::boot_custom(filename, config, include, None).await
+    }
+
+    /// Boots with `include` and, when given, a fault injected into the provider
+    /// of `file:` that every rename of the write-back goes through.
+    pub async fn boot_faulty(filename: PathBuf, config: Value, fault: Option<Faults>) -> Self {
+        Self::boot_custom(filename, config, PluginDef::of::<IncludePlugin>(), fault).await
+    }
+
+    async fn boot_custom(filename: PathBuf, config: Value, include: PluginDef, fault: Option<Faults>) -> Self {
         let root = Context::new();
         let messages = Messages::default();
         root.add_exporter(Arc::new(messages.clone())).unwrap();
         root.plugin::<FsPlugin>(Default::default()).unwrap().settled().await.unwrap();
+        match fault {
+            Some(fault) => {
+                let fs = root.get::<Fs>().unwrap();
+                fs.mount("file:", Arc::new(kardia_fs::Faulty::new(Arc::new(kardia_fs::LocalFs), fault))).unwrap();
+            }
+            None => {
+                root.plugin::<kardia_fs::LocalFsPlugin>(Default::default()).unwrap().settled().await.unwrap();
+            }
+        }
         let applied = Arc::new(Mutex::new(Vec::new()));
         let catalog = builtins();
         catalog.register_def("include", include);

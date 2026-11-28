@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use futures::{StreamExt, TryStreamExt, stream};
+use futures::{FutureExt, StreamExt, TryStreamExt, stream};
 use kardia_core::{Context, Inject, Plugin, Result};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
@@ -11,6 +11,65 @@ use crate::{FileStream, Fs, FsCode, FsError, FsExt, FsProvider};
 
 pub struct LocalFs;
 impl FsProvider for LocalFs {
+    fn capabilities(&self) -> crate::Capabilities {
+        crate::Capabilities { write: true, rename: true, remove: true, stat: true }
+    }
+
+    fn write(&self, url: Url, data: Vec<u8>) -> futures::future::BoxFuture<'static, Result<()>> {
+        async move {
+            let path = local_path(&url)?;
+            tokio::fs::write(&path, &data).await.map_err(|error| FsError::io(error, &url))?;
+            Ok(())
+        }
+        .boxed()
+    }
+
+    fn rename(&self, from: Url, to: Url) -> futures::future::BoxFuture<'static, Result<()>> {
+        async move {
+            let (from_path, to_path) = (local_path(&from)?, local_path(&to)?);
+            tokio::fs::rename(&from_path, &to_path).await.map_err(|error| FsError::io(error, &from))?;
+            Ok(())
+        }
+        .boxed()
+    }
+
+    fn remove(&self, url: Url) -> futures::future::BoxFuture<'static, Result<()>> {
+        async move {
+            let path = local_path(&url)?;
+            let metadata = tokio::fs::symlink_metadata(&path).await.map_err(|error| FsError::io(error, &url))?;
+            if metadata.is_dir() {
+                tokio::fs::remove_dir(&path).await.map_err(|error| FsError::io(error, &url))?;
+            } else {
+                tokio::fs::remove_file(&path).await.map_err(|error| FsError::io(error, &url))?;
+            }
+            Ok(())
+        }
+        .boxed()
+    }
+
+    fn stat(&self, url: Url) -> futures::future::BoxFuture<'static, Result<crate::Stats>> {
+        async move {
+            let path = local_path(&url)?;
+            let metadata = tokio::fs::metadata(&path).await.map_err(|error| FsError::io(error, &url))?;
+            let kind = if metadata.is_dir() {
+                crate::EntryType::Directory
+            } else if metadata.is_file() {
+                crate::EntryType::File
+            } else {
+                crate::EntryType::Other
+            };
+            #[cfg(unix)]
+            let mode = {
+                use std::os::unix::fs::PermissionsExt;
+                Some(metadata.permissions().mode() & 0o7777)
+            };
+            #[cfg(not(unix))]
+            let mode = None;
+            Ok(crate::Stats { kind, size: metadata.len(), mtime: metadata.modified().ok(), mode })
+        }
+        .boxed()
+    }
+
     fn read(&self, url: Url) -> FileStream {
         stream::once(async move {
             let path = local_path(&url)?;

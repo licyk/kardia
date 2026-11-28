@@ -3,6 +3,7 @@
 
 mod access;
 mod error;
+mod faulty;
 mod file;
 mod filter;
 mod local;
@@ -14,8 +15,9 @@ pub use ::url::Url;
 pub use access::FsExt;
 pub use bytes::Bytes;
 pub use error::{FsCode, FsError};
-pub use file::{FileRef, FileStream, FsProvider};
+pub use faulty::{Fault, Faulty};
+pub use file::{Capabilities, EntryType, FileRef, FileStream, FsProvider, Stats};
 pub use filter::{Filter, Predicate, admits, compile};
 pub use local::{LocalFs, LocalFsConfig, LocalFsPlugin};
-pub use service::{Fs, FsConfig, FsPlugin, WatchOptions};
+pub use service::{Fs, FsConfig, FsPlugin, Provider, WatchOptions};
 pub use watcher::{Subscription, Watcher};

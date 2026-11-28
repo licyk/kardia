@@ -4,43 +4,15 @@
 mod common;
 
 use std::io::ErrorKind;
-use std::path::Path;
-use std::sync::Arc;
 
-use common::{App, plugin, write_fixture};
+use common::{App, Faults, plugin, write_fixture};
 use kardia_core::Level;
-use kardia_include::{IncludePlugin, yaml};
-use parking_lot::Mutex;
+use kardia_include::yaml;
 use serde_json::{Value, json};
 
-/// Every scheduled failure fails with `kind`; `before_fail` runs right
-/// before it, so a test can simulate an external writer racing the include.
-struct Renames {
-    calls: usize,
-    failures: usize,
-    kind: ErrorKind,
-    before_fail: Option<Box<dyn Fn() + Send>>,
-}
-
-type Faults = Arc<Mutex<Renames>>;
-
 async fn setup(name: &str, data: Vec<Value>) -> (App, Faults) {
-    let faults: Faults =
-        Arc::new(Mutex::new(Renames { calls: 0, failures: 0, kind: ErrorKind::ResourceBusy, before_fail: None }));
-    let hook = faults.clone();
-    let include = IncludePlugin::with_rename(move |from: &Path, to: &Path| {
-        let mut renames = hook.lock();
-        renames.calls += 1;
-        if renames.failures > 0 {
-            renames.failures -= 1;
-            if let Some(before_fail) = &renames.before_fail {
-                before_fail();
-            }
-            return Err(renames.kind.into());
-        }
-        std::fs::rename(from, to)
-    });
-    let app = App::boot_with(write_fixture(name, data), json!({}), include).await;
+    let faults = Faults::default();
+    let app = App::boot_faulty(write_fixture(name, data), json!({}), Some(faults.clone())).await;
     (app, faults)
 }
 
@@ -88,7 +60,7 @@ async fn does_not_retry_other_errors_but_still_flushes_on_dispose() {
     {
         let mut renames = faults.lock();
         renames.failures = 1;
-        renames.kind = ErrorKind::StorageFull;
+        renames.kind = Some(ErrorKind::StorageFull);
     }
 
     app.update("a", json!({ "config": { "tag": "a", "value": 2 } })).await;

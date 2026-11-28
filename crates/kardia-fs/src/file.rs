@@ -11,18 +11,81 @@ use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use url::Url;
 
+use futures::future::BoxFuture;
+
 use crate::{Fs, FsCode, FsError};
 
 pub type FileStream = BoxStream<'static, Result<Bytes>>;
 
 /// Providers resolve their own dependencies at their definition site.
 pub trait FsProvider: Send + Sync + 'static {
+    /// What this provider can do beyond reading. An operation it does not
+    /// declare fails with `NotSupported` before the provider is asked.
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::default()
+    }
+
     fn read(&self, url: Url) -> FileStream {
         stream::once(async move {
             Err(FsError::new(FsCode::NotSupported, Some(url), "provider does not support reading").into())
         })
         .boxed()
     }
+
+    fn write(&self, url: Url, _data: Vec<u8>) -> BoxFuture<'static, Result<()>> {
+        let _ = url;
+        unsupported("writing")
+    }
+
+    fn rename(&self, from: Url, _to: Url) -> BoxFuture<'static, Result<()>> {
+        let _ = from;
+        unsupported("renaming")
+    }
+
+    fn remove(&self, url: Url) -> BoxFuture<'static, Result<()>> {
+        let _ = url;
+        unsupported("removing")
+    }
+
+    fn stat(&self, url: Url) -> BoxFuture<'static, Result<Stats>> {
+        let _ = url;
+        async move { Err(FsError::new(FsCode::NotSupported, None, "provider does not support stat").into()) }.boxed()
+    }
+}
+
+fn unsupported(operation: &'static str) -> BoxFuture<'static, Result<()>> {
+    async move { Err(FsError::new(FsCode::NotSupported, None, format!("provider does not support {operation}")).into()) }
+        .boxed()
+}
+
+/// The operations a provider implements beyond `read`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Capabilities {
+    pub write: bool,
+    pub rename: bool,
+    pub remove: bool,
+    pub stat: bool,
+}
+
+/// The type of an entry. A symbolic link is resolved by `stat`, so only the
+/// three names a caller acts on are reported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryType {
+    File,
+    Directory,
+    Symlink,
+    Other,
+}
+
+/// The metadata of an entry.
+#[derive(Clone, Copy, Debug)]
+pub struct Stats {
+    pub kind: EntryType,
+    /// The length of the content in bytes for a file.
+    pub size: u64,
+    pub mtime: Option<std::time::SystemTime>,
+    /// The permission bits, as in the lower 12 bits of a POSIX mode.
+    pub mode: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -32,21 +95,7 @@ pub struct FileRef {
 }
 impl FileRef {
     pub fn stream(&self) -> Result<FileStream> {
-        let mount = self
-            .fs
-            .mounts
-            .lock()
-            .iter()
-            .filter(|mount| {
-                if let Some(scheme) = mount.prefix.strip_suffix(':') {
-                    self.url.scheme() == scheme
-                } else {
-                    self.url.as_str().starts_with(&mount.prefix) || format!("{}/", self.url) == mount.prefix
-                }
-            })
-            .max_by_key(|mount| mount.prefix.len())
-            .cloned()
-            .ok_or_else(|| FsError::new(FsCode::NoProvider, Some(self.url.clone()), "no provider mounted for file"))?;
+        let mount = self.fs.provider_for(&self.url)?;
         let source =
             catch_unwind(AssertUnwindSafe(|| mount.provider.read(self.url.clone()))).map_err(Error::from_panic)?;
         let mut source = AssertUnwindSafe(source).catch_unwind();

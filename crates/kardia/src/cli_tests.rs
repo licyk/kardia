@@ -18,6 +18,8 @@ async fn nested_includes_scope_guest_resolution_and_hmr_to_their_own_directory()
     let root = Context::new();
     root.set_log_buffer_size(100);
     root.plugin::<FsPlugin>(Default::default()).unwrap().settled().await.unwrap();
+    // The include reads and writes through the provider of `file:`.
+    root.plugin::<kardia_fs::LocalFsPlugin>(Default::default()).unwrap().settled().await.unwrap();
     let catalog = kardia::catalog();
     let graph = ModuleGraph::new(GuestFiles { wasm: WasmSource::new() });
     catalog.register_def("hmr", Hmr::plugin(graph.clone()));
