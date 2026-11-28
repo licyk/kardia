@@ -37,10 +37,10 @@ impl Files {
         let status = if let Some(url) = url {
             if url.path().ends_with('/') {
                 for index in &self.config.index {
-                    if let Some(location) = self.locate(index, &url)? {
-                        if let Outcome::Response(response) = self.try_file(location).await? {
-                            return Ok(Some(response));
-                        }
+                    if let Some(location) = self.locate(index, &url)?
+                        && let Outcome::Response(response) = self.try_file(location).await?
+                    {
+                        return Ok(Some(response));
                     }
                 }
                 StatusCode::NOT_FOUND

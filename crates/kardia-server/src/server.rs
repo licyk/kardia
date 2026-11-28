@@ -141,10 +141,10 @@ impl ServerExt for Svc<Server> {
         let path = path.into();
         let meta = self.meta();
         let mut options = options.as_object().cloned().unwrap_or_default();
-        if let Path::String(path) = &path {
-            if let Some(overrides) = meta["routes"][format!("{} {path}", method.to_uppercase())].as_object() {
-                options.extend(overrides.clone());
-            }
+        if let Path::String(path) = &path
+            && let Some(overrides) = meta["routes"][format!("{} {path}", method.to_uppercase())].as_object()
+        {
+            options.extend(overrides.clone());
         }
         let info = Arc::new(RouteInfo {
             method: method.to_lowercase(),

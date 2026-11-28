@@ -79,8 +79,14 @@ function stmt(n) {
       return `if ${expr(n.expression)} && latin(&b[2..6]).trim().parse::<f64>().is_ok_and(|v|(1000.0..=1050.0).contains(&v)) {return Ok(Some("image/vnd.dwg"));}`;
     }
     const special = Object.entries(complex).find(([text]) => original.includes(text));
+    const body = special ? special[1] : stmt(n.thenStatement);
+    // A body that is itself `if let ...` would nest two conditions; chain them
+    // instead, which is what clippy asks for.
+    const nested = /^if let (.*?) \{(.*?)\}$/s.exec(body);
+    if (nested && !n.elseStatement)
+      return `if ${expr(n.expression)} && let ${nested[1]} {${nested[2]}}`;
     return `if ${expr(n.expression)} {
-${special ? special[1] : stmt(n.thenStatement)}
+${body}
 }${n.elseStatement ? ` else {${stmt(n.elseStatement)}}` : ""}`;
   }
   if (ts.isReturnStatement(n)) {

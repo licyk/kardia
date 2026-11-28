@@ -85,10 +85,10 @@ pub(super) async fn ogg(p: &mut Probe) -> Result<Option<&'static str>> {
 }
 pub(super) async fn pdf(p: &mut Probe) -> Result<Option<&'static str>> {
     let skipped = p.skip(1350).await;
-    if let Err(error) = &skipped {
-        if !error.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::UnexpectedEof) {
-            return Err(error.clone());
-        }
+    if let Err(error) = &skipped
+        && !error.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::UnexpectedEof)
+    {
+        return Err(error.clone());
     }
     if skipped.is_ok() {
         let mut b = vec![0; 10 * 1024 * 1024];

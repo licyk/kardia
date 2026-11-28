@@ -33,7 +33,7 @@ cargo xtask arch                # lib.rs and mod.rs only declare and re-export m
 
 - The WASM guest test builds its fixture as a WebAssembly module, so install the target first: `rustup target add wasm32-unknown-unknown`.
 - Some tests build fixture crates with cargo while they run, so the first run takes a little longer.
-- The minimum supported Rust version of the crates is 1.85 (`rust-version` in the workspace `Cargo.toml`); CI uses a pinned, newer toolchain (below).
+- The minimum supported Rust version of the crates is 1.91 (`rust-version` in the workspace `Cargo.toml`); CI uses a pinned, newer toolchain (below).
 - How the tests are organised, and which runtime each suite uses, is on [Testing](/docs/development-testing).
 
 ### The npm packages [#js]

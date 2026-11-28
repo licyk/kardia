@@ -109,12 +109,13 @@ async fn cli_runs_the_documented_server_configuration() {
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             assert!(process.0.try_wait().unwrap().is_none(), "CLI exited during startup");
-            if let Ok(response) = client.get(format!("{url}/static/")).send().await {
-                if response.status() == 200 && response.text().await.unwrap().contains("Kardia Server") {
-                    let proxy = client.post(format!("{url}/proxy/echo")).body("ready").send().await.unwrap();
-                    if proxy.status() == 200 && proxy.text().await.unwrap() == "ready" {
-                        break;
-                    }
+            if let Ok(response) = client.get(format!("{url}/static/")).send().await
+                && response.status() == 200
+                && response.text().await.unwrap().contains("Kardia Server")
+            {
+                let proxy = client.post(format!("{url}/proxy/echo")).body("ready").send().await.unwrap();
+                if proxy.status() == 200 && proxy.text().await.unwrap() == "ready" {
+                    break;
                 }
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;

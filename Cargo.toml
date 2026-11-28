@@ -6,7 +6,7 @@ members = ["crates/*", "xtask"]
 edition = "2024"
 license = "GPL-3.0-only"
 repository = "https://github.com/licyk/kardia"
-rust-version = "1.85"
+rust-version = "1.91"
 
 [workspace.dependencies]
 kardia-core = { path = "crates/kardia-core", version = "0.6.0" }

@@ -21,37 +21,24 @@ pub struct Release {
     pub version: Version,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, clap::Args)]
 pub struct Options {
+    /// The version the tag names; it must be the release's current version.
+    #[arg(long, value_name = "X.Y.Z", conflicts_with = "name")]
     pub version: Option<String>,
+    /// Any other tag name.
+    #[arg(long, value_name = "NAME")]
     pub name: Option<String>,
+    #[arg(long, short, value_name = "TEXT")]
     pub message: Option<String>,
+    /// Push the tag to the remote.
+    #[arg(long)]
     pub push: bool,
+    #[arg(long, value_name = "NAME")]
     pub remote: Option<String>,
+    /// Print what would be tagged without creating it.
+    #[arg(long)]
     pub dry_run: bool,
-}
-
-impl Options {
-    pub fn parse(args: &[String]) -> Result<Self, String> {
-        let mut options = Self::default();
-        let mut args = args.iter();
-        while let Some(arg) = args.next() {
-            let mut value = |flag: &str| args.next().cloned().ok_or(format!("{flag} needs a value"));
-            match arg.as_str() {
-                "--version" => options.version = Some(value("--version")?),
-                "--name" => options.name = Some(value("--name")?),
-                "--message" | "-m" => options.message = Some(value("--message")?),
-                "--remote" => options.remote = Some(value("--remote")?),
-                "--push" => options.push = true,
-                "--dry-run" => options.dry_run = true,
-                other => return Err(format!("unexpected argument `{other}`")),
-            }
-        }
-        if options.version.is_some() && options.name.is_some() {
-            return Err("give either --version or --name, not both".into());
-        }
-        Ok(options)
-    }
 }
 
 pub fn run(root: &Path, options: &Options, release: &Release) -> Result<(), String> {
@@ -120,7 +107,15 @@ mod tests {
     const PACKAGE: &str = "{\n  \"name\": \"@kardiajs/core\",\n  \"version\": \"0.3.1\"\n}\n";
 
     fn options(args: &[&str]) -> Options {
-        Options::parse(&args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>()).unwrap()
+        use clap::Parser;
+        let mut argv = vec!["cargo xtask".to_string(), "js-tag".to_string()];
+        argv.extend(args.iter().map(|arg| (*arg).to_string()));
+        match crate::cli::Cli::parse_from(argv).task {
+            crate::cli::Task::JsTag { version, name, message, push, remote, dry_run } => {
+                Options { version, name, message, push, remote, dry_run }
+            }
+            other => panic!("not a js-tag command: {other:?}"),
+        }
     }
 
     fn release(version: &str) -> Release {
@@ -160,7 +155,9 @@ mod tests {
         let (tag, message) = tag_for(&release("0.1.2"), &options(&["--name", "docs-1", "-m", "Docs"])).unwrap();
         assert_eq!((tag.as_str(), message.as_str()), ("docs-1", "Docs"));
         assert!(tag_for(&release("0.1.2"), &options(&["--name", "two words"])).is_err());
-        assert!(Options::parse(&["--version".into(), "1.0.0".into(), "--name".into(), "x".into()]).is_err());
+        use clap::Parser;
+        let refused = crate::cli::Cli::try_parse_from(["cargo xtask", "js-tag", "--version", "1.0.0", "--name", "x"]);
+        assert!(refused.is_err(), "--version and --name are mutually exclusive");
     }
 
     #[test]

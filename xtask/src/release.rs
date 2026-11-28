@@ -19,45 +19,26 @@ use crate::git::git;
 use crate::graph::{Node, graph};
 use crate::version::{Level, Version};
 
-#[derive(Debug)]
+#[derive(Debug, clap::Args)]
 pub struct Options {
+    /// How far each released version moves.
+    #[arg(value_enum, default_value = "patch")]
     pub level: Level,
     /// The packages whose changes to release, instead of asking git.
+    #[arg(long, value_name = "CRATE")]
     pub only: Vec<String>,
     /// Whether to leave dependents on their current version.
+    #[arg(long)]
     pub no_dependents: bool,
     /// The commit or tag to compare against.
+    #[arg(long, value_name = "REV")]
     pub since: Option<String>,
+    /// Write the versions, update Cargo.lock and tag the batch.
+    #[arg(long)]
     pub apply: bool,
+    /// The batch tag's name.
+    #[arg(long, value_name = "NAME")]
     pub tag: Option<String>,
-}
-
-impl Options {
-    pub fn parse(args: &[String]) -> Result<Self, String> {
-        let mut options =
-            Self { level: Level::Patch, only: Vec::new(), no_dependents: false, since: None, apply: false, tag: None };
-        let mut args = args.iter();
-        while let Some(arg) = args.next() {
-            let mut value = |flag: &str| args.next().cloned().ok_or_else(|| format!("{flag} needs a value"));
-            match arg.as_str() {
-                "patch" => options.level = Level::Patch,
-                "minor" => options.level = Level::Minor,
-                "major" => options.level = Level::Major,
-                "--only" => options.only.push(value("--only")?),
-                "--no-dependents" => options.no_dependents = true,
-                "--since" => options.since = Some(value("--since")?),
-                "--tag" => options.tag = Some(value("--tag")?),
-                "--apply" => options.apply = true,
-                other => {
-                    return Err(format!(
-                        "unexpected argument `{other}`: release [patch|minor|major] \
-                         [--only CRATE]... [--no-dependents] [--since REV] [--tag NAME] [--apply]"
-                    ));
-                }
-            }
-        }
-        Ok(options)
-    }
 }
 
 /// One package getting a new version.
@@ -391,7 +372,15 @@ mod tests {
     }
 
     fn options(args: &[&str]) -> Options {
-        Options::parse(&args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>()).unwrap()
+        use clap::Parser;
+        let mut argv = vec!["cargo xtask".to_string(), "release".to_string()];
+        argv.extend(args.iter().map(|arg| (*arg).to_string()));
+        match crate::cli::Cli::parse_from(argv).task {
+            crate::cli::Task::Release { level, only, no_dependents, since, tag, apply } => {
+                Options { level, only, no_dependents, since, tag, apply }
+            }
+            other => panic!("not a release command: {other:?}"),
+        }
     }
 
     /// Three packages, sorted as Cargo names them: `app` -> `core`

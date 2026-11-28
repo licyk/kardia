@@ -134,15 +134,15 @@ pub(super) async fn confident(p: &mut Probe) -> Result<Option<&'static str>> {
     if check(&b, &[0, 97, 115, 109], 0, &[]) {
         return Ok(Some("application/wasm"));
     }
-    if check(&b, &[73, 73], 0, &[]) {
-        if let Some(mime) = tiff(p, &b, false).await? {
-            return Ok(Some(mime));
-        }
+    if check(&b, &[73, 73], 0, &[])
+        && let Some(mime) = tiff(p, &b, false).await?
+    {
+        return Ok(Some(mime));
     }
-    if check(&b, &[77, 77], 0, &[]) {
-        if let Some(mime) = tiff(p, &b, true).await? {
-            return Ok(Some(mime));
-        }
+    if check(&b, &[77, 77], 0, &[])
+        && let Some(mime) = tiff(p, &b, true).await?
+    {
+        return Ok(Some(mime));
     }
     if check(&b, &[77, 65, 67, 32], 0, &[]) {
         return Ok(Some("audio/ape"));

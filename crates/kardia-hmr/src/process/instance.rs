@@ -420,11 +420,11 @@ fn reader(incoming: Receiver<Incoming>, shared: &Shared, host: &GuestHost, excha
             }
             Ok(Incoming::Cancel(id)) => {
                 // the caller gave up: the guest is told, and ends the export when it sees it
-                if let Some(pending) = exchanges.pending.lock().get_mut(&id) {
-                    if !pending.cancelled {
-                        pending.cancelled = true;
-                        shared.send(&json!({ "cancel": id }));
-                    }
+                if let Some(pending) = exchanges.pending.lock().get_mut(&id)
+                    && !pending.cancelled
+                {
+                    pending.cancelled = true;
+                    shared.send(&json!({ "cancel": id }));
                 }
             }
             Ok(Incoming::Closed(None)) | Err(_) => break,

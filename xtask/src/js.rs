@@ -11,30 +11,14 @@ use crate::version::{Change, Level, Version, read};
 /// The packages, in dependency order.
 pub const PACKAGES: [&str; 5] = ["core", "timer", "bridge", "tauri", "vue"];
 
-#[derive(Debug)]
+#[derive(Debug, clap::Args)]
 pub struct Options {
+    /// How far the version moves.
+    #[arg(value_enum)]
     pub level: Level,
+    /// Print the files that would change without writing them.
+    #[arg(long)]
     pub dry_run: bool,
-}
-
-impl Options {
-    pub fn parse(args: &[String]) -> Result<Self, String> {
-        let mut level = None;
-        let mut dry_run = false;
-        for arg in args {
-            match arg.as_str() {
-                "patch" => level = Some(Level::Patch),
-                "minor" => level = Some(Level::Minor),
-                "major" => level = Some(Level::Major),
-                "--dry-run" => dry_run = true,
-                other => {
-                    return Err(format!("unexpected argument `{other}`: js-version <patch|minor|major> [--dry-run]"));
-                }
-            }
-        }
-        let level = level.ok_or("which increment: js-version <patch|minor|major>")?;
-        Ok(Self { level, dry_run })
-    }
 }
 
 pub fn run(root: &Path, options: &Options) -> Result<(), String> {

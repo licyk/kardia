@@ -1,6 +1,8 @@
 //! Repository tasks: `cargo xtask <command>`.
 
 mod arch;
+mod cli;
+mod deps;
 mod git;
 mod graph;
 mod js;
@@ -12,25 +14,12 @@ mod version;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const USAGE: &str = "\
-Usage: cargo xtask <command>
+use clap::Parser;
 
-Commands:
-  arch                                 Check that lib.rs and mod.rs files only declare and re-export modules
-  publish-check                        Check workspace publishing dependencies for cycles (offline)
-  cycle-check                          Check every workspace dependency for cycles, dev-dependencies too
-  js-version <patch|minor|major>       Bump the version of the npm packages under js/
-             [--dry-run]
-  js-tag [--version X.Y.Z | --name NAME]
-         [--message TEXT] [--push] [--remote NAME] [--dry-run]
-                                       Create an annotated tag on HEAD for @kardiajs
-                                       (default: js-v<npm packages version>)
-  release [patch|minor|major]          Plan a crates release for the packages that changed
-          [--only CRATE]... [--no-dependents] [--since REV] [--tag NAME] [--apply]";
+use cli::{Cli, Task};
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match run(&root(), &args) {
+    match run(&root(), Cli::parse().task) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error}");
@@ -39,22 +28,21 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(root: &Path, args: &[String]) -> Result<(), String> {
-    let (command, rest) = args.split_first().ok_or_else(|| USAGE.to_string())?;
-    match command.as_str() {
-        "arch" => arch::run(root),
-        "publish-check" if rest.is_empty() => publish_check::run(root, publish_check::Scope::Published),
-        "publish-check" => Err("usage: cargo xtask publish-check".into()),
-        "cycle-check" if rest.is_empty() => publish_check::run(root, publish_check::Scope::Workspace),
-        "cycle-check" => Err("usage: cargo xtask cycle-check".into()),
-        "js-version" => js::run(root, &js::Options::parse(rest)?),
-        "js-tag" => tag::run(root, &tag::Options::parse(rest)?, &js::release(root)?),
-        "release" => release::run(root, &release::Options::parse(rest)?),
-        "help" | "--help" | "-h" => {
-            println!("{USAGE}");
-            Ok(())
+fn run(root: &Path, task: Task) -> Result<(), String> {
+    match task {
+        Task::Arch => arch::run(root),
+        Task::PublishCheck => publish_check::run(root, publish_check::Scope::Published),
+        Task::CycleCheck => publish_check::run(root, publish_check::Scope::Workspace),
+        Task::Update { dry_run } => deps::update(root, &deps::Options { dry_run }),
+        Task::Lock { dry_run } => deps::lock(root, &deps::Options { dry_run }),
+        Task::JsVersion { level, dry_run } => js::run(root, &js::Options { level, dry_run }),
+        Task::JsTag { version, name, message, push, remote, dry_run } => {
+            let options = tag::Options { version, name, message, push, remote, dry_run };
+            tag::run(root, &options, &js::release(root)?)
         }
-        other => Err(format!("unknown command `{other}`\n\n{USAGE}")),
+        Task::Release { level, only, no_dependents, since, tag, apply } => {
+            release::run(root, &release::Options { level, only, no_dependents, since, apply, tag })
+        }
     }
 }
 

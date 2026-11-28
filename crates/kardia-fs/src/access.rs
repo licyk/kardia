@@ -181,12 +181,11 @@ fn normalize_prefix(prefix: &str) -> Result<String> {
     if prefix.is_empty() {
         return Ok(String::new());
     }
-    if let Some(scheme) = prefix.strip_suffix(':') {
-        if scheme.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
-            && scheme.bytes().all(|b| b.is_ascii_alphanumeric() || b"+.-".contains(&b))
-        {
-            return Ok(prefix.to_ascii_lowercase());
-        }
+    if let Some(scheme) = prefix.strip_suffix(':')
+        && scheme.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+        && scheme.bytes().all(|b| b.is_ascii_alphanumeric() || b"+.-".contains(&b))
+    {
+        return Ok(prefix.to_ascii_lowercase());
     }
     let url = Url::parse(prefix)?;
     let mut prefix = url.to_string();
