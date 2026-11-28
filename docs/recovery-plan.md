@@ -191,8 +191,8 @@ supervisor 在 sleep 前写入、醒来后清空；`retry_now` 通过一个 `Not
    - 宿主自定模式按宿主决策执行且处理器错误被隔离；
    - 处置取消待执行重试；
    - 失败与恢复过程中无关插件继续工作。
-3. 版本：`kardia-core` 及依赖它的包升 0.5.0（`Failure` 与 `RecoveryPolicy`
-   的破坏性变更），用 `cargo xtask release minor` 发布。
+3. 版本：`kardia-core` 及依赖它的包按 minor 发布（`Failure` 与
+   `RecoveryPolicy` 的破坏性变更），用 `cargo xtask release minor` 完成。
 
 ## 五、风险与取舍
 
@@ -204,3 +204,38 @@ supervisor 在 sleep 前写入、醒来后清空；`retry_now` 通过一个 `Not
 - **窗口语义**：`window: None` 保持现有行为，避免让现有用户意外改变语义。
 - **不请求的部分**（保持不做）：根 fiber 不自动重试、`ValidationError` 不重试、
   不引入配置格式。
+
+## 六、实施结果
+
+R1–R4 已全部落地，随 0.6.0 发布到 crates.io（19 个 crate）：
+
+| 需求 | 交付 |
+|---|---|
+| R1 | `FiberInner::phase`，由 `finish_reload` 写 `Phase::Start`、`fail()` 写 `Phase::Running`；`Failure { phase, attempts, .. }` |
+| R2 | `RecoveryPolicy::retry_delays(delays, window)`；loader 配置 `{"mode":"delays","delayMs":[...],"windowMs":...}` |
+| R3 | `Fiber::recovery_state()`、`Fiber::retry_now()`、`RecoveryScheduled` 事件 |
+| R4 | 释、切手动、策略耗尽均取消待执行重启，core 与 loader 两层都有测试 |
+
+测试：`crates/kardia-core/tests/recovery.rs` 14 个用例，其中
+`a_hosts_three_policies_hold_while_unrelated_plugins_keep_working` 覆盖下游提出的
+五种策略验收（自动重试、手动保持失败、宿主决策与处理器错误隔离、重复失败恢复、
+处置取消），并在每步断言无关插件仍正常。`crates/kardia-loader/tests/recovery.rs`
+另有配置驱动的延迟表与取消用例。
+
+### 发布事故：版本号双重递增
+
+本次发布把版本从 0.4.0 直接升到了 **0.6.0**，而计划是 0.5.0。原因：`release --apply`
+在写入版本号后因 `release-2026-11-28` 标签已存在而失败；改用 `--tag` 重跑时，
+工具在**已被改到 0.5.0 的工作区**上又执行了一次 minor 递增，于是写入 0.6.0 并成功打标。
+
+后果：0.6.0 已发布且自洽（19 个 crate 均 0.6.0，标签指向同一提交），0.5.0 从未存在，
+因此**没有留下空的版本号**，无需修复。提交信息与标签说明已更正为 0.6.0。
+
+需要修的是工具行为：`release --apply` 失败时不应留下已写入的版本号，重跑也不应
+在已升级的状态上再升一次。见下文“后续动作”。
+
+### 后续动作（未在本轮实施）
+
+- `cargo xtask release --apply` 应在打标签之前完成所有可能失败的检查（标签是否已存在），
+  或在失败时不写盘，使 `--apply` 成为全有或全无的操作；
+- 同一天的第二批发布需要自动区分的标签名（当前 `release-<date>` 会冲突）。
