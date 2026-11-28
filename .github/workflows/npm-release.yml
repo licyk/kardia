@@ -1,7 +1,7 @@
 # Publishes the npm packages under js/ (@kardiajs/core, timer, bridge, tauri, vue), which are versioned together and apart
 # from the crates. A js-v<version> tag (cargo xtask js-tag --push) releases the version it names; a manual run releases
 # the chosen ref's version, resuming a release that stopped part-way (a version already on npm is skipped). The crates
-# have their own workflow, release.yml, whose v* tags js-v* tags do not match.
+# have their own workflow, release.yml, whose release-* tags js-v* tags do not match.
 #
 # Publishing uses npm trusted publishing (OIDC): GitHub stores no npm token. On npmjs.com, each package's trusted
 # publisher names this repository, this workflow file (npm-release.yml) and the `npm` environment; npm then accepts

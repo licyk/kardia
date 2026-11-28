@@ -363,9 +363,8 @@ bun run build
 
 - **`arch`：** 检查模块结构。
 - **`publish-check`：** 离线检查本地 workspace crate 的发布依赖环，报告循环路径及对应 manifest 声明；发布前可手动运行。
-- **`version <patch|minor|major>`：** 更新工作区版本号及其所有引用。
-- **`tag [--push]`：** 创建（并推送）发布标签 `v<version>`。
-- **`js-version <patch|minor|major>`** 与 **`js-tag [--push]`：** 对 npm 包执行同样的操作；npm 包有自己的版本和 `js-v<version>` 标签。
+- **`release [patch|minor|major]`：** 规划一次发布：自上一个 `release-*` 标签以来有改动的 crate，加上所有发布依赖了它们的 crate，并列出各自将更新到哪个版本。`--apply` 会写入版本号、更新 `Cargo.lock` 并给这一批打上标签。
+- **`js-version <patch|minor|major>`** 与 **`js-tag [--push]`：** 更新 npm 包的版本号（npm 包统一版本，与 crate 分开），并创建 `js-v<version>` 发布标签。
 
 **CI** 按变更涉及的内容划分：
 
@@ -376,13 +375,16 @@ bun run build
 **发布流程：**
 
 ```sh
-cargo xtask version patch
-git commit -am "chore(release): kardia 0.1.1"
+cargo xtask release patch        # 预演：哪些包会升级、升到哪个版本
+cargo xtask release patch --apply
+git commit -am "chore(release): kardia batch"
 git push
-cargo xtask tag --push
+git push --follow-tags
 ```
 
-标签会触发 `release.yml`。它复用该标签所指提交的 CI 结果，发布新版本尚未出现在 crates.io 上的各个 crate，并创建 GitHub Release。也可以手动触发，以继续中途停止的发布。详情见[贡献指南](https://kardia-dev.netlify.app/docs/development-contributing)。
+每个 crate 有独立版本号，一次发布只升级需要的那些：源码或 manifest 有改动的，以及发布依赖了它们的——依赖它们的包若保留旧版本，用户就会一直停留在旧的版本要求上。测试、bench、示例和文档不会触发发布。同一次发布的所有包共用一个 `release-<date>` 标签。
+
+标签会触发 `release.yml`。它复用该标签所指提交的 CI 结果，发布该提交上尚未出现在 crates.io 的各个 crate 版本，并创建 GitHub Release。也可以手动触发，以继续中途停止的发布。详情见[贡献指南](https://kardia-dev.netlify.app/docs/development-contributing)。
 
 npm 包以同样的方式发布，使用 `cargo xtask js-version` 和 `cargo xtask js-tag --push`：`js-v*` 标签会触发 `npm-release.yml`，它使用 npm 可信发布（GitHub 中不保存令牌）。[贡献指南](https://kardia-dev.netlify.app/docs/development-contributing#npm-releases)列出了 GitHub 和 npmjs.com 上的一次性设置。
 

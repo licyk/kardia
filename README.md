@@ -370,9 +370,8 @@ bun run build
 **Repository tasks** run as `cargo xtask <command>`:
 - **`arch`:** checks the module structure.
 - **`publish-check`:** checks publishing dependency cycles between local workspace crates, offline; reports the cycle and manifest declarations. Run it locally before releasing.
-- **`version <patch|minor|major>`:** bumps the workspace version everywhere it appears.
-- **`tag [--push]`:** creates (and pushes) the release tag `v<version>`.
-- **`js-version <patch|minor|major>`** and **`js-tag [--push]`:** the same for the npm packages, which have a version of their own and `js-v<version>` tags.
+- **`release [patch|minor|major]`:** plans a release of the crates that changed since the last `release-*` tag, plus every published crate that depends on one of them, and reports the versions they move to. `--apply` writes them, updates `Cargo.lock` and tags the batch.
+- **`js-version <patch|minor|major>`** and **`js-tag [--push]`:** bump the version of the npm packages, which are versioned together and apart from the crates, and tag the release `js-v<version>`.
 
 **CI** is split by what a change touches:
 - **`ci.yml`:** the Rust checks, on a pinned Rust 1.99.1, since the compile-error snapshots of `kardia-macros` depend on the compiler version. It skips changes only to the docs site, `js/` or Markdown.
@@ -382,13 +381,16 @@ bun run build
 **To release:**
 
 ```sh
-cargo xtask version patch
-git commit -am "chore(release): kardia 0.1.1"
+cargo xtask release patch        # a dry run: what would move, and to which version
+cargo xtask release patch --apply
+git commit -am "chore(release): kardia batch"
 git push
-cargo xtask tag --push
+git push --follow-tags
 ```
 
-The tag starts `release.yml`. It reuses CI's run of the tagged commit rather than testing it again, publishes every crate whose new version is not on crates.io yet, and creates a GitHub release. It can also be started by hand to resume a release that stopped part-way. [Contributing](https://kardia-dev.netlify.app/docs/development-contributing) has the details.
+Each crate carries its own version, and a release bumps only the ones that need a new one: those whose sources or manifest changed, and those whose published dependencies did, since a dependent that kept its old version would keep users on the old requirement. Tests, benches, examples and prose never trigger a release. Everything released in one run gets the same `release-<date>` tag.
+
+The tag starts `release.yml`. It reuses CI's run of the tagged commit rather than testing it again, publishes every crate version on it that crates.io does not have yet, and creates a GitHub release. It can also be started by hand to resume a release that stopped part-way. [Contributing](https://kardia-dev.netlify.app/docs/development-contributing) has the details.
 
 The npm packages are released the same way with `cargo xtask js-version` and `cargo xtask js-tag --push`: the `js-v*` tag starts `npm-release.yml`, which publishes with npm trusted publishing (no token in GitHub). [Contributing](https://kardia-dev.netlify.app/docs/development-contributing#npm-releases) lists the one-time GitHub and npmjs.com setup.
 

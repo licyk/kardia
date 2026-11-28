@@ -2,8 +2,10 @@
 
 mod arch;
 mod git;
+mod graph;
 mod js;
 mod publish_check;
+mod release;
 mod tag;
 mod version;
 
@@ -16,13 +18,14 @@ Usage: cargo xtask <command>
 Commands:
   arch                                 Check that lib.rs and mod.rs files only declare and re-export modules
   publish-check                        Check workspace publishing dependencies for cycles (offline)
-  version <patch|minor|major>          Bump the workspace version everywhere it is named
-          [--dry-run]
-  tag [--version X.Y.Z | --name NAME]  Create an annotated tag on HEAD (default: v<workspace version>)
-      [--message TEXT] [--push] [--remote NAME] [--dry-run]
   js-version <patch|minor|major>       Bump the version of the npm packages under js/
              [--dry-run]
-  js-tag [same options as tag]         Tag the npm release (default: js-v<npm packages version>)";
+  js-tag [--version X.Y.Z | --name NAME]
+         [--message TEXT] [--push] [--remote NAME] [--dry-run]
+                                       Create an annotated tag on HEAD for @kardiajs
+                                       (default: js-v<npm packages version>)
+  release [patch|minor|major]          Plan a crates release for the packages that changed
+          [--only CRATE]... [--no-dependents] [--since REV] [--tag NAME] [--apply]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -41,10 +44,9 @@ fn run(root: &Path, args: &[String]) -> Result<(), String> {
         "arch" => arch::run(root),
         "publish-check" if rest.is_empty() => publish_check::run(root),
         "publish-check" => Err("usage: cargo xtask publish-check".into()),
-        "version" => version::run(root, &version::Options::parse(rest)?),
-        "tag" => tag::run(root, &tag::Options::parse(rest)?, &tag::Release::crates(root)?),
-        "js-version" => js::run(root, &version::Options::parse(rest)?),
+        "js-version" => js::run(root, &js::Options::parse(rest)?),
         "js-tag" => tag::run(root, &tag::Options::parse(rest)?, &js::release(root)?),
+        "release" => release::run(root, &release::Options::parse(rest)?),
         "help" | "--help" | "-h" => {
             println!("{USAGE}");
             Ok(())

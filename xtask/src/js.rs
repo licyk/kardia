@@ -6,10 +6,36 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::tag::Release;
-use crate::version::{Change, Level, Options, Version};
+use crate::version::{Change, Level, Version, read};
 
 /// The packages, in dependency order.
 pub const PACKAGES: [&str; 5] = ["core", "timer", "bridge", "tauri", "vue"];
+
+#[derive(Debug)]
+pub struct Options {
+    pub level: Level,
+    pub dry_run: bool,
+}
+
+impl Options {
+    pub fn parse(args: &[String]) -> Result<Self, String> {
+        let mut level = None;
+        let mut dry_run = false;
+        for arg in args {
+            match arg.as_str() {
+                "patch" => level = Some(Level::Patch),
+                "minor" => level = Some(Level::Minor),
+                "major" => level = Some(Level::Major),
+                "--dry-run" => dry_run = true,
+                other => {
+                    return Err(format!("unexpected argument `{other}`: js-version <patch|minor|major> [--dry-run]"));
+                }
+            }
+        }
+        let level = level.ok_or("which increment: js-version <patch|minor|major>")?;
+        Ok(Self { level, dry_run })
+    }
+}
 
 pub fn run(root: &Path, options: &Options) -> Result<(), String> {
     let (old, new, changes) = plan(root, options.level)?;
@@ -100,10 +126,6 @@ fn update_lockfile(root: &Path) -> Result<(), String> {
         .status()
         .map_err(|error| format!("cannot run bun: {error}"))?;
     if status.success() { Ok(()) } else { Err("`bun install` in js/ failed".into()) }
-}
-
-fn read(path: &Path) -> Result<String, String> {
-    std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))
 }
 
 #[cfg(test)]
