@@ -581,6 +581,7 @@ async fn removes_an_entry_of_a_group_through_its_composite_id() {
     assert_eq!(app.read(), vec![group("g", vec![]), plugin("b", 1)]);
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn retries_a_write_that_failed_earlier_when_disposing() {
     let app = App::setup("sync-dispose-retry.yml", vec![plugin("a", 1)], json!({})).await;
