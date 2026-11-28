@@ -95,8 +95,7 @@ pub(crate) fn gone(handle: Option<&GuestHandle>) -> Error {
 /// Reads what a guest module depends on and exports from a fresh instance,
 /// and wraps it as module code; its plugin runs `code` in a bridge plugin.
 pub fn guest_module(id: &str, code: Arc<dyn GuestCode>) -> Result<ModuleCode> {
-    let instance = code.instantiate(GuestHost::new(None, Weak::new(), Arc::default()))?;
-    let instance: Arc<dyn GuestInstance> = instance.into();
+    let instance: Arc<dyn GuestInstance> = code.instantiate(GuestHost::new(None, Weak::new(), Arc::default()))?.into();
     let control = CallControl::default();
     let output = instance.call(Export::Meta, Vec::new(), &control);
     instance.call(Export::Dispose, Vec::new(), &control)?;

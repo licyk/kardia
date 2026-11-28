@@ -415,6 +415,13 @@ async fn expressions_leave_an_expression_changed_at_runtime_unlocated() {
         std::fs::set_permissions(&app.app.filename, permissions).unwrap();
     };
     readonly(true);
+    // Windows keeps a read-only attribute from stopping an administrator from
+    // writing, and CI runs as one: without the refusal there is no error to see
+    if std::fs::write(&app.app.filename, std::fs::read(&app.app.filename).unwrap()).is_ok() {
+        readonly(false);
+        eprintln!("skipped: this platform lets its administrator write a read-only file");
+        return;
+    }
     app.app.update("a", json!({ "disabled": { "__jsExpr": "foo" } })).await;
     app.app.settle().await;
     readonly(false);

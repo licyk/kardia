@@ -37,7 +37,7 @@ pub(crate) struct Options {
 
 /// One export the host sent and waits for.
 struct Pending {
-    done: Reply<Vec<u8>>,
+    done: Reply<Result<Result<Vec<u8>>, Fault>>,
     output: Vec<u8>,
     cancelled: bool,
 }
@@ -53,7 +53,7 @@ struct Exchanges {
 struct Reply<T>(Arc<Slot<T>>);
 
 struct Slot<T> {
-    answer: Mutex<Option<Result<T>>>,
+    answer: Mutex<Option<T>>,
     arrived: Condvar,
 }
 
@@ -63,7 +63,7 @@ impl<T> Reply<T> {
         (Self(slot.clone()), Waiter(slot))
     }
 
-    fn send(self, answer: Result<T>) {
+    fn send(self, answer: T) {
         *self.0.answer.lock() = Some(answer);
         self.0.arrived.notify_all();
     }
@@ -74,7 +74,7 @@ struct Waiter<T>(Arc<Slot<T>>);
 impl<T> Waiter<T> {
     /// The answer; a timeout kills the guest, and a channel dropped without
     /// one means the guest is gone.
-    fn wait(&self, deadline: Option<Instant>) -> Result<Result<T>, Fault> {
+    fn wait(&self, deadline: Option<Instant>) -> Result<T, Fault> {
         let mut answer = self.0.answer.lock();
         match deadline {
             Some(deadline) => loop {
@@ -101,10 +101,10 @@ impl<T> Waiter<T> {
 impl Exchanges {
     /// Ends every exchange: the guest is gone for `fault`.
     fn close(&self, fault: Fault) {
-        *self.closed.lock() = Some(fault);
-        // the answer only wakes the waiter; `exchange` reads the fault
+        *self.closed.lock() = Some(fault.clone());
+        // a waiter still waiting fails with the fault; one already answered keeps its result
         for (_, pending) in self.pending.lock().drain() {
-            pending.done.send(Err(cancelled()));
+            pending.done.send(Err(fault.clone()));
         }
     }
 }
@@ -265,12 +265,9 @@ impl ProcessInstance {
             pending.insert(id, Pending { done, output: Vec::new(), cancelled: false });
         }
         self.shared.send(&json!({ "id": id, "export": export.name(), "input": input }));
-        let result = finished.wait(deadline);
-        // a close wakes the waiters with a placeholder: the fault is what happened
-        match self.exchanges.closed.lock().clone() {
-            Some(fault) => Err(fault),
-            None => result,
-        }
+        // the reader answers with the guest's own result, unless the guest is
+        // gone by then, which is a fault of the transport
+        finished.wait(deadline)?
     }
 
     /// Sends the export of a version 1 or 2 guest and answers its host calls
@@ -486,12 +483,12 @@ fn handle(message: &Value, shared: &Shared, host: &GuestHost, exchanges: &Exchan
     let status = status as i32;
     let entry = pending.remove(&id).expect("found above");
     drop(pending);
-    entry.done.send(match (entry.cancelled, status) {
+    entry.done.send(Ok(match (entry.cancelled, status) {
         (true, _) => Err(cancelled()),
         (false, 0) => Ok(entry.output),
         (false, _) if entry.output.is_empty() => Err(Error::msg(format!("guest failed with status {status}"))),
         (false, _) => Err(Error::msg(String::from_utf8_lossy(&entry.output).into_owned())),
-    });
+    }));
     true
 }
 
