@@ -404,6 +404,10 @@ async fn expressions_point_a_failure_on_update_at_the_new_expression() {
     assert!(!fiber.is_removed());
 }
 
+// A read-only file refuses a write on Unix; Windows replaces one through a
+// rename whatever its read-only attribute says, so the write-back cannot be
+// made to fail there and there is no error to keep unlocated.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn expressions_leave_an_expression_changed_at_runtime_unlocated() {
     let app = Located::start("location-expr-runtime.yml", "- id: a\n  name: config-plugin\n").await;
@@ -415,13 +419,6 @@ async fn expressions_leave_an_expression_changed_at_runtime_unlocated() {
         std::fs::set_permissions(&app.app.filename, permissions).unwrap();
     };
     readonly(true);
-    // Windows keeps a read-only attribute from stopping an administrator from
-    // writing, and CI runs as one: without the refusal there is no error to see
-    if std::fs::write(&app.app.filename, std::fs::read(&app.app.filename).unwrap()).is_ok() {
-        readonly(false);
-        eprintln!("skipped: this platform lets its administrator write a read-only file");
-        return;
-    }
     app.app.update("a", json!({ "disabled": { "__jsExpr": "foo" } })).await;
     app.app.settle().await;
     readonly(false);
