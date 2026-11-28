@@ -16,6 +16,9 @@ use crate::session::{Outbox, Session};
 pub struct SessionView<'a> {
     pub id: u64,
     pub client: &'a str,
+    /// The owner the host named for this client when the session opened, if any.
+    /// An owner groups the clients that belong to one extension or window.
+    pub owner: Option<&'a str>,
 }
 
 /// Options of a [`Bridge`].
@@ -23,11 +26,15 @@ pub struct SessionView<'a> {
 pub struct BridgeOptions {
     /// How long a call into a client may take before it fails with `Timeout`.
     pub timeout: Duration,
+    /// How many calls into clients may be in flight at once; `None` allows any
+    /// number. A call that cannot start within its timeout fails with `Timeout`
+    /// rather than waiting for a slot.
+    pub max_in_flight: Option<usize>,
 }
 
 impl Default for BridgeOptions {
     fn default() -> Self {
-        Self { timeout: Duration::from_secs(30) }
+        Self { timeout: Duration::from_secs(30), max_in_flight: None }
     }
 }
 
@@ -56,7 +63,13 @@ impl Default for Bridge {
 
 impl Bridge {
     pub fn new(options: BridgeOptions) -> Self {
-        Self { hub: Arc::new(Hub { timeout: options.timeout, state: Mutex::new(HubState::default()) }) }
+        Self {
+            hub: Arc::new(Hub {
+                timeout: options.timeout,
+                max_in_flight: options.max_in_flight,
+                state: Mutex::new(HubState::default()),
+            }),
+        }
     }
 
     /// The plugin that runs the bridge and provides it as `bridge`. While it
@@ -105,16 +118,32 @@ impl Bridge {
         client: &str,
         outbox: Option<Arc<dyn Outbox>>,
     ) -> Result<Value, BridgeError> {
+        self.handle_with(request, client, None, outbox).await
+    }
+
+    /// `handle_as` with the owner the host assigns to the client, such as the
+    /// extension or account the window belongs to. A scope predicate of
+    /// [`Bridge::emit_scoped`] sees it, so the host can address every session of
+    /// one owner without keeping the client-to-owner map itself.
+    pub async fn handle_with(
+        &self,
+        request: Value,
+        client: &str,
+        owner: Option<&str>,
+        outbox: Option<Arc<dyn Outbox>>,
+    ) -> Result<Value, BridgeError> {
         let runtime = self.hub.runtime()?;
         let hub = self.hub.clone();
-        let client = client.to_owned();
-        runtime.spawn(async move { hub.dispatch_as(request, Some(client), outbox).await }).await.map_err(|error| {
-            if error.is_cancelled() {
-                BridgeError::unavailable("the bridge is not running")
-            } else {
-                BridgeError::failed(error.to_string())
-            }
-        })?
+        let identity = (client.to_owned(), owner.map(str::to_owned));
+        runtime.spawn(async move { hub.dispatch_with(request, Some(identity), outbox).await }).await.map_err(
+            |error| {
+                if error.is_cancelled() {
+                    BridgeError::unavailable("the bridge is not running")
+                } else {
+                    BridgeError::failed(error.to_string())
+                }
+            },
+        )?
     }
 
     /// Sends an event to every client.
@@ -158,6 +187,7 @@ impl BridgeExt for Svc<Bridge> {
 
 struct Hub {
     timeout: Duration,
+    max_in_flight: Option<usize>,
     state: Mutex<HubState>,
 }
 
@@ -214,21 +244,24 @@ impl Hub {
     }
 
     async fn dispatch(self: Arc<Self>, request: Value, outbox: Option<Arc<dyn Outbox>>) -> Result<Value, BridgeError> {
-        self.dispatch_as(request, None, outbox).await
+        self.dispatch_with(request, None, outbox).await
     }
 
     /// `dispatch` with the identity the host knows, which an `open` request
     /// takes instead of the name it carries.
-    async fn dispatch_as(
+    async fn dispatch_with(
         self: Arc<Self>,
         request: Value,
-        identity: Option<String>,
+        identity: Option<(String, Option<String>)>,
         outbox: Option<Arc<dyn Outbox>>,
     ) -> Result<Value, BridgeError> {
         let request: ClientRequest = serde_json::from_value(request)
             .map_err(|error| BridgeError::invalid(format!("invalid request: {error}")))?;
         match request {
-            ClientRequest::Open { protocol, client } => self.open(protocol, identity.unwrap_or(client), outbox),
+            ClientRequest::Open { protocol, client } => {
+                let (client, owner) = identity.unwrap_or((client, None));
+                self.open(protocol, client, owner, outbox)
+            }
             ClientRequest::Close { session } => {
                 for session in self.take_sessions(|s| s.id == session) {
                     session.close(None);
@@ -260,7 +293,13 @@ impl Hub {
     }
 
     /// Opens a session, replacing earlier ones of the same client (a reloaded page).
-    fn open(&self, protocol: u32, client: String, outbox: Option<Arc<dyn Outbox>>) -> Result<Value, BridgeError> {
+    fn open(
+        &self,
+        protocol: u32,
+        client: String,
+        owner: Option<String>,
+        outbox: Option<Arc<dyn Outbox>>,
+    ) -> Result<Value, BridgeError> {
         if protocol != PROTOCOL {
             return Err(BridgeError::invalid(format!(
                 "protocol {protocol} is not supported: the host speaks protocol {PROTOCOL}"
@@ -283,10 +322,19 @@ impl Hub {
         let mut state = self.state.lock();
         state.next_session += 1;
         let id = state.next_session;
-        state.sessions.insert(id, Arc::new(Session::new(id, client.clone(), outbox, fiber, self.timeout)));
+        state.sessions.insert(
+            id,
+            Arc::new(Session::new(id, client.clone(), owner.clone(), self.max_in_flight, outbox, fiber, self.timeout)),
+        );
         // The identity in effect, which is not necessarily the one the request
         // carried: a host may name its client through `handle_as`.
-        Ok(json!({ "session": id, "protocol": PROTOCOL, "client": client, "services": state.services() }))
+        Ok(json!({
+            "session": id,
+            "protocol": PROTOCOL,
+            "client": client,
+            "owner": owner,
+            "services": state.services(),
+        }))
     }
 
     fn session(&self, id: u64) -> Result<Arc<Session>, BridgeError> {
@@ -365,7 +413,9 @@ impl Hub {
         let selected: Vec<u64> = state
             .sessions
             .values()
-            .filter(|session| scope(&SessionView { id: session.id, client: &session.client }))
+            .filter(|session| {
+                scope(&SessionView { id: session.id, client: &session.client, owner: session.owner.as_deref() })
+            })
             .map(|session| session.id)
             .collect();
         let gone: Vec<u64> = selected

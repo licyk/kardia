@@ -4,6 +4,7 @@ use std::sync::Arc;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::fiber::Fiber;
 use crate::key::{FiberId, Key, RealmId};
 use crate::root::RootInner;
 use crate::scope::{Overlay, Scope, ScopeKind};
@@ -53,6 +54,17 @@ impl Context {
     /// The root context.
     pub fn root(&self) -> Context {
         Self::of_root(&self.root)
+    }
+
+    /// The fiber of `id`, if it is still active. This turns the id an error
+    /// carries — such as the `Panicked::fiber` of a listener — back into a fiber
+    /// the caller can fail, which is how a host stops the plugin that failed.
+    pub fn fiber_of(&self, id: FiberId) -> Option<Fiber> {
+        let removed = self.root.with(|st| st.fiber(id).map(|fiber| fiber.removed));
+        if removed != Some(false) {
+            return None;
+        }
+        Some(Fiber::of(&self.root, id))
     }
 
     /// Derives a context in which `key` lives in a fresh, private realm.

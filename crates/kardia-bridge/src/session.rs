@@ -25,6 +25,10 @@ type Reply = oneshot::Sender<Result<Value, BridgeError>>;
 pub(crate) struct Session {
     pub(crate) id: u64,
     pub(crate) client: String,
+    /// The owner the host named when the session opened, if it named one.
+    pub(crate) owner: Option<String>,
+    /// Bounds how many calls into this client are in flight at once.
+    slots: Option<Arc<tokio::sync::Semaphore>>,
     outbox: Arc<dyn Outbox>,
     fiber: Fiber,
     timeout: Duration,
@@ -35,10 +39,20 @@ pub(crate) struct Session {
 }
 
 impl Session {
-    pub(crate) fn new(id: u64, client: String, outbox: Arc<dyn Outbox>, fiber: Fiber, timeout: Duration) -> Self {
+    pub(crate) fn new(
+        id: u64,
+        client: String,
+        owner: Option<String>,
+        max_in_flight: Option<usize>,
+        outbox: Arc<dyn Outbox>,
+        fiber: Fiber,
+        timeout: Duration,
+    ) -> Self {
         Self {
             id,
             client,
+            owner,
+            slots: max_in_flight.filter(|n| *n > 0).map(|n| Arc::new(tokio::sync::Semaphore::new(n))),
             outbox,
             fiber,
             timeout,
@@ -62,6 +76,22 @@ impl Session {
     async fn request(&self, service: &str, method: &str, args: Value) -> Result<Value, BridgeError> {
         let id = self.next_request.fetch_add(1, Ordering::Relaxed) + 1;
         let (tx, rx) = oneshot::channel();
+        // A call waits for a slot at most as long as it waits for an answer, so a
+        // saturated bridge fails with the same `Timeout` the host already handles
+        // instead of queueing without limit.
+        let _slot = match &self.slots {
+            Some(slots) => match tokio::time::timeout(self.timeout, slots.acquire()).await {
+                Ok(Ok(slot)) => Some(slot),
+                Ok(Err(_)) => return Err(BridgeError::unavailable("the bridge is shutting down")),
+                Err(_) => {
+                    return Err(BridgeError::timeout(format!(
+                        "{service}.{method} did not start within {:?}: the bridge has too many calls in flight",
+                        self.timeout
+                    )));
+                }
+            },
+            None => None,
+        };
         self.pending.lock().insert(id, tx);
         if !self.send(&HostMessage::Request { id, service, method, args: &args }) {
             self.pending.lock().remove(&id);

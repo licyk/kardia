@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::{Custom, Gate, Seq, errors, settle};
-use kardia_core::{Context, EffectHandle, Error, Event, PluginDef};
+use kardia_core::{Context, EffectHandle, Error, Event, FiberState, PluginDef};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 
@@ -266,6 +266,41 @@ fn panicking<E: Event>(root: &Context, asynchronous: bool) {
     } else {
         root.on(|_: &E| panic!("listener failed")).unwrap();
     }
+}
+
+#[tokio::test]
+async fn the_fiber_an_error_names_can_be_found_and_failed() {
+    // A host that receives a panicking listener's error needs to stop that
+    // listener's plugin, which requires turning the id back into a fiber.
+    let root = Context::new();
+    let child = root
+        .plugin_def(
+            &kardia_core::PluginDef::new(|ctx, _| async move {
+                ctx.on(|_: &Custom| panic!("listener failed"))?;
+                Ok(())
+            }),
+            serde_json::Value::Null,
+        )
+        .unwrap();
+    child.settled().await.unwrap();
+    let id = child.id();
+
+    let found = root.fiber_of(id).expect("the child fiber is active");
+    assert_eq!(found.id(), id);
+    assert!(root.fiber_of(kardia_core::FiberId::ROOT).is_some());
+
+    // Failing the fiber through the looked-up handle reaches the same instance.
+    found.fail(Error::msg("stopped by the host")).await.unwrap_err();
+    assert_eq!(child.state(), FiberState::Failed);
+    // The lookup reports a fiber that is still usable, not one that has been
+    // retired by `dispose`.
+    let disposable =
+        root.plugin_def(&kardia_core::PluginDef::new(|_, _| async { Ok(()) }), serde_json::Value::Null).unwrap();
+    disposable.settled().await.unwrap();
+    let disposable_id = disposable.id();
+    assert!(root.fiber_of(disposable_id).is_some());
+    disposable.dispose().await.unwrap();
+    assert!(root.fiber_of(disposable_id).is_none(), "a retired fiber is not reported");
 }
 
 #[tokio::test]

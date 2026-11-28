@@ -203,7 +203,7 @@ async fn client_services_run_host_consumers_while_the_session_lasts() {
 
 #[tokio::test]
 async fn calls_into_a_client_time_out() {
-    let (root, bridge) = host(BridgeOptions { timeout: Duration::from_millis(50) }).await;
+    let (root, bridge) = host(BridgeOptions { timeout: Duration::from_millis(50), ..Default::default() }).await;
     let client = Client::open(&bridge, "main").await;
     client.request(json!({ "type": "provide", "service": "slow" })).await.unwrap();
     let slow = root.get_as::<RemoteService>("slow").unwrap();
@@ -260,6 +260,55 @@ async fn close_client_ends_its_sessions() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn a_saturated_bridge_times_out_instead_of_queueing_without_limit() {
+    // One call may be in flight and the client never answers, so the second call
+    // finds no slot and fails instead of waiting for one without bound.
+    let (root, bridge) = host(BridgeOptions { timeout: Duration::from_millis(50), max_in_flight: Some(1) }).await;
+    let client = Client::open(&bridge, "main").await;
+    client.request(json!({ "type": "provide", "service": "slow" })).await.unwrap();
+    let slow = root.get_as::<RemoteService>("slow").unwrap();
+
+    let first = tokio::spawn({
+        let slow = slow.clone();
+        async move { slow.call("never", Value::Null).await }
+    });
+    // The first call holds the only slot while it waits for its answer.
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let second = slow.call("never", Value::Null).await.unwrap_err();
+    assert!(matches!(second, BridgeError::Timeout { .. }), "a saturated call times out: {second:?}");
+
+    assert!(matches!(first.await.unwrap(), Err(BridgeError::Timeout { .. })));
+}
+
+#[tokio::test]
+async fn a_session_carries_the_owner_the_host_assigned() {
+    let (_root, bridge) = host(BridgeOptions::default()).await;
+    let (tx, mut messages) = mpsc::unbounded_channel();
+    let opened = bridge
+        .handle_with(
+            json!({ "type": "open", "protocol": 1, "client": "frame" }),
+            "frame",
+            Some("extension-a"),
+            Some(Arc::new(Stream(tx))),
+        )
+        .await
+        .expect("open");
+    // The reply names the owner, so the client can see what the host assigned.
+    assert_eq!(opened["owner"], "extension-a");
+
+    // The predicate sees the owner, so an owner addresses its sessions without
+    // the host keeping a client-to-owner map.
+    let seen = std::sync::Mutex::new(Vec::new());
+    bridge.emit_scoped("tick", &json!({}), |session| {
+        seen.lock().unwrap().push((session.client.to_owned(), session.owner.map(str::to_owned)));
+        session.owner == Some("extension-a")
+    });
+    assert_eq!(*seen.lock().unwrap(), vec![("frame".to_owned(), Some("extension-a".to_owned()))]);
+    let message = messages.recv().await.expect("the scoped event");
+    assert_eq!(message["name"], "tick");
 }
 
 #[tokio::test]
