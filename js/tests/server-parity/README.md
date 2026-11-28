@@ -1,6 +1,6 @@
 # Server reference and parity tests
 
-Reference: Cordis `36dc7fb5e271143039e6b8b6df59840fc0886c1b` (MIT; see the repository NOTICE).
+Reference: Cordis `6ad12cf2b39e7a22fe54b2f4568e948ecc778e97` (MIT; see the repository NOTICE).
 
 From `js/`, with Node 24, Bun and Corepack available:
 
@@ -14,7 +14,7 @@ cargo build --manifest-path ../Cargo.toml -p kardia-server --example server-refe
 bun run test:server:reference
 ```
 
-`server:prepare` checks out the exact commit into the ignored `cordis/` directory if absent, verifies an existing checkout instead of resetting it, installs its immutable Yarn lockfile, builds it, and runs the original four Server suites (111 tests) and FS suite (34 tests; one Windows-only test is skipped elsewhere). `server:inventory` regenerates `inventory.json` from those suites. The inventory uses the pinned TypeScript parser to expand parameterized declarations into cases; it does not establish Rust coverage or passing status.
+`server:prepare` checks out the exact commit into the ignored `cordis/` directory if absent, verifies an existing checkout instead of resetting it, installs its immutable Yarn lockfile, builds it, and runs the original four Server suites (156 tests: core 67, acl 15, proxy 47, static 27) and the FS suite (162 tests; one Windows-only test is skipped elsewhere). `server:inventory` regenerates `inventory.json` from those suites. The inventory uses the pinned TypeScript parser to expand parameterized declarations into cases; it does not establish Rust coverage or passing status.
 
 The additional reference tests launch the actual upstream service in a child process. HTTP and WebSocket clients use real loopback sockets. Readiness and shutdown are explicit, with deadlines. The adapters register fixture handlers; they do not reproduce routing, proxying, MIME detection or ACL logic. The initial 22 cases cover HTTP matching, HEAD/OPTIONS, decoding, response ownership, replay of inspected streams, Echo and WebSocket proxy text/binary frames.
 

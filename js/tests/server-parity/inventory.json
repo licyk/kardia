@@ -1,5 +1,5 @@
 {
-  "upstream": "36dc7fb5e271143039e6b8b6df59840fc0886c1b",
+  "upstream": "6ad12cf2b39e7a22fe54b2f4568e948ecc778e97",
   "tests": [
     {
       "source": "packages/server/core/tests/index.spec.ts",
@@ -40,6 +40,11 @@
       "source": "packages/server/core/tests/index.spec.ts",
       "name": "should keep plus signs in path params",
       "rustName": "should_keep_plus_signs_in_path_params"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should try the next route when a capture splits an encoded character",
+      "rustName": "should_try_the_next_route_when_a_capture_splits_an_encoded_character"
     },
     {
       "source": "packages/server/core/tests/index.spec.ts",
@@ -148,6 +153,31 @@
     },
     {
       "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should serialize a form data body with the boundary of its content type",
+      "rustName": "should_serialize_a_form_data_body_with_the_boundary_of_its_content_type"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should send the form data body that is read back",
+      "rustName": "should_send_the_form_data_body_that_is_read_back"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should derive the content type from the last written form data",
+      "rustName": "should_derive_the_content_type_from_the_last_written_form_data"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should keep the content type when a form data body is rewritten as bytes",
+      "rustName": "should_keep_the_content_type_when_a_form_data_body_is_rewritten_as_bytes"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should keep a file entry with an empty filename",
+      "rustName": "should_keep_a_file_entry_with_an_empty_filename"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
       "name": "should set custom response headers",
       "rustName": "should_set_custom_response_headers"
     },
@@ -208,6 +238,11 @@
     },
     {
       "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should bracket an IPv6 host",
+      "rustName": "should_bracket_an_ipv6_host"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
       "name": "should prefer config.publicUrl when set",
       "rustName": "should_prefer_config_publicurl_when_set"
     },
@@ -215,6 +250,11 @@
       "source": "packages/server/core/tests/index.spec.ts",
       "name": "should return 500 when route throws",
       "rustName": "should_return_500_when_route_throws"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should answer a malformed percent-encoded path with 400",
+      "rustName": "should_answer_a_malformed_percent_encoded_path_with_400"
     },
     {
       "source": "packages/server/core/tests/index.spec.ts",
@@ -230,6 +270,11 @@
       "source": "packages/server/core/tests/index.spec.ts",
       "name": "should return 404 for unmatched ws route",
       "rustName": "should_return_404_for_unmatched_ws_route"
+    },
+    {
+      "source": "packages/server/core/tests/index.spec.ts",
+      "name": "should answer a malformed percent-encoded path of an upgrade with 400",
+      "rustName": "should_answer_a_malformed_percent_encoded_path_of_an_upgrade_with_400"
     },
     {
       "source": "packages/server/core/tests/index.spec.ts",
@@ -403,33 +448,203 @@
     },
     {
       "source": "packages/server/proxy/tests/index.spec.ts",
-      "name": "should forward upstream response headers",
-      "rustName": "should_forward_upstream_response_headers"
+      "name": "forwards end-to-end response headers and consumes upstream connection options",
+      "rustName": "forwards_end_to_end_response_headers_and_consumes_upstream_connection_options"
     },
     {
       "source": "packages/server/proxy/tests/index.spec.ts",
-      "name": "should correctly join with target path",
-      "rustName": "should_correctly_join_with_target_path"
+      "name": "accepts ",
+      "rustName": "accepts"
     },
     {
       "source": "packages/server/proxy/tests/index.spec.ts",
-      "name": "should forward reserved characters as part of the path",
-      "rustName": "should_forward_reserved_characters_as_part_of_the_path"
+      "name": "accepts http:",
+      "rustName": "accepts_http"
     },
     {
       "source": "packages/server/proxy/tests/index.spec.ts",
-      "name": "should reject a path outside the target",
-      "rustName": "should_reject_a_path_outside_the_target"
+      "name": "accepts HTTPS:",
+      "rustName": "accepts_https"
     },
     {
       "source": "packages/server/proxy/tests/index.spec.ts",
-      "name": "should forward under the path of a target with ?key=value",
-      "rustName": "should_forward_under_the_path_of_a_target_with_key_value"
+      "name": "accepts https://example.com/",
+      "rustName": "accepts_https_example_com"
     },
     {
       "source": "packages/server/proxy/tests/index.spec.ts",
-      "name": "should forward under the path of a target with #fragment",
-      "rustName": "should_forward_under_the_path_of_a_target_with_fragment"
+      "name": "accepts https://example.com/api/v1/",
+      "rustName": "accepts_https_example_com_api_v1"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "rejects https://example.com",
+      "rustName": "rejects_https_example_com"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "rejects https://example.com/api/v1",
+      "rustName": "rejects_https_example_com_api_v1"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "rejects https://example.com/?key=value",
+      "rustName": "rejects_https_example_com_key_value"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "rejects https://example.com/#fragment",
+      "rustName": "rejects_https_example_com_fragment"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "rejects https:///",
+      "rustName": "rejects_https"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "rejects file:",
+      "rustName": "rejects_file"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "rejects file:///",
+      "rustName": "rejects_file"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "forwards to a URL followed by the path",
+      "rustName": "forwards_to_a_url_followed_by_the_path"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "forwards an encoded separator that stays under a URL",
+      "rustName": "forwards_an_encoded_separator_that_stays_under_a_url"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "forwards to a URL with an encoded separator",
+      "rustName": "forwards_to_a_url_with_an_encoded_separator"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "rejects an encoded separator out of a URL with an encoded separator",
+      "rustName": "rejects_an_encoded_separator_out_of_a_url_with_an_encoded_separator"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "forwards the path under the path prefix of the routes",
+      "rustName": "forwards_the_path_under_the_path_prefix_of_the_routes"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "forwards the path without decoding it",
+      "rustName": "forwards_the_path_without_decoding_it"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "rejects /%2E%2e/secret out of a URL",
+      "rustName": "rejects_2e_2e_secret_out_of_a_url"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "rejects /..%2Fsecret out of a URL",
+      "rustName": "rejects_2fsecret_out_of_a_url"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "rejects /..%5csecret out of a URL",
+      "rustName": "rejects_5csecret_out_of_a_url"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "rejects /a%2Fb%2Fc/../..%2F..%2Fsecret out of a URL",
+      "rustName": "rejects_a_2fb_2fc_2f_2fsecret_out_of_a_url"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "forwards to a scheme followed by the path",
+      "rustName": "forwards_to_a_scheme_followed_by_the_path"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "forwards to the URL in the path for the empty string",
+      "rustName": "forwards_to_the_url_in_the_path_for_the_empty_string"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "rejects file:///etc/hosts for the empty string",
+      "rustName": "rejects_file_etc_hosts_for_the_empty_string"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "rejects data:,secret for the empty string",
+      "rustName": "rejects_data_secret_for_the_empty_string"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "rejects not-a-url for the empty string",
+      "rustName": "rejects_not_a_url_for_the_empty_string"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "forwards a WebSocket to an HTTP URL in the path for the empty string",
+      "rustName": "forwards_a_websocket_to_an_http_url_in_the_path_for_the_empty_string"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "forwards a WebSocket to a WebSocket URL in the path for the empty string",
+      "rustName": "forwards_a_websocket_to_a_websocket_url_in_the_path_for_the_empty_string"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "isolates the origin of the routes from the upstream",
+      "rustName": "isolates_the_origin_of_the_routes_from_the_upstream"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "shares the origin of the routes with the upstream by default",
+      "rustName": "shares_the_origin_of_the_routes_with_the_upstream_by_default"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "uses only the configured sources for upstream credentials",
+      "rustName": "uses_only_the_configured_sources_for_upstream_credentials"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "rejects the mapping of Proxy-Authorization from Proxy-Authorization at load time",
+      "rustName": "rejects_the_mapping_of_proxy_authorization_from_proxy_authorization_at_load_time"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "rejects the mapping of X-Explicit from X-Explicit at load time",
+      "rustName": "rejects_the_mapping_of_x_explicit_from_x_explicit_at_load_time"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "rejects the mapping of X-Explicit from X-Explicit at load time",
+      "rustName": "rejects_the_mapping_of_x_explicit_from_x_explicit_at_load_time"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "keeps proxy credentials and fields named by Connection on the incoming hop",
+      "rustName": "keeps_proxy_credentials_and_fields_named_by_connection_on_the_incoming_hop"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "forwards the credentials of a WebSocket by default",
+      "rustName": "forwards_the_credentials_of_a_websocket_by_default"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "forwards the credentials of a WebSocket with isolateOrigin",
+      "rustName": "forwards_the_credentials_of_a_websocket_with_isolateorigin"
+    },
+    {
+      "source": "packages/server/proxy/tests/index.spec.ts",
+      "name": "forwards the credentials of a WebSocket through requestHeaders",
+      "rustName": "forwards_the_credentials_of_a_websocket_through_requestheaders"
     },
     {
       "source": "packages/server/static/tests/index.spec.ts",
@@ -465,6 +680,16 @@
       "source": "packages/server/static/tests/index.spec.ts",
       "name": "should try .html extension when configured",
       "rustName": "should_try_html_extension_when_configured"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should redirect a directory before trying an extension that is a file",
+      "rustName": "should_redirect_a_directory_before_trying_an_extension_that_is_a_file"
+    },
+    {
+      "source": "packages/server/static/tests/index.spec.ts",
+      "name": "should not try extensions for a directory when redirect is disabled",
+      "rustName": "should_not_try_extensions_for_a_directory_when_redirect_is_disabled"
     },
     {
       "source": "packages/server/static/tests/index.spec.ts",
