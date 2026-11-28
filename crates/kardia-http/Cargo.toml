@@ -26,13 +26,5 @@ tokio-tungstenite = "0.30"
 tokio-util = { version = "0.7", features = ["io"] }
 async-compression = { version = "0.4", features = ["tokio", "gzip", "zlib", "deflate", "brotli", "zstd"] }
 
-[dev-dependencies]
-kardia-server.workspace = true
-rcgen = "0.14"
-tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
-http-body-util = "0.1"
-flate2 = "1"
-
 [lints]
 workspace = true

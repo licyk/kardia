@@ -18,6 +18,7 @@ Usage: cargo xtask <command>
 Commands:
   arch                                 Check that lib.rs and mod.rs files only declare and re-export modules
   publish-check                        Check workspace publishing dependencies for cycles (offline)
+  cycle-check                          Check every workspace dependency for cycles, dev-dependencies too
   js-version <patch|minor|major>       Bump the version of the npm packages under js/
              [--dry-run]
   js-tag [--version X.Y.Z | --name NAME]
@@ -42,8 +43,10 @@ fn run(root: &Path, args: &[String]) -> Result<(), String> {
     let (command, rest) = args.split_first().ok_or_else(|| USAGE.to_string())?;
     match command.as_str() {
         "arch" => arch::run(root),
-        "publish-check" if rest.is_empty() => publish_check::run(root),
+        "publish-check" if rest.is_empty() => publish_check::run(root, publish_check::Scope::Published),
         "publish-check" => Err("usage: cargo xtask publish-check".into()),
+        "cycle-check" if rest.is_empty() => publish_check::run(root, publish_check::Scope::Workspace),
+        "cycle-check" => Err("usage: cargo xtask cycle-check".into()),
         "js-version" => js::run(root, &js::Options::parse(rest)?),
         "js-tag" => tag::run(root, &tag::Options::parse(rest)?, &js::release(root)?),
         "release" => release::run(root, &release::Options::parse(rest)?),

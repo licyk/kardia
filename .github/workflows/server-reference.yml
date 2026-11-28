@@ -29,7 +29,7 @@ jobs:
           bun-version: latest
       - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2.9.3
-      - run: cargo build -p kardia-server --example server-reference
+      - run: cargo build -p kardia --example server-reference
       - run: npm install --global --force corepack
       - run: bun install --frozen-lockfile
         working-directory: js

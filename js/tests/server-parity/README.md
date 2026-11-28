@@ -10,7 +10,7 @@ bun run server:prepare
 bun run server:inventory --check
 bun run server:mime --check
 bun run check
-cargo build --manifest-path ../Cargo.toml -p kardia-server --example server-reference
+cargo build --manifest-path ../Cargo.toml -p kardia --example server-reference
 bun run test:server:reference
 ```
 

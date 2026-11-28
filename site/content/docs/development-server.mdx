@@ -44,7 +44,7 @@ Static 使用 FS provider，不直接绑定本地文件系统。内容探测有�
 在仓库根目录构建 Rust 宿主，再从 `js/` 运行既有工具：
 
 ```sh
-cargo build -p kardia-server --example server-reference
+cargo build -p kardia --example server-reference
 cd js
 bun install --frozen-lockfile
 bun run server:prepare

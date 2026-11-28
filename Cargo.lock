@@ -1250,6 +1250,7 @@ name = "kardia"
 version = "0.6.0"
 dependencies = [
  "futures",
+ "http",
  "kardia-core",
  "kardia-fs",
  "kardia-fs-conformance",
@@ -1266,6 +1267,7 @@ dependencies = [
  "kardia-server-proxy",
  "kardia-server-static",
  "kardia-timer",
+ "rcgen",
  "reqwest",
  "serde",
  "serde_json",
@@ -1378,16 +1380,11 @@ version = "0.6.0"
 dependencies = [
  "async-compression",
  "bytes",
- "flate2",
  "futures",
  "http",
- "http-body-util",
  "hyper",
- "hyper-util",
  "kardia-core",
- "kardia-server",
  "parking_lot",
- "rcgen",
  "reqwest",
  "rustls",
  "rustls-platform-verifier",
@@ -1395,7 +1392,6 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
- "tokio-rustls",
  "tokio-tungstenite",
  "tokio-util",
  "url",
@@ -1461,6 +1457,7 @@ name = "kardia-server"
 version = "0.6.0"
 dependencies = [
  "bytes",
+ "flate2",
  "futures",
  "http",
  "http-body-util",
@@ -1470,21 +1467,19 @@ dependencies = [
  "kardia-fs",
  "kardia-http",
  "kardia-loader",
- "kardia-server-acl",
- "kardia-server-echo",
- "kardia-server-proxy",
- "kardia-server-static",
  "multer",
  "parking_lot",
  "percent-encoding",
  "rcgen",
  "regress",
  "reqwest",
+ "rustls",
  "ryu-js",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
+ "tokio-rustls",
  "tokio-tungstenite",
  "url",
 ]
@@ -1507,9 +1502,13 @@ dependencies = [
 name = "kardia-server-echo"
 version = "0.6.0"
 dependencies = [
+ "futures",
  "kardia-core",
  "kardia-server",
+ "reqwest",
  "serde_json",
+ "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]

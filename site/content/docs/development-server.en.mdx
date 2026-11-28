@@ -44,7 +44,7 @@ Upstream comparisons live in the standalone `.github/workflows/server-reference.
 Build the Rust host from the repository root, then run the existing tooling from `js/`:
 
 ```sh
-cargo build -p kardia-server --example server-reference
+cargo build -p kardia --example server-reference
 cd js
 bun install --frozen-lockfile
 bun run server:prepare
