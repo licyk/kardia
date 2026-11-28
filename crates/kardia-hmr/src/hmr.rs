@@ -34,7 +34,7 @@ pub struct Hmr {
 }
 
 impl Service for Hmr {
-    const NAME: &'static str = "hmr";
+    const NAME: &'static str = "std:hmr";
 }
 
 tokio::task_local! {
@@ -95,7 +95,7 @@ impl Hmr {
             }
         })
         .name("hmr")
-        .inject(Inject::new().with("fs"))
+        .inject(Inject::new().with("std:fs"))
         .provides([Hmr::NAME])
     }
 

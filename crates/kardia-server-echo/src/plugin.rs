@@ -9,7 +9,7 @@ impl Plugin for EchoPlugin {
     const NAME: &'static str = "server:echo";
     type Config = Value;
     fn inject() -> Inject {
-        Inject::new().with("server")
+        Inject::new().with("std:server")
     }
     async fn apply(ctx: Context, _: Arc<Value>) -> Result<()> {
         let server = ctx.get::<Server>()?;

@@ -8,7 +8,7 @@ impl Plugin for StaticPlugin {
     const NAME: &'static str = "server:static";
     type Config = StaticConfig;
     fn inject() -> Inject {
-        Inject::new().with("server").with("fs")
+        Inject::new().with("std:server").with("std:fs")
     }
     async fn apply(ctx: Context, config: Arc<StaticConfig>) -> Result<()> {
         let files = Arc::new(Files::new(&ctx, config)?);

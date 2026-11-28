@@ -22,7 +22,7 @@ async fn nested_includes_scope_guest_resolution_and_hmr_to_their_own_directory()
     let graph = ModuleGraph::new(GuestFiles { wasm: WasmSource::new() });
     catalog.register_def("hmr", Hmr::plugin(graph.clone()));
     root.plugin_def(
-        &Loader::plugin(Plugins { catalog, graph: graph.clone() }).inject(Inject::new().with("fs")),
+        &Loader::plugin(Plugins { catalog, graph: graph.clone() }).inject(Inject::new().with("std:fs")),
         Value::Null,
     )
     .unwrap()

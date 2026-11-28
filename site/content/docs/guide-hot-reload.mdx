@@ -6,9 +6,9 @@ icon: RefreshCw
 
 编译进二进制的插件可以在运行时重新配置，但修改其代码需要重启。**访客插件**（guest plugin）是独立的模块，`hmr` 插件（`kardia-hmr`）可以原地重载它们：模块变化时，它导出的插件会在其运行中的纤程（fiber）背后被替换，应用的其余部分随之跟进。
 
-Rust 没有模块注册表（registry），因此由宿主（host）自己维护一个：`ModuleGraph` 从 `ModuleSource` 加载模块代码。`Hmr` 服务重载发生变化的模块，并通过 [`registry.replace`](/docs/guide-effects#replace) 原地替换它们导出的插件；开启 `watch.enabled`（并有 `fs` 服务）时，它会随文件变化自动这样做。如何编写模块本身见[访客插件](/docs/guide-guests)；调和过程如何实现见[加载器内部实现](/docs/development-loader)，TypeScript 原版见 [HMR](/docs/reference-hmr)。
+Rust 没有模块注册表（registry），因此由宿主（host）自己维护一个：`ModuleGraph` 从 `ModuleSource` 加载模块代码。`Hmr` 服务重载发生变化的模块，并通过 [`registry.replace`](/docs/guide-effects#replace) 原地替换它们导出的插件；开启 `watch.enabled`（并有 `std:fs` 服务）时，它会随文件变化自动这样做。如何编写模块本身见[访客插件](/docs/guide-guests)；调和过程如何实现见[加载器内部实现](/docs/development-loader)，TypeScript 原版见 [HMR](/docs/reference-hmr)。
 
-HMR 必须依赖 `fs`，目录来自作用域内的 `fs.baseUrl`；`hmr.base` 已移除。若需更换目录，在 HMR 条目设置 `intercept: { fs: { baseUrl: "./plugins" } }`。include 会把 FS 作用域设为该配置文件所在目录，嵌套 include 同样如此。`watch.files` 和日志路径相对于此目录；非 file base 属于配置错误。
+HMR 必须依赖 `std:fs`，目录来自作用域内的 `fs.baseUrl`；`hmr.base` 已移除。若需更换目录，在 HMR 条目设置 `intercept: { "std:fs": { baseUrl: "./plugins" } }`。include 会把 FS 作用域设为该配置文件所在目录，嵌套 include 同样如此。`watch.files` 和日志路径相对于此目录；非 file base 属于配置错误。
 
 ## 监视访客模块 [#config]
 
@@ -30,8 +30,8 @@ HMR 必须依赖 `fs`，目录来自作用域内的 `fs.baseUrl`；`hmr.base` �
 
 | 选项 | 默认值 | 含义 |
 |---|---|---|
-| `watch.enabled` | `false` | 文件变化时重载。需要 `fs` 服务。 |
-| `watch.files` | `[".", "!**/.*", "!**/target"]` | 要监视的文件：相对于作用域内的 `fs.baseUrl` 的模式，与 `fs` 监视过滤器的写法相同。前导 `!` 表示排除，匹配某路径或其某个祖先的最后一个模式起决定作用。 |
+| `watch.enabled` | `false` | 文件变化时重载。需要 `std:fs` 服务。 |
+| `watch.files` | `[".", "!**/.*", "!**/target"]` | 要监视的文件：相对于作用域内的 `fs.baseUrl` 的模式，与 `std:fs` 监视过滤器的写法相同。前导 `!` 表示排除，匹配某路径或其某个祖先的最后一个模式起决定作用。 |
 | `watch.debounce` | `100` | 在这么多毫秒内发生的变化一起重载。 |
 
 开启 `watch.enabled` 且 `files` 列表非空时，`hmr` 记录 `watching [..] in <base>`，并在自身之下启动一个等待 `fs` 的监视。若 `fs` 已存在，监视会在 `hmr` 稳定之前建立好；建立失败会被记录。
@@ -182,7 +182,7 @@ loader.settled().await;
 
 ## 监视模式 [#watch]
 
-在监视模式下，`hmr` 通过 `fs` 服务监视作用域内的 `fs.baseUrl`，把文件变化转化为事务：
+在监视模式下，`hmr` 通过 `std:fs` 服务监视作用域内的 `fs.baseUrl`，把文件变化转化为事务：
 - 每次变化都以调试级别记录（`change detected at <path>`，路径相对于作用域内的 `fs.baseUrl`）。
 - 变化会被收集，直到连续 `debounce` 毫秒没有新的变化；该窗口内的变化作为一批一起重载（`reconcile N changed files`）。
 - 各批次一次运行一个，每一批都会接手上一批保留下来的文件：

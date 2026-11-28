@@ -40,7 +40,7 @@ async fn echo_failure_recovery_preserves_other_http_and_ws_plugins_in_all_modes(
                 json!({}),
             )
             .unwrap();
-        let echo = root.intercept("server", json!({"path":"/echo"})).plugin::<EchoPlugin>(json!({})).unwrap();
+        let echo = root.intercept("std:server", json!({"path":"/echo"})).plugin::<EchoPlugin>(json!({})).unwrap();
         echo.settled().await.unwrap();
         echo.set_recovery(match mode {
             0 => RecoveryPolicy::Manual,

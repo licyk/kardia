@@ -23,7 +23,7 @@ impl Plugin for AclPlugin {
     const NAME: &'static str = "server:acl";
     type Config = AclConfig;
     fn inject() -> Inject {
-        Inject::new().with("server")
+        Inject::new().with("std:server")
     }
     async fn apply(ctx: Context, config: Arc<AclConfig>) -> Result<()> {
         let defaults = serde_json::to_value(&config.allowed_hosts)?;

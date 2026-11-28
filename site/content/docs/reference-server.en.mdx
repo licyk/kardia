@@ -51,7 +51,7 @@ A rejection continues to later routes. If all reject, the result is 404, without
 
 ## Static [#static]
 
-`StaticPlugin` / `StaticConfig` depends on `server` and `fs`. It reads through providers rather than bypassing the file service for direct disk access.
+`StaticPlugin` / `StaticConfig` depends on `std:server` and `fs`. It reads through providers rather than bypassing the file service for direct disk access.
 
 | Setting | Default and behavior |
 |---|---|
@@ -70,7 +70,7 @@ MIME selection tries content detection, filename, then octet-stream. Real fixtur
 
 ## Proxy [#proxy]
 
-`ProxyPlugin` / `ProxyConfig` depends on `server` and `http`. Required `target` is treated as a directory. Its pathname gains a trailing slash even when the configured URL has a query or fragment. Decoded path segments are encoded again, preserving `+` and segment sub-delimiters; `?`, `#` and `%` stay path data. Normalized destinations must remain on the same origin and beneath the target directory. Escaping HTTP requests return 400; escaping WS requests are disconnected without connecting upstream or accepting downstream. Queries replace the target query using URLSearchParams encoding.
+`ProxyPlugin` / `ProxyConfig` depends on `std:server` and `http`. Required `target` is treated as a directory. Its pathname gains a trailing slash even when the configured URL has a query or fragment. Decoded path segments are encoded again, preserving `+` and segment sub-delimiters; `?`, `#` and `%` stay path data. Normalized destinations must remain on the same origin and beneath the target directory. Escaping HTTP requests return 400; escaping WS requests are disconnected without connecting upstream or accepting downstream. Queries replace the target query using URLSearchParams encoding.
 
 HTTP forwards the method and headers, with bodies only for POST/PUT/PATCH. The raw client retains 4xx/5xx and applies Fetch redirect rules to streaming bodies. Decompressed responses remove content-encoding/content-length. Upstream's returned-Response adoption behavior is retained: custom reason text is dropped and repeated Set-Cookie keeps only its last value.
 

@@ -30,17 +30,17 @@ async fn catalog_loads_all_server_packages_and_rebuilds_proxy_after_provider_rep
         json!({"id":"http","name":"@cordisjs/http"}),
         json!({"id":"server","name":"@cordisjs/server","config":{"port":0}}),
         json!({"id":"acl","name":"@cordisjs/server-acl","config":{"allowedHosts":false}}),
-        json!({"id":"echo","name":"@cordisjs/server-echo","intercept":{"server":{"path":"/echo"}}}),
+        json!({"id":"echo","name":"@cordisjs/server-echo","intercept":{"std:server":{"path":"/echo"}}}),
     ] {
         loader.create(entry, None, None).await.unwrap();
     }
     let folder = tempfile::tempdir().unwrap();
     std::fs::write(folder.path().join("index.html"), "<h1>static</h1>").unwrap();
-    loader.create(json!({"id":"static","name":"@cordisjs/server-static","config":{"root":kardia::fs::Url::from_directory_path(folder.path()).unwrap()},"intercept":{"server":{"path":"/static"}}}),None,None).await.unwrap();
+    loader.create(json!({"id":"static","name":"@cordisjs/server-static","config":{"root":kardia::fs::Url::from_directory_path(folder.path()).unwrap()},"intercept":{"std:server":{"path":"/static"}}}),None,None).await.unwrap();
     let server = root.get::<Server>().unwrap();
     let url = server.public_url();
     // A target is a prefix that ends with `/`.
-    loader.create(json!({"id":"proxy","name":"@cordisjs/server-proxy","config":{"target":format!("{url}/")},"intercept":{"server":{"path":"/proxy"}},"recovery":{"mode":"manual"}}),None,None).await.unwrap();
+    loader.create(json!({"id":"proxy","name":"@cordisjs/server-proxy","config":{"target":format!("{url}/")},"intercept":{"std:server":{"path":"/proxy"}},"recovery":{"mode":"manual"}}),None,None).await.unwrap();
     loader.settled().await;
     // The proxy forwards under its intercept; it has no public URL of its own.
     assert_eq!(root.get::<Server>().unwrap().public_url(), url);

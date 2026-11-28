@@ -63,7 +63,7 @@ async fn recovery(mode: u8) {
             Ok(())
         }
     })
-    .inject(["server"]);
+    .inject(["std:server"]);
     let bad = root.plugin_def(&def, Value::Null).unwrap();
     bad.settled().await.unwrap();
     let policy = match mode {
@@ -143,7 +143,7 @@ async fn catalog_listener_recovery_preserves_an_independent_server_in_every_mode
         let loader = root.get::<Loader>().unwrap();
         loader
             .register_recovery_handler("retry", |_| async { Ok(RecoveryAction::RetryAfter(Duration::from_millis(5))) });
-        loader.create(json!({"id":"listener","name":"server","isolate":{"server":true},"config":{"port":port},"recovery":{"mode":mode,"delayMs":5,"handler":"retry"}}),None,None).await.unwrap();
+        loader.create(json!({"id":"listener","name":"server","isolate":{"std:server":true},"config":{"port":port},"recovery":{"mode":mode,"delayMs":5,"handler":"retry"}}),None,None).await.unwrap();
         loader.settled().await;
         let fiber = loader.resolve("listener").unwrap().inner_fiber().unwrap();
         assert_eq!(fiber.state(), FiberState::Failed);

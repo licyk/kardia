@@ -6,9 +6,9 @@ icon: RefreshCw
 
 Plugins compiled into the binary can be reconfigured live, but changing their code needs a restart. **Guest plugins** are separate modules that the `hmr` plugin (`kardia-hmr`) can reload in place: when a module changes, the plugins it exports are replaced behind their running fibers, and the rest of the app follows.
 
-Rust has no module registry, so the host owns one: a `ModuleGraph` loads module code from a `ModuleSource`. The `Hmr` service reloads changed modules and replaces the plugins they export in place through [`registry.replace`](/docs/guide-effects#replace); with `watch.enabled` (and the `fs` service) it does so as files change. How to write the modules themselves is on [Guest plugins](/docs/guide-guests); how the reconciliation is built is on [Loader internals](/docs/development-loader), and the TypeScript original on [HMR](/docs/reference-hmr).
+Rust has no module registry, so the host owns one: a `ModuleGraph` loads module code from a `ModuleSource`. The `Hmr` service reloads changed modules and replaces the plugins they export in place through [`registry.replace`](/docs/guide-effects#replace); with `watch.enabled` (and the `std:fs` service) it does so as files change. How to write the modules themselves is on [Guest plugins](/docs/guide-guests); how the reconciliation is built is on [Loader internals](/docs/development-loader), and the TypeScript original on [HMR](/docs/reference-hmr).
 
-HMR requires `fs`; its directory comes from the scoped `fs.baseUrl`. `hmr.base` has been removed. To choose another directory, set `intercept: { fs: { baseUrl: "./plugins" } }` on the HMR entry. An include scopes FS to its configuration file directory, including nested includes. `watch.files` and logged paths are relative to this directory. Non-file bases are configuration errors.
+HMR requires `std:fs`; its directory comes from the scoped `fs.baseUrl`. `hmr.base` has been removed. To choose another directory, set `intercept: { "std:fs": { baseUrl: "./plugins" } }` on the HMR entry. An include scopes FS to its configuration file directory, including nested includes. `watch.files` and logged paths are relative to this directory. Non-file bases are configuration errors.
 
 ## Watching guest modules [#config]
 
@@ -30,8 +30,8 @@ To reload guest modules as they change, add an `hmr` entry with watch mode to th
 
 | Option | Default | Meaning |
 |---|---|---|
-| `watch.enabled` | `false` | Reload on file changes. Requires the `fs` service. |
-| `watch.files` | `[".", "!**/.*", "!**/target"]` | Files to watch: patterns relative to the scoped `fs.baseUrl`, as the `fs` watch filter takes them. A leading `!` excludes, and the last pattern matching a path or one of its ancestors decides. |
+| `watch.enabled` | `false` | Reload on file changes. Requires the `std:fs` service. |
+| `watch.files` | `[".", "!**/.*", "!**/target"]` | Files to watch: patterns relative to the scoped `fs.baseUrl`, as the `std:fs` watch filter takes them. A leading `!` excludes, and the last pattern matching a path or one of its ancestors decides. |
 | `watch.debounce` | `100` | Changes within this many milliseconds are reloaded together. |
 
 With `watch.enabled` and a non-empty `files` list, `hmr` logs `watching [..] in <base>` and starts a watch below itself that waits for `fs`. If `fs` is there, the watch is set up before `hmr` settles; a failure to set it up is logged.

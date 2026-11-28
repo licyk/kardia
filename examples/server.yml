@@ -17,21 +17,21 @@
 - id: echo
   name: server:echo
   intercept:
-    server:
+    std:server:
       path: /echo
 - id: static
   name: server:static
   config:
     root: server-public
   intercept:
-    server:
+    std:server:
       path: /static
 - id: proxy
   name: server:proxy
   config:
     target: http://127.0.0.1:5140/
   intercept:
-    server:
+    std:server:
       path: /proxy
   recovery:
     mode: manual

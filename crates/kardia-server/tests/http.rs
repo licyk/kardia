@@ -490,7 +490,7 @@ case!(should_not_override_status_if_already_set_before_throw, f, {
 });
 case!(should_scope_route_under_intercept_path, f, {
     f.root
-        .intercept("server", json!({"path":"/api"}))
+        .intercept("std:server", json!({"path":"/api"}))
         .get::<Server>()
         .unwrap()
         .get("/data", |_, res, _| async move {
@@ -537,7 +537,7 @@ case!(should_allow_route_request_listener_to_short_circuit_before_callback, f, {
 macro_rules! override_case {
     ($name:ident, $options:expr, $meta:expr, $expected:expr) => { case!($name, f, {
         f.server.on_route_request(Arc::new(|_,res,route,_| Box::pin(async move { res.set_json(&route.options)?; Ok(None) }))).unwrap();
-        let scoped = f.root.intercept("server", json!({"routes":{"GET /test":$meta}})).get::<Server>().unwrap();
+        let scoped = f.root.intercept("std:server", json!({"routes":{"GET /test":$meta}})).get::<Server>().unwrap();
         scoped.route("get", "/test", handler(|_,_,_| async { Ok(None) }), $options).unwrap();
         assert_eq!(f.get("/test").await.json::<Value>().await.unwrap(),$expected);
     }); };
@@ -570,7 +570,7 @@ case!(intercept_key_is_method_specific, f, {
         }))
         .unwrap();
     let scoped =
-        f.root.intercept("server", json!({"routes":{"POST /same":{"kind":"post-only"}}})).get::<Server>().unwrap();
+        f.root.intercept("std:server", json!({"routes":{"POST /same":{"kind":"post-only"}}})).get::<Server>().unwrap();
     scoped.get("/same", |_, _, _| async { Ok(None) }).unwrap();
     scoped.post("/same", |_, _, _| async { Ok(None) }).unwrap();
     assert_eq!(f.get("/same").await.json::<Value>().await.unwrap(), json!({}));

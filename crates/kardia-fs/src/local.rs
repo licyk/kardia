@@ -56,7 +56,7 @@ impl Plugin for LocalFsPlugin {
     const NAME: &'static str = "fs:local";
     type Config = LocalFsConfig;
     fn inject() -> Inject {
-        Inject::new().with("fs")
+        Inject::new().with("std:fs")
     }
     async fn apply(ctx: Context, config: Arc<LocalFsConfig>) -> Result<()> {
         ctx.get::<Fs>()?.mount(&config.mount, Arc::new(LocalFs))?;

@@ -15,7 +15,7 @@ impl Plugin for Healthy {
     const NAME: &'static str = "healthy";
     type Config = ();
     fn inject() -> Inject {
-        Inject::new().with("server")
+        Inject::new().with("std:server")
     }
     async fn apply(ctx: Context, _: Arc<()>) -> Result<()> {
         let server = ctx.get::<Server>()?;
@@ -37,7 +37,7 @@ impl Plugin for Consumer {
     const NAME: &'static str = "consumer";
     type Config = ();
     fn inject() -> Inject {
-        Inject::new().with("server").with("http")
+        Inject::new().with("std:server").with("std:http")
     }
     async fn apply(ctx: Context, _: Arc<()>) -> Result<()> {
         let server = ctx.get::<Server>()?;

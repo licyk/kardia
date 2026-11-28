@@ -17,7 +17,7 @@ use crate::ticks::{TickState, Ticks};
 pub struct Timer;
 
 impl Service for Timer {
-    const NAME: &'static str = "timer";
+    const NAME: &'static str = "std:timer";
 }
 
 /// Provides [`Timer`].

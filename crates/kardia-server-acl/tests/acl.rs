@@ -124,7 +124,7 @@ case!(route_list_adds_to_component_behavior, Some(json!({"allowedHosts":false}))
 });
 case!(intercept_routes_merge_into_route_options, Some(json!({"allowedHosts":false})), f, {
     f.root
-        .intercept("server", json!({"routes":{"GET /scoped":{"allowedHosts":true}}}))
+        .intercept("std:server", json!({"routes":{"GET /scoped":{"allowedHosts":true}}}))
         .get::<Server>()
         .unwrap()
         .get("/scoped", |_, res, _| async move {

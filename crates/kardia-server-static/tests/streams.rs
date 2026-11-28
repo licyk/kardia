@@ -147,7 +147,7 @@ impl Plugin for Healthy {
     const NAME: &'static str = "healthy";
     type Config = ();
     fn inject() -> Inject {
-        Inject::new().with("server")
+        Inject::new().with("std:server")
     }
     async fn apply(ctx: Context, _: Arc<()>) -> Result<()> {
         ctx.get::<Server>()?.get("/healthy", |_, res, _| async move {

@@ -370,7 +370,7 @@ fn probe_entry() -> Value {
 #[tokio::test]
 async fn decides_disabled_before_the_plugin_dependencies() {
     let fx = fixture().await;
-    fx.mock.mock("needy", PluginDef::new(|_, _| async { Ok(()) }).inject(["http"]));
+    fx.mock.mock("needy", PluginDef::new(|_, _| async { Ok(()) }).inject(["std:http"]));
     let needy = json!({ "id": "needy", "name": "needy", "inject": ["settings"], "disabled": { "__jsExpr": "!settings.enabled" } });
     fx.mock.read(json!([settings(json!({ "enabled": false })), needy])).await;
     let entry = fx.mock.loader.resolve("needy").unwrap();

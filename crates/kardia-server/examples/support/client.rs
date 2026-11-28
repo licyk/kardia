@@ -13,7 +13,7 @@ pub async fn install(ctx: &Context) -> Result<()> {
         let ctx = caller.clone();
         async move {
             let args: Args = serde_json::from_value(req.json().await?)?;
-            let http = ctx.intercept("http", args.intercept.clone()).get::<Http>()?;
+            let http = ctx.intercept("std:http", args.intercept.clone()).get::<Http>()?;
             match http.request(&args.url, args.config()?).await {
                 Ok(response) => {
                     let status = response.status.as_u16();
@@ -43,7 +43,7 @@ pub async fn install(ctx: &Context) -> Result<()> {
         let ctx = caller.clone();
         async move {
             let args: Args = serde_json::from_value(req.json().await?)?;
-            let http = ctx.intercept("http", args.intercept.clone()).get::<Http>()?;
+            let http = ctx.intercept("std:http", args.intercept.clone()).get::<Http>()?;
             let result = async {
                 let socket = http.ws(&args.url, args.config()?).await?;
                 let mut messages = Vec::new();

@@ -21,7 +21,7 @@ pub async fn install(root: &Context) -> Result<()> {
             ctx.plugin_value::<FsPlugin>(input.config)?.settled().await?;
             let mut scoped = ctx.clone();
             for base in input.intercepts {
-                scoped = scoped.intercept("fs", json!({"baseUrl":base}));
+                scoped = scoped.intercept("std:fs", json!({"baseUrl":base}));
             }
             let fs = scoped.get::<Fs>()?;
             Ok(json!({"base":fs.base_url()?.as_str(), "url":fs.resolve(&input.path)?.as_str()}))

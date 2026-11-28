@@ -102,19 +102,23 @@ The file is a list of **entries**. Each entry runs one plugin:
 | `logger-console` | Prints logs to the terminal | `levels` (name → `0`–`3`, plus `default`), `showTime`, `colors`, `maxLength`, `label` |
 | `fs` | File watching, URL resolution and provider streams | `baseUrl` |
 | `fs:local` | Read-only file: provider | – |
-| `http` | HTTP(S) and WS(S) client | `baseUrl`, `headers`, `timeout`, `rootCertificates` |
+| `http` | HTTP(S) and WS(S) client | `baseUrl`, `headers`, `timeout`, `rootCertificates`, `proxyAgent`, `noProxy` |
 | `server` | HTTP/WS listener and routes | `host`, `port`, `maxPort`, `publicUrl` |
 | `server:acl` | Host access control | `allowedHosts` |
 | `server:echo` | Streaming HTTP and WS echo | mount with intercept |
 | `server:static` | Static files through FS providers | `root`, `index`, `exclude`, `extensions`, `errorPages` |
-| `server:proxy` | HTTP/WS reverse proxy | `target` |
+| `server:proxy` | HTTP/WS reverse proxy | `target`, `isolateOrigin`, `requestHeaders` |
 | `include` | Loads entries from another file as a subtree | `path`, `watch`, `initial`, `patches` |
 | `group` | Runs the entries in its `config` | the entry list |
 | `hmr` | Reloads guest modules when their files change | `watch: { enabled, files, debounce }` |
 
 Each built-in also answers to its TypeScript package name, such as `@cordisjs/plugin-timer`.
 
-The binary starts `fs` and `fs:local` itself and includes the config file with `watch: true`.
+The official services declare their key in the `std:` namespace, as Cordis does: `fs` provides `std:fs`, `http` provides `std:http`, `server` provides `std:server`, and so do `timer`, `hmr` and `env`. An entry that depends on one names that key, so `inject: ["std:fs"]`, and an intercept of one uses the same key, so `intercept: { "std:server": { path: "/api" } }`. `loader`, `include` and `bridge` keep their own keys.
+
+`server:proxy` forwards to a prefix: `target` is a URL ending with `/`, a scheme such as `https:`, or the empty string for every HTTP URL. `requestHeaders` maps each upstream header to its sole incoming source, and `isolateOrigin` drops cookies and sandboxes upstream documents.
+
+The binary starts `std:fs` and `fs:local` itself and includes the config file with `watch: true`.
 
 Rust 0.3.0 includes the Server family and configurable manual/retry/host recovery. Run `cargo run -p kardia -- examples/server.yml` from the repository root. See [Server guide](https://kardia-dev.netlify.app/docs/guide-server) and [native acceptance](https://kardia-dev.netlify.app/docs/development-server).
 

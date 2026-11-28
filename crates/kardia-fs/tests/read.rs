@@ -38,7 +38,7 @@ async fn resolves_base_urls_in_config_and_outer_to_inner_intercepts() {
         .settled()
         .await
         .unwrap();
-    let ctx = root.intercept("fs", json!({"baseUrl":"outer/"})).intercept("fs", json!({"baseUrl":"../inner/"}));
+    let ctx = root.intercept("std:fs", json!({"baseUrl":"outer/"})).intercept("std:fs", json!({"baseUrl":"../inner/"}));
     let fs = ctx.get::<Fs>().unwrap();
     assert_eq!(fs.base_url().unwrap().as_str(), "memory:///base/inner/");
     // A path is made of literal names, so `%` is part of the name and is encoded
@@ -107,7 +107,7 @@ async fn cancelled_and_disposed_readers_release_provider_resources() {
     let root = setup().await;
     let open = Arc::new(AtomicUsize::new(0));
     let mount = root.get::<Fs>().unwrap().mount("pending:", Arc::new(Pending(open.clone()))).unwrap();
-    let consumer = root.plugin_def(&PluginDef::new(|_, _| async { Ok(()) }).inject(["fs"]), Value::Null).unwrap();
+    let consumer = root.plugin_def(&PluginDef::new(|_, _| async { Ok(()) }).inject(["std:fs"]), Value::Null).unwrap();
     consumer.settled().await.unwrap();
     let file = consumer.context().get::<Fs>().unwrap().file("pending:///file").unwrap();
     let reader = file.stream().unwrap();
@@ -167,7 +167,7 @@ async fn mount_owner_recovery_leaves_an_independent_provider_available() {
                 if n == 0 { Err(Error::msg("provider failed")) } else { Ok(()) }
             }
         })
-        .inject(["fs"]);
+        .inject(["std:fs"]);
         let fiber = root.plugin_def(&def, Value::Null).unwrap();
         let _ = fiber.settled().await;
         fiber
@@ -204,14 +204,14 @@ async fn directory_bases_clear_query_and_fragment_at_every_scope() {
         .await
         .unwrap();
     assert_eq!(root.get::<Fs>().unwrap().base_url().unwrap().as_str(), "file:///app/");
-    let ctx = root.intercept("fs", json!({"baseUrl":"data"})).intercept("fs", json!({"baseUrl":"logs?x#y"}));
+    let ctx = root.intercept("std:fs", json!({"baseUrl":"data"})).intercept("std:fs", json!({"baseUrl":"logs?x#y"}));
     let fs = ctx.get::<Fs>().unwrap();
     // `?` and `#` are literal name characters in a path, so they are encoded into
     // the directory rather than ending it.
     assert_eq!(fs.base_url().unwrap().as_str(), "file:///app/data/logs%3Fx%23y/");
     assert_eq!(fs.resolve("a.txt?q#h").unwrap().as_str(), "file:///app/data/logs%3Fx%23y/a.txt%3Fq%23h");
     assert_eq!(fs.resolve("memory:bucket").unwrap().as_str(), "memory:bucket");
-    let bad = ctx.intercept("fs", json!({"baseUrl":"memory:bucket"}));
+    let bad = ctx.intercept("std:fs", json!({"baseUrl":"memory:bucket"}));
     assert!(bad.get::<Fs>().unwrap().base_url().unwrap_err().is::<kardia_core::ValidationError>());
     root.fiber().dispose().await.unwrap();
 }
@@ -234,7 +234,7 @@ async fn windows_drive_paths_are_file_urls_in_config_intercepts_and_resolution()
     let fs = root.get::<Fs>().unwrap();
     assert_eq!(fs.base_url().unwrap().as_str(), "file:///C:/app%20space%23%25/");
     assert_eq!(fs.resolve(r"D:\data\file#%.txt").unwrap().as_str(), "file:///D:/data/file%23%25.txt");
-    let scoped = root.intercept("fs", json!({"baseUrl":"D:/data"}));
+    let scoped = root.intercept("std:fs", json!({"baseUrl":"D:/data"}));
     assert_eq!(scoped.get::<Fs>().unwrap().base_url().unwrap().as_str(), "file:///D:/data/");
     root.fiber().dispose().await.unwrap();
 }

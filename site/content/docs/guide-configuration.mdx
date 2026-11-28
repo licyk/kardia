@@ -135,7 +135,7 @@ icon: Settings
 | 键 | 类型 | 默认值 | 含义 |
 |---|---|---|---|
 | `path` | 字符串 | 必填 | 要加载的 YAML 或 JSON 文件，相对于包含该 `include` 条目的配置文件所在目录（否则相对于工作目录）。 |
-| `watch` | 布尔值 | `false` | 文件每次变化时重新读取。需要 `fs` 服务。 |
+| `watch` | 布尔值 | `false` | 文件每次变化时重新读取。需要 `std:fs` 服务。 |
 | `initial` | 条目列表 | – | 文件尚不存在时写入 `path`。 |
 | `patches` | 列表 | `[]` | 叠加在文件条目之上的修改（见下）。 |
 
@@ -154,7 +154,7 @@ icon: Settings
 
 | 键 | 类型 | 默认值 | 含义 |
 |---|---|---|---|
-| `watch.enabled` | 布尔值 | `false` | 在模块文件变化时重新加载。需要 `fs` 服务。 |
+| `watch.enabled` | 布尔值 | `false` | 在模块文件变化时重新加载。需要 `std:fs` 服务。 |
 | `watch.files` | 模式列表 | `[".", "!**/.*", "!**/target"]` | 要监视的文件，相对于作用域内的 `fs.baseUrl`；`!` 表示排除。 |
 | `watch.debounce` | 毫秒 | `100` | 同一时间窗口内的变化会一起重新加载。 |
 
@@ -162,6 +162,6 @@ icon: Settings
 
 ### `timer` 与 `fs` [#timer-and-fs]
 
-`timer` 不接受配置；`fs` 可通过 `baseUrl` 配置 URL 解析和 provider 读流，原生监听保持已有路径行为。它们提供 `timer` 和 `fs` 服务；插件如何使用它们见[服务](/docs/guide-services)。
+`timer` 不接受配置；`fs` 可通过 `baseUrl` 配置 URL 解析和 provider 读流，原生监听保持已有路径行为。它们提供 `std:timer` 和 `std:fs` 服务；插件如何使用它们见[服务](/docs/guide-services)。
 
-FS base 和各层拦截始终表示目录：pathname 补尾斜杠并清除查询/片段；拒绝 opaque base，Windows 绝对盘符路径转换为 file URL。include 通过 FS 解析路径，并将子条目的 FS 作用域设为所包含文件的目录；HMR 和 CLI 客体模块使用同一作用域。原 `hmr.base` 改用 `intercept: { fs: { baseUrl: "./plugins" } }`；HTTP 客户端的 `baseUrl` 仍采用普通 URL 语义。
+FS base 和各层拦截始终表示目录：pathname 补尾斜杠并清除查询/片段；拒绝 opaque base，Windows 绝对盘符路径转换为 file URL。include 通过 FS 解析路径，并将子条目的 FS 作用域设为所包含文件的目录；HMR 和 CLI 客体模块使用同一作用域。原 `hmr.base` 改用 `intercept: { "std:fs": { baseUrl: "./plugins" } }`；HTTP 客户端的 `baseUrl` 仍采用普通 URL 语义。

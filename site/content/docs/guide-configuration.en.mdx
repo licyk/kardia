@@ -135,7 +135,7 @@ The binary starts `fs` and `fs:local` itself and includes the config file with `
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `path` | string | required | The YAML or JSON file to load, relative to the directory of the config file that contains the `include` entry (else the working directory). |
-| `watch` | boolean | `false` | Re-read the file whenever it changes. Needs the `fs` service. |
+| `watch` | boolean | `false` | Re-read the file whenever it changes. Needs the `std:fs` service. |
 | `initial` | list of entries | – | Written to `path` if the file does not exist yet. |
 | `patches` | list | `[]` | Changes applied on top of the file's entries (below). |
 
@@ -154,7 +154,7 @@ A group's `config` is its list of entries. Updating it reconciles the list in pl
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `watch.enabled` | boolean | `false` | Reload modules as their files change. Needs the `fs` service. |
+| `watch.enabled` | boolean | `false` | Reload modules as their files change. Needs the `std:fs` service. |
 | `watch.files` | list of patterns | `[".", "!**/.*", "!**/target"]` | Files to watch, relative to the scoped `fs.baseUrl`; `!` excludes. |
 | `watch.debounce` | milliseconds | `100` | Changes within one window are reloaded together. |
 
@@ -162,6 +162,6 @@ A group's `config` is its list of entries. Updating it reconciles the list in pl
 
 ### `timer` and `fs` [#timer-and-fs]
 
-`timer` takes no configuration. `fs` accepts `baseUrl` for URL resolution and provider reads; native watching keeps its existing path behavior. They provide the `timer` and `fs` services; [Services](/docs/guide-services) shows how plugins use them.
+`timer` takes no configuration. `fs` accepts `baseUrl` for URL resolution and provider reads; native watching keeps its existing path behavior. They provide the `std:timer` and `std:fs` services; [Services](/docs/guide-services) shows how plugins use them.
 
-FS bases and intercepts always name directories: a trailing slash is added to the pathname and query/fragment are cleared. Opaque bases are rejected; Windows absolute drive paths are converted to file URLs. Include resolves its path through FS and scopes child entries to the included file’s directory. HMR and CLI guest modules use this same scope. Replace `hmr.base` with `intercept: { fs: { baseUrl: "./plugins" } }`; HTTP client `baseUrl` retains ordinary URL semantics.
+FS bases and intercepts always name directories: a trailing slash is added to the pathname and query/fragment are cleared. Opaque bases are rejected; Windows absolute drive paths are converted to file URLs. Include resolves its path through FS and scopes child entries to the included file’s directory. HMR and CLI guest modules use this same scope. Replace `hmr.base` with `intercept: { "std:fs": { baseUrl: "./plugins" } }`; HTTP client `baseUrl` retains ordinary URL semantics.

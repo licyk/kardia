@@ -41,7 +41,7 @@ async fn run(root: &Context, path: &str) -> Result<()> {
     catalog.register_def("hmr", Hmr::plugin(graph.clone()));
     catalog.alias("@cordisjs/plugin-hmr", "hmr");
     let plugins = Plugins { catalog, graph };
-    root.plugin_def(&Loader::plugin(plugins).inject(Inject::new().with("fs")), Value::Null)?.settled().await?;
+    root.plugin_def(&Loader::plugin(plugins).inject(Inject::new().with("std:fs")), Value::Null)?.settled().await?;
     let loader = (*root.get::<Loader>()?).clone();
     loader.set_logs(true);
     let entry = json!({ "name": "include", "config": { "path": path, "watch": true } });

@@ -634,7 +634,7 @@ async fn rejects_a_transaction_started_inside_another_one() {
                     }
                 })
                 .name(def.plugin_name().unwrap_or_default().to_string())
-                .inject(["hmr"])
+                .inject(["std:hmr"])
             },
         )
     };

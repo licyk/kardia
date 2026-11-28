@@ -45,9 +45,19 @@
 
 ## 已落地
 
-见 [`12-execution-record.md`](12-execution-record.md)。已合入的包括：基线 pin 更新、P0 四项缺陷、`EffectHandle::leak()`、畸形百分号 400、static 目录顺序、`noProxy`、事件带 `FiberId`、bridge 的作用域广播与宿主身份注入。
+见 [`12-execution-record.md`](12-execution-record.md)。计划内的 P0、P1、P2、P3 全部完成：
 
-仍未落地：proxy 前缀化（含删除 `ServerProxy`）、fs 的 `Path` 三态与 entry 操作、`std:` 归一化。这三项各自对应一组尚未通过的 parity 对照。
+- 基线 pin 更新到 `6ad12cf`，inventory 脚本支持 `as const`/`%j`/行式用例
+- P0 四项缺陷：查询串、表单 boundary、IPv6 括号、timer 重入
+- `EffectHandle::leak()`、畸形百分号 400、static 目录顺序、`noProxy`
+- proxy 前缀化 + 头映射 + `isolateOrigin`，并删除 `ServerProxy`
+- fs `Path` 三态语义（字面名、网络路径、盘符、cwd 基准）
+- `std:` 服务键（显式改名，与上游一致）
+- 下游 K1、K2、K4
+
+**`bun run test:server:reference` 为 224 / 224 通过。**
+
+仍未跟进：fs 的 entry 操作与区间读等（无消费者）、http SSE、下游 K5–K8（协议级）。清单见 `12` 第 5、6 节。
 
 ## 核对方式
 

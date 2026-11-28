@@ -21,7 +21,7 @@ pub struct Fs {
     pub(crate) mounts: Mutex<Vec<Arc<Mount>>>,
 }
 impl Service for Fs {
-    const NAME: &'static str = "fs";
+    const NAME: &'static str = "std:fs";
 }
 
 pub(crate) struct Mount {

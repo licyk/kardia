@@ -18,7 +18,7 @@ impl Plugin for Healthy {
     const NAME: &'static str = "healthy";
     type Config = ();
     fn inject() -> Inject {
-        Inject::new().with("server")
+        Inject::new().with("std:server")
     }
     async fn apply(ctx: Context, _: Arc<()>) -> Result<()> {
         let server = ctx.get::<Server>()?;
@@ -78,8 +78,10 @@ async fn proxy_and_http_provider_failures_preserve_independent_http_and_websocke
             provider.settled().await.unwrap();
             // A target is a prefix that ends with `/`.
             let config = json!({"target": format!("{}/", upstream.get::<Server>().unwrap().public_url())});
-            let proxy =
-                root.intercept("server", json!({"path":"/proxy"})).plugin_value::<ProxyPlugin>(config.clone()).unwrap();
+            let proxy = root
+                .intercept("std:server", json!({"path":"/proxy"}))
+                .plugin_value::<ProxyPlugin>(config.clone())
+                .unwrap();
             proxy.settled().await.unwrap();
             let failed = if dependency { &provider } else { &proxy };
             failed
@@ -163,7 +165,7 @@ async fn unavailable_upstream_is_request_local_and_recovers_without_restarting_p
     root.plugin::<Healthy>(()).unwrap().settled().await.unwrap();
     root.plugin::<HttpPlugin>(Default::default()).unwrap().settled().await.unwrap();
     let proxy = root
-        .intercept("server", json!({"path":"/proxy"}))
+        .intercept("std:server", json!({"path":"/proxy"}))
         .plugin::<ProxyPlugin>(ProxyConfig { target, isolate_origin: false, request_headers: Default::default() })
         .unwrap();
     proxy.settled().await.unwrap();

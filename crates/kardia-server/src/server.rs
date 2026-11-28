@@ -27,7 +27,7 @@ pub struct Server {
     sequence: AtomicU64,
 }
 impl Service for Server {
-    const NAME: &'static str = "server";
+    const NAME: &'static str = "std:server";
 }
 
 impl Server {

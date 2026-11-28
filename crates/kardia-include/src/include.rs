@@ -44,7 +44,7 @@ impl Plugin for IncludePlugin {
     type Config = IncludeConfig;
 
     fn inject() -> Inject {
-        Inject::new().with(<Loader as kardia_core::Service>::NAME).with("fs")
+        Inject::new().with(<Loader as kardia_core::Service>::NAME).with("std:fs")
     }
 
     async fn apply(ctx: Context, config: Arc<IncludeConfig>) -> Result<()> {
@@ -197,7 +197,7 @@ impl Include {
             seq: AtomicU64::new(0),
             rename,
         }));
-        let tree_ctx = ctx.intercept("fs", serde_json::json!({"baseUrl": url.join(".")?.as_str()}));
+        let tree_ctx = ctx.intercept("std:fs", serde_json::json!({"baseUrl": url.join(".")?.as_str()}));
         let tree = loader.create_tree(&tree_ctx, Arc::new(Backend(Arc::downgrade(&include.0))));
         let _ = include.0.tree.set(tree);
 

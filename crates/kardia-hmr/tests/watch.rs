@@ -89,7 +89,7 @@ impl App {
         // batches are logged at the debug level
         let verbose = root
             .intercept("logger", json!({ "level": 3 }))
-            .intercept("fs", json!({"baseUrl": kardia_fs::Url::from_directory_path(base).unwrap()}));
+            .intercept("std:fs", json!({"baseUrl": kardia_fs::Url::from_directory_path(base).unwrap()}));
         verbose.plugin_def(&Hmr::plugin(graph.clone()), config).unwrap().settled().await.unwrap();
         let loader = (*root.get::<Loader>().unwrap()).clone();
         let hmr = root.get::<Hmr>().unwrap();
@@ -134,7 +134,7 @@ async fn base_without_entry(base: Option<&str>) -> PathBuf {
     let graph = ModuleGraph::new(Files::default());
     root.plugin::<FsPlugin>(Default::default()).unwrap().settled().await.unwrap();
     let ctx = match base {
-        Some(base) => root.intercept("fs", json!({"baseUrl": base})),
+        Some(base) => root.intercept("std:fs", json!({"baseUrl": base})),
         None => root.clone(),
     };
     ctx.plugin_def(&Hmr::plugin(graph), json!({})).unwrap().settled().await.unwrap();
@@ -165,9 +165,9 @@ async fn base_of_entry(dir: &Path, base: Option<&str>) -> PathBuf {
     let catalog = Catalog::new();
     catalog.register_def("hmr", Hmr::plugin(ModuleGraph::new(Files::default())));
     root.plugin::<FsPlugin>(Default::default()).unwrap().settled().await.unwrap();
-    let ctx = root.intercept("fs", json!({"baseUrl": kardia_fs::Url::from_directory_path(dir).unwrap()}));
+    let ctx = root.intercept("std:fs", json!({"baseUrl": kardia_fs::Url::from_directory_path(dir).unwrap()}));
     let ctx = match base {
-        Some(base) => ctx.intercept("fs", json!({"baseUrl": base})),
+        Some(base) => ctx.intercept("std:fs", json!({"baseUrl": base})),
         None => ctx,
     };
     let loader = Loader::plugin(catalog);

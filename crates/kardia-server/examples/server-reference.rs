@@ -70,7 +70,7 @@ async fn main() -> kardia_core::Result<()> {
                     // the URL of the server, including the prefix of its routes.
                     let plain = ctx.get::<Server>()?.public_url().replace(&base, "$BASE");
                     let intercepted = ctx
-                        .intercept("server", json!({"path":"/caller"}))
+                        .intercept("std:server", json!({"path":"/caller"}))
                         .get::<Server>()?
                         .public_url()
                         .replace(&base, "$BASE");
@@ -80,7 +80,7 @@ async fn main() -> kardia_core::Result<()> {
             })?;
             // A target is a prefix that ends with `/`.
             let prefix = format!("{}/", url.trim_end_matches('/'));
-            root.intercept("server", json!({"path":std::env::var("KARDIA_PROXY_PATH").unwrap_or_default()}))
+            root.intercept("std:server", json!({"path":std::env::var("KARDIA_PROXY_PATH").unwrap_or_default()}))
                 .plugin::<kardia_server_proxy::ProxyPlugin>(kardia_server_proxy::ProxyConfig {
                     target: prefix,
                     isolate_origin: false,
@@ -255,7 +255,7 @@ fn core(root: &Context, server: &kardia_core::Svc<Server>) -> kardia_core::Resul
         Ok(Some(res))
     })?;
     server.all("/allow", |_, _, next| next)?;
-    root.intercept("server", json!({"path":"/api"})).get::<Server>()?.get("/scoped", |_, res, _| async move {
+    root.intercept("std:server", json!({"path":"/api"})).get::<Server>()?.get("/scoped", |_, res, _| async move {
         res.set_text("scoped");
         Ok(None)
     })?;

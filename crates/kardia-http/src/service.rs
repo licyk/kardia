@@ -10,7 +10,7 @@ pub struct Http {
     pub(crate) active: watch::Sender<usize>,
 }
 impl Service for Http {
-    const NAME: &'static str = "http";
+    const NAME: &'static str = "std:http";
 }
 impl Http {
     pub fn active_operations(&self) -> usize {

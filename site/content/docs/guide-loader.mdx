@@ -234,12 +234,12 @@ let def = Loader::plugin_with(Arc::new(catalog), Arc::new(Recorder(changes.clone
 
 ## 引入配置文件 [#include]
 
-`include` 插件（`kardia_include::IncludePlugin`）把 YAML 或 JSON 文件中的条目作为子树加载，并让文件双向保持同步。它声明依赖 `loader` 服务；开启 `watch` 时还需要 `fs`。
+`include` 插件（`kardia_include::IncludePlugin`）把 YAML 或 JSON 文件中的条目作为子树加载，并让文件双向保持同步。它声明依赖 `loader` 服务；开启 `watch` 时还需要 `std:fs`。
 
 | 选项 | 含义 |
 |---|---|
 | `path` | 文件路径，相对于 include 条目所在树的基准目录（嵌套 include 时为引入它的文件所在目录）；扩展名为 `.json`、`.yaml` 或 `.yml` |
-| `watch` | 文件变化时重新读取（需要 `fs` 服务） |
+| `watch` | 文件变化时重新读取（需要 `std:fs` 服务） |
 | `initial` | 文件尚不存在时写入的条目 |
 | `patches` | 叠加在文件之上的覆盖与追加（见下文） |
 

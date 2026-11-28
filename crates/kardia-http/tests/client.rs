@@ -109,8 +109,8 @@ async fn raw_status_headers_query_and_layered_configuration() {
     assert_eq!(res.headers["x-original"], "yes");
     assert_eq!(res.body.bytes().await.unwrap(), b"failure body"[..]);
     let scoped = client
-        .intercept("http", json!({"headers":{"x-a":"outer"}}))
-        .intercept("http", json!({"headers":{"x-b":"inner"}}))
+        .intercept("std:http", json!({"headers":{"x-a":"outer"}}))
+        .intercept("std:http", json!({"headers":{"x-b":"inner"}}))
         .get::<Http>()
         .unwrap();
     let res = scoped
@@ -198,7 +198,7 @@ async fn redirects_preserve_fetch_stream_replay_rules() {
 #[tokio::test]
 async fn caller_disposal_closes_its_http_and_websocket_operations() {
     let (target, _, client) = setup().await;
-    let definition = PluginDef::new(|_, _| async { Ok(()) }).inject(["http"]);
+    let definition = PluginDef::new(|_, _| async { Ok(()) }).inject(["std:http"]);
     let consumer = client.plugin_def(&definition, Value::Null).unwrap();
     consumer.settled().await.unwrap();
     let http = consumer.context().get::<Http>().unwrap();

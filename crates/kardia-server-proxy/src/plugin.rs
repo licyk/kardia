@@ -12,7 +12,7 @@ impl Plugin for ProxyPlugin {
     const NAME: &'static str = "server:proxy";
     type Config = ProxyConfig;
     fn inject() -> Inject {
-        Inject::new().with("http").with("server")
+        Inject::new().with("std:http").with("std:server")
     }
     async fn apply(ctx: Context, config: Arc<ProxyConfig>) -> Result<()> {
         let target = Target::parse(&config.target)?;

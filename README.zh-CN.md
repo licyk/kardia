@@ -110,14 +110,18 @@ kardia path/to/kardia.yml
 | `server:acl` | Host 访问控制 | `allowedHosts` |
 | `server:echo` | HTTP 流式与 WS 回显 | 通过 intercept 挂载 |
 | `server:static` | 通过 FS provider 服务文件 | `root`、`index`、`exclude`、`extensions`、`errorPages` |
-| `server:proxy` | HTTP/WS 反向代理 | `target` |
+| `server:proxy` | HTTP/WS 反向代理 | `target`、`isolateOrigin`、`requestHeaders` |
 | `include` | 从另一个文件加载条目，作为子树运行 | `path`、`watch`、`initial`、`patches` |
 | `group` | 运行其 `config` 中的条目 | 条目列表 |
 | `hmr` | 客体模块文件变化时重新加载模块 | `watch: { enabled, files, debounce }` |
 
 每个内置插件也支持使用对应的 TypeScript 包名，例如 `@cordisjs/plugin-timer`。
 
-可执行程序会自行启动 `fs` 与 `fs:local`，并以 `watch: true` 加载配置文件。
+官方服务的键位于 `std:` 命名空间，与 Cordis 一致：`fs` 提供 `std:fs`，`http` 提供 `std:http`，`server` 提供 `std:server`，`timer`、`hmr`、`env` 同理。依赖其中之一的条目要写该键，例如 `inject: ["std:fs"]`；拦截也用同一个键，例如 `intercept: { "std:server": { path: "/api" } }`。`loader`、`include`、`bridge` 保留自己的键。
+
+`server:proxy` 转发到前缀：`target` 可以是以 `/` 结尾的 URL、形如 `https:` 的 scheme，或表示所有 HTTP URL 的空字符串。`requestHeaders` 把每个上游请求头映射到它唯一的入站来源，`isolateOrigin` 丢弃凭据并把上游文档放入沙箱。
+
+可执行程序会自行启动 `std:fs` 与 `fs:local`，并以 `watch: true` 加载配置文件。
 
 Rust 0.3.0 包含 Server 系列以及 manual/retry/host 可配置恢复。从仓库根目录运行 `cargo run -p kardia -- examples/server.yml`；详见 [Server 指南](https://kardia-dev.netlify.app/docs/guide-server)和[原生验收](https://kardia-dev.netlify.app/docs/development-server)。
 

@@ -17,6 +17,9 @@
 | P2-3 http `noProxy` | `2896418` | 完成 |
 | P3-1 事件带 `FiberId` | `eaedf32` | 完成 |
 | P3-2/P3-3 bridge 增强 | `8ff4d17` | 完成 |
+| P2-4 proxy 前缀化 + 头映射 + `isolateOrigin` | `4fe3e11` | 完成，含删除 `ServerProxy` |
+| P2-1 fs `Path` 三态 + entry 解析 | `bb51304` | 完成 |
+| P1-2 `std:` 服务键 | 本次 | 完成，显式改名（非运行时归一） |
 
 ## 2. 验证状态
 
@@ -31,7 +34,7 @@
 | `cargo clippy -p kardia-hmr --no-default-features --features process` | 通过 |
 | `bun run check` / `bun run test` | 通过，155 个测试 |
 | `bun run server:inventory --check` | 通过，156 个用例 |
-| `bun run test:server:reference` | 183 / 224 通过 |
+| `bun run test:server:reference` | **224 / 224 通过** |
 
 ## 3. 与计划的偏差
 
@@ -43,39 +46,53 @@
 
 结论：上游 `8dbd5d3` 修的是 Cordis 的 context 原型链模型特有的缺陷，kardia 的 reparent 模型不存在它。因此只保留 `EffectHandle::leak()`（与上游 API 对齐、可独立使用），不引入无消费者的持有者簿记——符合仓库规则「不为臆测的问题增加复杂度」。
 
-### 3.2 P2-1 fs 能力集未实施
+### 3.2 P1-2 用显式改名，未用运行时归一
 
-计划列了 `stat`/`write`/`rename`/`remove`/`realpath` 与 `capabilities`。
+计划写的是「入口单向归一化」，让 `fs` 与 `std:fs` 两种写法都能用。实际尝试后放弃：
 
-实际未做。原因是它牵动 `FsProvider` 的 trait 形状与 `FsExt` 的公开 API，而当前 parity 失败的 fs 项（6 个）出自**`Path` 语义**（字符串里的 `?`/`#`/`%` 现在是字面字符），不是缺 entry 操作。先改能力集不能减少任何失败。
+- `Key`、`Inject::contains`/`meta`、`Scope::intercepts`、`State::realm_of` 四处都要归一才自洽，漏一处就是「依赖永远等不到」的静默挂起。
+- 归一化后 `Plugin::NAME` 与 `Service::NAME` 会撞车（两者共用同一个常量语义），导致插件名变成 `std:server`、catalog 查不到。
 
-### 3.3 P2-4 proxy 前缀化未实施
+改为与上游一致的**显式改名**：只改 `Service::NAME`，`Plugin::NAME` 保持原样；所有 `inject`、`intercept`、`isolate` 与示例配置同步。这样语义是确定的，失败会立刻暴露为「服务查不到」而不是挂起。
 
-计划要求把 `target` 从「目录」改成「前缀」，并加 `requestHeaders`/`isolateOrigin`/hop-by-hop 展开。
+代价是不再接受 `inject: ["fs"]` 的旧写法。这是刻意的破坏性变更，与上游一致。
 
-实际只做了**适配层适配**（`upstream-host.mjs` 按新语义构造 target），Rust 侧仍是旧语义。这解释了 9 个 proxy 对照失败：上游按新语义转发，kardia 按旧语义。
+### 3.3 fs 只做了 `Path` 语义，未做 entry 操作
 
-### 3.4 未做 `ServerProxy` 删除
+计划列了 `stat`/`write`/`rename`/`remove`/`realpath` 与 `capabilities`。实际只实现了 `Path` 三态语义——因为 6 个 fs 对照失败全部出自它，而 kardia 现有的 `include`/`server-static`/`hmr` 都只用读。补 entry 操作目前没有消费者，属于计划里明确标注的「按需」，留待出现消费者时再做。
 
-用户决定「跟随上游删除」，但该决定与 P2-4 绑定：`ServerProxy` 是 `proxy/plugin.rs` 里的服务，其 `public_url()` 已被 parity 适配层与新测试改为使用 `server.public_url()`。**服务本身仍在**，因为删除它需要同时改 `proxy.rs` 测试与任何下游引用，应与 P2-4 一起做。
+## 4. 剩余 parity 失败
 
-## 4. 剩余 parity 失败的性质
+无。`bun run test:server:reference` 在 pin 到 Cordis `6ad12cf` 后 **224 / 224 通过**，与基线 `36dc7fb` 时的通过数一致，且对照的是新的上游语义。
 
-| 套件 | 失败数 | 根因 |
+期间还修了适配层的一处遗漏：`std:` 迁移时 `.http(...)` 没有改成 `.std.http(...)`，导致 26 个 client 对照全部报告「上游出错」。这是适配层 bug，不是 kardia 实现差异。
+
+## 5. 仍未跟进的上游项
+
+| 项 | 状态 | 说明 |
 | --- | --- | --- |
-| `client-parity` | 26 | 依赖 proxy/fs 的对照结果；另有上游 http 客户端行为差异待逐条核对 |
-| `proxy-parity` | 9 | Rust 侧仍是「目录」语义，见 3.3 |
-| `fs-parity` | 6 | `Path` 三态语义未实施，见 3.2 |
+| fs entry 操作（`stat`/`write`/`rename`/`remove`/`realpath`/`copy`/`mkdir`/`readdir`） | 未做 | 无消费者；`FsProvider` 仍只有 `read()` |
+| fs 区间读、原子写、`ifMatch`、`DirRef` | 未做 | 同上，且需要 `capabilities` 机制 |
+| fs 内存 provider 与 conformance 套件 | 未做 | 上游有独立包，kardia 无对应生态 |
+| http `event-stream`（SSE） | 未做 | 下游未提出需求；`05` 文档给了实现方案 |
+| http `data:`/`file:` URL | 未做 | parity README 已声明不追求完整 decoder 生态 |
+| 上游 `ctx.std.x` 语法糖 | 无法跟进 | Rust 无属性代理；键名已对齐 |
+| 上游 `getStack` 栈帧拼接 | 无法跟进 | Rust 用 `std::backtrace` |
+| 上游发布流程（PR 合并触发） | 未做 | kardia 有自己的发布流程 |
 
-这三组都不是回归：基线在 `36dc7fb` 时是 224 / 224 全绿，pin 更新后暴露的是**上游已变更、kardia 未跟进**的部分。
+## 6. 下游反馈状态
 
-## 5. 下一步
-
-按 `11` 的顺序，剩下的是：
-
-1. **P2-4**：proxy 前缀化 + 头映射 + `isolateOrigin` + 删 `ServerProxy`。做完后 `proxy-parity` 与大部分 `client-parity` 应恢复。
-2. **P2-1**：fs `Path` 三态与 entry 操作。做完后 `fs-parity` 应恢复。
-3. **P1-2**：`std:` 归一化。未做，因为它不改变任何测试结果，纯命名一致性。
+| 编号 | 状态 |
+| --- | --- |
+| K1 事件带 `FiberId` | **已实现**（`eaedf32`） |
+| K2 `emit_scoped` | **已实现**（`8ff4d17`） |
+| K3 调用上限 | kardia 已有 `BridgeOptions.timeout`；并发上限待下游澄清 |
+| K4 宿主注入 client 标识 | **已实现**（`8ff4d17`） |
+| K5 guest `invoke` 指向宿主服务 | 未做 |
+| K6 单实例并发 export | 未做（协议级） |
+| K7 host→guest `event` | 未做（依赖 K6） |
+| K8 export 外主动调用 | 未做（依赖 K6） |
+| K9 重启/退避 | 0.3.0 已具备；缺熔断与指数退避 |
 
 ## 6. 复核命令
 
