@@ -132,7 +132,7 @@ Rust 0.3.0 包含 Server 系列以及 manual/retry/host 可配置恢复。从仓
 
 ```toml
 [dependencies]
-kardia = "0.3"
+kardia = "0.4"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
@@ -237,7 +237,7 @@ cargo run -p kardia --example provider_consumer
 crate-type = ["cdylib"]
 
 [dependencies]
-kardia-guest = "0.3"
+kardia-guest = "0.4"
 ```
 
 ```rust

@@ -1247,7 +1247,7 @@ dependencies = [
 
 [[package]]
 name = "kardia"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "futures",
  "kardia-core",
@@ -1276,7 +1276,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-bridge"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "futures",
  "indexmap",
@@ -1290,7 +1290,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "futures",
  "indexmap",
@@ -1305,7 +1305,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-fs"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "futures",
@@ -1322,7 +1322,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-fs-conformance"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "futures",
  "kardia-core",
@@ -1335,7 +1335,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-fs-memory"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "futures",
  "kardia-core",
@@ -1349,7 +1349,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-guest"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1357,7 +1357,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-hmr"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "futures",
  "indexmap",
@@ -1374,7 +1374,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-http"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-compression",
  "bytes",
@@ -1403,7 +1403,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-include"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "futures",
  "indexmap",
@@ -1420,7 +1420,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-loader"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "futures",
  "kardia-core",
@@ -1433,7 +1433,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-logger-console"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "kardia-core",
@@ -1445,7 +1445,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-macros"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "kardia-core",
  "proc-macro2",
@@ -1458,7 +1458,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-server"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "futures",
@@ -1491,7 +1491,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-server-acl"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "futures",
  "kardia-core",
@@ -1505,7 +1505,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-server-echo"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "kardia-core",
  "kardia-server",
@@ -1514,7 +1514,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-server-proxy"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "futures",
  "kardia-core",
@@ -1530,7 +1530,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-server-static"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "flate2",
@@ -1549,7 +1549,7 @@ dependencies = [
 
 [[package]]
 name = "kardia-timer"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "futures",
  "kardia-core",

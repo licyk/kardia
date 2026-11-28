@@ -12,7 +12,9 @@ The TypeScript side of [kardia](https://github.com/licyk/kardia): the same plugi
 
 ## Development
 
-Version 0.2.0 adds configurable JS plugin recovery to `core` and callback failure isolation to `timer`. `fiber.setRecovery()` selects manual (default), bounded retry or host-defined handling. `fiber.fail(error)` reports an unusable instance; ordinary timer callback errors are logged without forcing a restart. Disposal waits for in-flight timer callbacks. See [recovery and boundaries](https://kardia-dev.netlify.app/docs/guide-typescript#recovery).
+Version 0.3.0 changes what the bridge reports about a session: `@kardiajs/bridge` now describes the identity a session actually has, instead of the one the client opened it with, so a host that replaces or restores a session is reported as it is. See [the bridge](https://kardia-dev.netlify.app/docs/guide-typescript#bridge).
+
+Version 0.2.0 added configurable JS plugin recovery to `core` and callback failure isolation to `timer`. `fiber.setRecovery()` selects manual (default), bounded retry or host-defined handling. `fiber.fail(error)` reports an unusable instance; ordinary timer callback errors are logged without forcing a restart. Disposal waits for in-flight timer callbacks. See [recovery and boundaries](https://kardia-dev.netlify.app/docs/guide-typescript#recovery).
 
 The bridge continues using explicitly exposed JSON services and events; Rust Server plugins have no duplicate JS packages. The existing JS workflow checks packages and real Rust/JS recovery on Linux, Windows and macOS. Upstream Server comparisons remain in the separate, manually triggered `Server reference` workflow.
 

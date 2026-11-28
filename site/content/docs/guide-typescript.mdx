@@ -128,7 +128,7 @@ host 收到 `{ fiber, error, signal }`。切换策略、手动更新、替换实
 
 ```toml
 [dependencies]
-kardia-bridge = "0.3"
+kardia-bridge = "0.4"
 ```
 
 应用创建一个 `Bridge`，挂载它的插件，并把客户端请求交给 `Bridge::handle`。插件注入 `bridge` 并暴露服务；暴露是暴露它的插件的效应，因此该插件停止时会被撤回：

@@ -128,7 +128,7 @@ A shared JS thread cannot isolate infinite loops, runtime crashes or process ter
 
 ```toml
 [dependencies]
-kardia-bridge = "0.3"
+kardia-bridge = "0.4"
 ```
 
 The app creates a `Bridge`, mounts its plugin, and routes client requests into `Bridge::handle`. Plugins inject `bridge` and expose services; an exposure is an effect of the exposing plugin, so it is withdrawn when that plugin stops:

@@ -1,6 +1,6 @@
 {
   "name": "@kardiajs/bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "The client side of the kardia bridge: mirrors the services, events and lifecycle of a Rust kardia app into @kardiajs/core",
   "type": "module",
   "sideEffects": false,
@@ -45,7 +45,7 @@
     "NOTICE"
   ],
   "peerDependencies": {
-    "@kardiajs/core": "^0.2"
+    "@kardiajs/core": "^0.3"
   },
   "publishConfig": {
     "access": "public"

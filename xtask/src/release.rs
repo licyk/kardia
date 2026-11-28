@@ -5,6 +5,10 @@
 //! package it publishes depends on changed: a dependent that keeps its old
 //! version would keep pinning users to the old requirement. Tests, benches,
 //! examples and prose do not reach users and never trigger a release.
+//!
+//! A minor or major release moves the requirement users write, so it releases
+//! the whole workspace: every published crate would otherwise keep asking for
+//! a version that does not exist.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -98,28 +102,32 @@ pub fn plan(root: &Path, options: &Options) -> Result<Plan, String> {
         return Err("no package changed since the last release: nothing to release".into());
     }
     let targets = propagate(&nodes, &changed, options.no_dependents);
-    // A minor or major release of anything among them changes the requirement
-    // users write, which pulls in every package that depends on it.
-    if options.level != Level::Patch {
-        return Err(format!(
-            "a {} release changes the requirement users write (^X.Y), so every dependent must \
-             be released too: run it for the whole workspace instead",
-            match options.level {
-                Level::Minor => "minor",
-                Level::Major => "major",
-                Level::Patch => unreachable!(),
-            }
-        ));
-    }
+    // A minor or major release changes the requirement users write (^X.Y), which
+    // reaches every dependent of the crate that moved and so the whole workspace:
+    // releasing only part of it would leave published crates asking for a major
+    // they cannot find.
+    let targets =
+        if options.level == Level::Patch { targets } else { nodes.iter().map(|node| node.name.clone()).collect() };
     let mut bumps = Vec::new();
     for name in &targets {
         let node = nodes.iter().find(|node| &node.name == name).expect("targets come from the graph");
         let from = package_version(&node.manifest)?;
-        let reason = changed.get(name).cloned().unwrap_or_else(|| "required by a changed dependency".into());
+        let reason = changed
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| format!("required by a {} release", level_name(options.level)));
         bumps.push(Bump { name: name.clone(), from, to: from.bump(options.level), reason });
     }
     let changes = rewrite(root, &bumps)?;
     Ok(Plan { bumps, changes })
+}
+
+fn level_name(level: Level) -> &'static str {
+    match level {
+        Level::Patch => "patch",
+        Level::Minor => "minor",
+        Level::Major => "major",
+    }
 }
 
 /// The packages whose sources or manifest changed since `since`, and why.

@@ -62,7 +62,7 @@ bun run build       # 按依赖顺序生成每个包的 lib/（scripts/build.ts�
 |---|---|
 | `cargo xtask arch` | 检查模块结构：每个 `lib.rs` 和 `mod.rs`（位于 `crates/*/src`、`crates/*/tests` 和 `xtask/src`）只声明模块、重新导出，并承载文档和属性。实现代码（函数、类型、trait、`impl` 块、常量、静态变量、`macro_rules!`、内联测试模块）放在各自的文件里，再由入口文件重新导出。只做重新导出的内联模块（如 `kardia::prelude`）以及 Rust 要求放在 crate 根部的过程宏入口函数是允许的。它会列出每处违规的文件、行号和种类，只要有违规就失败。CI 会运行它。 |
 | `cargo xtask publish-check` | 离线检查可发布 workspace crate 之间的本地路径依赖环。包含普通/构建依赖，以及声明版本（包括 workspace 继承）的开发依赖；忽略无版本的纯路径开发依赖。发现循环时返回非零，输出第一条循环路径、manifest 文件、依赖键、平台条件及 optional 标记。 |
-| `cargo xtask release [patch\|minor\|major] [--only CRATE]... [--no-dependents] [--since REV] [--tag NAME] [--apply]` | 规划自上一个 `release-*` 标签以来有改动的 crate 的发布（`--since REV` 可替换基准）：`Cargo.toml` 或 `src/` 有改动的 crate 才算改动，测试和示例不算。然后加入所有发布依赖了它们的 crate（按传递闭包），`--no-dependents` 可关闭这一步。它逐行列出每个 crate 将升到的版本和原因。`--apply` 会写入版本号、同步提高 `[workspace.dependencies]` 中对应的下限、运行 `cargo update --workspace` 并创建 `release-<date>` 标签（`--tag` 可指定其他名字）；它不会提交。minor 或 major 会被拒绝：它会改变用户填写的版本要求，从而牵动所有依赖者，应改为全量发布。 |
+| `cargo xtask release [patch\|minor\|major] [--only CRATE]... [--no-dependents] [--since REV] [--tag NAME] [--apply]` | 规划自上一个 `release-*` 标签以来有改动的 crate 的发布（`--since REV` 可替换基准）：`Cargo.toml` 或 `src/` 有改动的 crate 才算改动，测试和示例不算。然后加入所有发布依赖了它们的 crate（按传递闭包），`--no-dependents` 可关闭这一步。它逐行列出每个 crate 将升到的版本和原因。`--apply` 会写入版本号、同步提高 `[workspace.dependencies]` 中对应的下限、运行 `cargo update --workspace` 并创建 `release-<date>` 标签（`--tag` 可指定其他名字）；它不会提交。minor 或 major 会改为发布整个工作区，因为它会改变用户填写的版本要求。 |
 | `cargo xtask js-version <patch\|minor\|major> [--dry-run]` | 递增 npm 包的版本，这些包共用一个独立的版本：更新每个 `js/packages/*/package.json` 中的 `version`，在版本要求变化时更新它们互相引用的 `^` 范围，并更新 `js/bun.lock`（`bun install`）。各包版本不一致时它会拒绝执行。它不会提交。 |
 | `cargo xtask js-tag [--version X.Y.Z \| --name NAME] [--message TEXT] [--push] [--remote NAME] [--dry-run]` | 在 `HEAD` 上为 npm 包创建一个附注标签：默认是 `js-v<版本>`，它会启动 npm 发布。`--version` 必须等于它们的版本，`--name` 用来创建其他任意标签。工作区有未提交的修改，或标签已经存在（在本地，或使用 `--push` 时在远端）时，它会拒绝执行。`--push` 会推送标签（到 `origin`，或 `--remote` 指定的远端）。 |
 
@@ -109,7 +109,9 @@ CI 的步骤：
 - 自上次发布以来源码或 manifest 有改动的 crate；
 - 所有发布依赖了它们的 crate——依赖者若保留旧版本，用户就会一直停留在被改动 crate 的旧版本要求上。
 
-测试、bench、示例和文档不会到达 crate 的使用者，也不会触发发布。随包发布的要求是 caret 范围，因此 patch 发布与 crates.io 上已有的版本兼容：`kardia-timer` 0.3.0 直接接受 `kardia-core` 0.3.1，不必只为这个依赖再发一版。
+测试、bench、示例和文档不会到达 crate 的使用者，也不会触发发布。随包发布的要求是 caret 范围，因此 patch 发布与 crates.io 上已有的版本保持兼容：`kardia-timer` 0.4.0 直接接受 `kardia-core` 0.4.1，不必只为这个依赖再发一版。
+
+minor 或 major 发布会改变用户填写的版本要求，因此会发布整个工作区：停在 `^0.3` 的依赖方会一直解析到旧 crate，而改到 `^0.4` 又会要求一个尚不存在的版本。
 
 <Steps>
 <Step>
