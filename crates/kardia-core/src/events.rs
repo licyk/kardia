@@ -161,7 +161,7 @@ impl Context {
             match entry.callback::<E>() {
                 Callback::Sync(listener) => {
                     if let Err(panic) = catch_unwind(AssertUnwindSafe(|| listener(event))) {
-                        self.logger().log_error(&Error::from_panic(panic));
+                        self.logger().log_error(&Error::from_panic_at(Some(entry.fiber), panic));
                     }
                 }
                 Callback::Async(listener) => self.spawn_logged(listener(event)),
@@ -181,7 +181,7 @@ impl Context {
                 Callback::Sync(listener) => match catch_unwind(AssertUnwindSafe(|| listener(event))) {
                     Ok(result) if result.is_bailed() => return Some(result),
                     Ok(_) => {}
-                    Err(panic) => self.logger().log_error(&Error::from_panic(panic)),
+                    Err(panic) => self.logger().log_error(&Error::from_panic_at(Some(entry.fiber), panic)),
                 },
                 Callback::Async(listener) => self.spawn_logged(listener(event)),
             }
@@ -200,7 +200,7 @@ impl Context {
                 Callback::Sync(listener) => catch_unwind(AssertUnwindSafe(|| listener(event))),
                 Callback::Async(listener) => AssertUnwindSafe(listener(event)).catch_unwind().await,
             };
-            let result = result.map_err(Error::from_panic)?;
+            let result = result.map_err(|panic| Error::from_panic_at(Some(entry.fiber), panic))?;
             if result.is_bailed() {
                 return Ok(Some(result));
             }
@@ -218,10 +218,16 @@ impl Context {
             let task = match entry.callback::<E>() {
                 Callback::Sync(listener) => {
                     let result = catch_unwind(AssertUnwindSafe(|| listener(event)));
-                    futures::future::ready(result.map_err(Error::from_panic)).boxed()
+                    let fiber = entry.fiber;
+                    futures::future::ready(result.map_err(move |panic| Error::from_panic_at(Some(fiber), panic)))
+                        .boxed()
                 }
                 Callback::Async(listener) => {
-                    AssertUnwindSafe(listener(event)).catch_unwind().map(|r| r.map_err(Error::from_panic)).boxed()
+                    let fiber = entry.fiber;
+                    AssertUnwindSafe(listener(event))
+                        .catch_unwind()
+                        .map(move |r| r.map_err(move |panic| Error::from_panic_at(Some(fiber), panic)))
+                        .boxed()
                 }
             };
             tasks.push(task);

@@ -269,6 +269,19 @@ fn panicking<E: Event>(root: &Context, asynchronous: bool) {
 }
 
 #[tokio::test]
+async fn a_panicking_listener_names_its_fiber_in_the_error() {
+    // The id is attached by the event boundary, so a plugin that fails can be told
+    // apart from another that registered a listener of the same event.
+    let error = kardia_core::Error::from_panic_at(Some(kardia_core::FiberId::ROOT), Box::new("listener failed"));
+    let panicked = error.downcast_ref::<kardia_core::Panicked>().expect("a panicked error");
+    assert_eq!(panicked.fiber, Some(kardia_core::FiberId::ROOT));
+    assert_eq!(panicked.message, "listener failed");
+    assert_eq!(error.to_string(), "panicked: listener failed");
+    // A boundary that knows no fiber reports none.
+    assert_eq!(Error::from_panic(Box::new("boom")).downcast_ref::<kardia_core::Panicked>().unwrap().fiber, None);
+}
+
+#[tokio::test]
 async fn emit_logs_a_panicking_listener_and_runs_the_rest() {
     for asynchronous in [false, true] {
         let root = Context::new();

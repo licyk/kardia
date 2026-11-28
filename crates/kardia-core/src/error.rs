@@ -2,7 +2,7 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::sync::Arc;
 
-use crate::key::Key;
+use crate::key::{FiberId, Key};
 
 /// A cheaply clonable, type-erased error.
 ///
@@ -46,12 +46,17 @@ impl Error {
 
     /// Converts a caught unwind payload at a plugin callback boundary.
     pub fn from_panic(payload: Box<dyn std::any::Any + Send>) -> Self {
+        Self::from_panic_at(None, payload)
+    }
+
+    /// Converts a caught unwind payload with the fiber whose callback panicked.
+    pub fn from_panic_at(fiber: Option<FiberId>, payload: Box<dyn std::any::Any + Send>) -> Self {
         let message = payload
             .downcast_ref::<&str>()
             .map(|s| s.to_string())
             .or_else(|| payload.downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "unknown panic".into());
-        Self::new(Panicked(message))
+        Self::new(Panicked { fiber, message })
     }
 }
 
@@ -79,9 +84,15 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[error("{0}")]
 struct Message(String);
 
+/// A caught unwind, with the fiber whose callback panicked when the boundary
+/// knows it. A listener's panic names the listener's fiber, so a log line can
+/// tell which plugin a failure belongs to.
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("panicked: {0}")]
-pub struct Panicked(pub String);
+#[error("panicked: {message}")]
+pub struct Panicked {
+    pub fiber: Option<FiberId>,
+    pub message: String,
+}
 
 /// Returned by an iteration boundary whose effect (or fiber load) has been
 /// superseded. Propagating it with `?` is not a failure: what was collected
