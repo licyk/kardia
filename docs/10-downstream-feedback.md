@@ -470,3 +470,53 @@ grep -n "enum ClientRequest" -A 6 crates/kardia-bridge/src/protocol.rs
 grep -n "pub fn invoke" -A 3 crates/kardia-hmr/src/guest/host.rs
 grep -n "enum RecoveryPolicy" -A 8 crates/kardia-core/src/recovery.rs
 ```
+
+## 现状复盘点（2026-11-28）
+
+上文的评估写于 K1–K9 尚未落地时。以下按**当前代码**逐条复核，供直接判断还需要做什么。
+
+### 已完成
+
+| 编号 | 验证点 | 位置 |
+| --- | --- | --- |
+| K1 | `Panicked { fiber: Option<FiberId>, .. }`；`emit`/`bail`/`serial`/`parallel` 四处捕获都带 `entry.fiber` | `crates/kardia-core/src/error.rs:93`、`events.rs:164,184,203` |
+| K2 | `Bridge::emit_scoped(name, payload, scope)`，谓词收到 `SessionView{id, client}` | `crates/kardia-bridge/src/bridge.rs:127` |
+| K4 | `Bridge::handle_as(request, client, outbox)`，覆盖 `open` 携带的 label；回执 `client` 报告生效身份 | `bridge.rs:102`、`bridge.rs:289` |
+
+### 仍未做
+
+| 编号 | 缺口 | 证据 | 工作量 |
+| --- | --- | --- | --- |
+| K1 尾巴 | **从 `FiberId` 取不回可用的 `Fiber`**，所以「定位到接收方并停它」仍做不到 | `Fiber::of` 是 `pub(crate)`（`fiber.rs:46`）；没有 `Fn(FiberId) -> Option<Fiber>` 的公开入口 | S |
+| K2 尾巴 | `SessionView` 只暴露 `id` 与 `client`，桥不知道 owner；下游仍要自己维护 client→owner 映射 | `bridge.rs` 的 `SessionView` 只有两个字段 | M（需会话元数据） |
+| K3 | 只有 `BridgeOptions.timeout`，无并发上限 | `bridge.rs` 的 `BridgeOptions` 无第二字段；`ClientRequest::Call` 直接 `await` | S（信号量）或 0（若下游只要超时） |
+| K5 | `GuestHost::invoke` 仍钉死在 `GuestService` 上 | `crates/kardia-hmr/src/guest/host.rs:72`；无 `HostAction` 之类 trait | M |
+| K6 | 单实例仍串行：`ProcessInstance::call(&mut self)` | `crates/kardia-hmr/src/process/instance.rs:206` | XL（协议 + `pykardia`） |
+| K7 | 无 host→guest `event` | `guest/host.rs` 的动作仍只有 provide/view/invoke/log | XL（依赖 K6） |
+| K8 | export 外的 host call 被拒 | `instance.rs:129` 回 `"no such call"` | XL（依赖 K6） |
+| K9 尾巴 | `Retry` 是固定延迟，无 `maxRetries`、无指数退避、无崩溃循环熔断 | `crates/kardia-core/src/recovery.rs` 的 `Retry { delay }` 只有这一个字段 | M |
+
+### 关于 K1 的尾巴
+
+这是最容易误判的一处：`Error` 里已经有 `FiberId`，看起来 K1 就完成了。但下游的诉求是**收到失败就停掉那个模块**，而停掉需要 `Fiber` 句柄：
+
+```rust
+let panicked = error.downcast_ref::<Panicked>()?;
+let fiber = /* 需要一个 FiberId -> Fiber 的入口 */;
+fiber.fail(error.clone()).await;
+```
+
+目前第二行写不出来。补法是在 `Context` 或 `Root` 上提供一个公开的查找：
+
+```rust
+impl Context {
+    /// The fiber of `id`, if it is still active.
+    pub fn fiber(&self, id: FiberId) -> Option<Fiber>;
+}
+```
+
+这不是推测性抽象——它是 K1 让下游「删掉自建 deliver」所需的最后一块。
+
+### 关于 K6–K8 的成本
+
+`pykardia` 在 `/root/code_workspace/pykardia`，其测试已覆盖 `kardia-guest/2` 的握手与协议版本协商（`tests/hmr/test_process_guest.py:182,334`）。K6 改的是消息回路，属于协议级变更，必须同时改 `kardia-hmr`、`kardia-guest` 与 `pykardia` 三方，否则 SDK 立刻失效。这是这三条一直没动的原因，而不是优先级问题。
