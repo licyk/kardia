@@ -176,6 +176,31 @@
 
 版本变化：`@kardiajs/bridge` 的公开类型 `OpenReply` 多了一个必填字段，属于破坏性变更，应在下次 `cargo xtask js-version minor` 时体现。
 
+### 为什么 JS 侧没有 `fs`、`http`、`server` 包
+
+这不是「上游没有」，需要说清楚：**上游 Cordis 的 JS 侧有** `packages/fs`、`packages/http`、`packages/server`（含 acl/proxy/static/echo）。kardia 只移植了 5 个包，原因是定位不同：
+
+**kardia 的 JS 侧是应用内部的一侧，不是独立服务器。** 按站点 `guide-typescript` 的表述，`@kardiajs` 服务的是「应用的一部分是 TypeScript」的场景——Tauri webview 里的界面、Vue 组件与扩展。宿主本身是 Rust 应用，`std:fs`、`std:http`、`std:server` 都在 Rust 侧，JS 通过桥访问它们暴露的服务。
+
+上游那三个包实现的是 **Node 运行时能力**，且确实依赖 Node：
+
+| 包 | 依赖 | 能否在浏览器/webview 运行 |
+| --- | --- | --- |
+| `fs/core` | `node:url`（`pathToFileURL`）、`process.cwd()` | 否 |
+| `http` | `node:module`（`createRequire`）、`undici` | 否 |
+| `server` | Node `http`/`ws` | 否 |
+
+而 `@kardiajs/core` 的自我声明是「no dependencies; runs in browsers and Node」。要打包进 webview，就不能引入这三个。
+
+**这不是遗漏，是有替代路径：**
+
+- 读文件 → 桥调用 Rust 的 `std:fs`，或 webview 自己的 `fetch`
+- HTTP 请求 → 浏览器原生 `fetch`
+- 事件流 → 浏览器原生 `EventSource`（这也是 SSE 不需要 JS 包的原因）
+- HTTP 服务 → Rust 侧 `std:server`
+
+**什么情况下需要补？** 如果要把 `@kardiajs/core` 当作 **Node 服务端框架**使用（脱离 Rust 宿主、独立跑 Express 式服务），那三个包才有意义。当前仓库没有这个用法。
+
 ## 6. 下游反馈状态
 
 | 编号 | 状态 |
