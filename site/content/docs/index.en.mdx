@@ -27,6 +27,13 @@ An app is a tree of **plugins**. Each plugin runs in a **fiber**:
 
 **kardia** rebuilds it in Rust. It is published on [crates.io](https://crates.io/crates/kardia) as `kardia` and nine `kardia-*` crates, with API docs on [docs.rs](https://docs.rs/kardia). The source is on [GitHub](https://github.com/licyk/kardia).
 
+### Port baseline [#baseline]
+
+The Cordis commit kardia tracks is [`6ad12cf2`](https://github.com/cordiverse/cordis/tree/6ad12cf2b39e7a22fe54b2f4568e948ecc778e97) (2026-11-27). It is not a floating `main`: `UPSTREAM_SHA` in `js/tests/server-parity/upstream.ts` is the one place that records it, and `bun run test:server-reference` checks the `cordis/` checkout is at that HEAD before running, failing when it is not.
+
+The Server contracts hold against the five packages at that commit (core, ACL, Echo, Static and Proxy, all `2.0.0-rc.0`). The [Cordis reference](/docs/reference) section has an older fixed point of its own for the historical analysis of the core code; the two do not affect each other, as that page explains.
+
+Following a newer upstream commit means changing `UPSTREAM_SHA`, and the commit and package versions the pages cite.
 ## How this documentation is organised [#how-this-documentation-is-organised]
 
 Besides the user documentation (Getting started and the [Guide](/docs/guide)), the documentation has three layers. Each one is a section of this site:

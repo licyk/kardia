@@ -27,6 +27,13 @@ kardia 是 [Cordis](https://github.com/cordiverse/cordis) 的 Rust 实现。Cord
 
 **kardia** 用 Rust 重新构建了它。它以 `kardia` 和九个 `kardia-*` crate 的形式发布在 [crates.io](https://crates.io/crates/kardia) 上，API 文档见 [docs.rs](https://docs.rs/kardia)，源代码在 [GitHub](https://github.com/licyk/kardia) 上。
 
+### 移植基线 [#baseline]
+
+kardia 对照的 Cordis 提交是 [`6ad12cf2`](https://github.com/cordiverse/cordis/tree/6ad12cf2b39e7a22fe54b2f4568e948ecc778e97)（2026-11-27）。它不是一个浮动的 `main`：`js/tests/server-parity/upstream.ts` 的 `UPSTREAM_SHA` 是唯一记录处，`bun run test:server-reference` 在跑之前先校验 `cordis/` 检出的 HEAD 与它相同，不符即失败。
+
+Server 的行为契约以该提交下的五个包为准（core、ACL、Echo、Static、Proxy，均为 `2.0.0-rc.0`）。[Cordis 参考](/docs/reference)栏目另有一个更早的固定点，用于历史上对核心代码的分析；两者互不影响，说明见该页。
+
+跟进上游新提交时，要改的是 `UPSTREAM_SHA`，以及各页里引用的提交与包版本。
 ## 文档的组织方式 [#how-this-documentation-is-organised]
 
 除了用户文档（「开始」与[使用指南](/docs/guide)），文档分为三个层次，每一层是本站的一个栏目：
