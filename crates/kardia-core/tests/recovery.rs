@@ -42,7 +42,7 @@ async fn retry_recovers_repeated_failures_without_stopping_other_plugins() {
     healthy.settled().await.unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let bad = root.plugin_def(&failing(calls.clone(), 3), Value::Null).unwrap();
-    bad.set_recovery(RecoveryPolicy::Retry { delay: Duration::from_millis(5) }).unwrap();
+    bad.set_recovery(RecoveryPolicy::retry(Duration::from_millis(5))).unwrap();
     until(|| {
         assert_eq!(healthy.state(), FiberState::Active);
         assert_eq!(root.view("healthy").unwrap(), json!("alive"));
@@ -51,6 +51,37 @@ async fn retry_recovers_repeated_failures_without_stopping_other_plugins() {
     .await;
     assert_eq!(calls.load(Ordering::SeqCst), 4);
     assert_eq!(root.view("recovering").unwrap(), json!(3));
+    root.fiber().dispose().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_retry_limit_stops_the_restarts_and_leaves_the_fiber_failed() {
+    let root = Context::new();
+    let calls = Arc::new(AtomicUsize::new(0));
+    // This plugin never stops failing, so without a limit it would restart
+    // forever.
+    let bad = root
+        .plugin_def(
+            &PluginDef::new({
+                let calls = calls.clone();
+                move |_, _| {
+                    let calls = calls.clone();
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        Err(Error::msg("always fails"))
+                    }
+                }
+            }),
+            Value::Null,
+        )
+        .unwrap();
+    bad.set_recovery(RecoveryPolicy::retry_with(Duration::from_millis(1), Some(2), kardia_core::Backoff::Fixed))
+        .unwrap();
+    until(|| calls.load(Ordering::SeqCst) == 3).await;
+    // Two retries happened; the fiber now stays failed instead of restarting.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 3, "no restart past the limit");
+    assert_eq!(bad.state(), FiberState::Failed);
     root.fiber().dispose().await.unwrap();
 }
 
@@ -136,7 +167,7 @@ async fn switching_to_manual_and_disposal_cancel_pending_retries() {
     for dispose in [false, true] {
         let calls = Arc::new(AtomicUsize::new(0));
         let bad = root.plugin_def(&failing(calls.clone(), usize::MAX), Value::Null).unwrap();
-        bad.set_recovery(RecoveryPolicy::Retry { delay: Duration::from_millis(25) }).unwrap();
+        bad.set_recovery(RecoveryPolicy::retry(Duration::from_millis(25))).unwrap();
         assert!(bad.settled().await.is_err());
         tokio::task::yield_now().await;
         if dispose {
@@ -167,7 +198,7 @@ async fn invalid_configuration_is_not_retried() {
         async { Ok(()) }
     });
     let bad = root.plugin_def(&def, Value::Null).unwrap();
-    bad.set_recovery(RecoveryPolicy::Retry { delay: Duration::from_millis(1) }).unwrap();
+    bad.set_recovery(RecoveryPolicy::retry(Duration::from_millis(1))).unwrap();
     assert!(bad.settled().await.is_err());
     let error = bad.error().unwrap();
     tokio::time::sleep(Duration::from_millis(20)).await;

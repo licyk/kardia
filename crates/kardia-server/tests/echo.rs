@@ -44,7 +44,7 @@ async fn echo_failure_recovery_preserves_other_http_and_ws_plugins_in_all_modes(
         echo.settled().await.unwrap();
         echo.set_recovery(match mode {
             0 => RecoveryPolicy::Manual,
-            1 => RecoveryPolicy::Retry { delay: Duration::from_millis(20) },
+            1 => RecoveryPolicy::retry(Duration::from_millis(20)),
             _ => RecoveryPolicy::host(|_| async { Ok(RecoveryAction::RetryAfter(Duration::from_millis(20))) }),
         })
         .unwrap();

@@ -33,11 +33,37 @@ pub enum RecoveryPolicy {
     Manual,
     Retry {
         delay: Duration,
+        /// How many times the fiber is restarted before it stays failed; `None`
+        /// retries without a limit.
+        max_retries: Option<u32>,
+        /// How the delay grows between attempts.
+        backoff: Backoff,
     },
     Host(Handler),
 }
 
+/// How the delay of a retry changes with each attempt.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Backoff {
+    /// The configured delay every time.
+    #[default]
+    Fixed,
+    /// The delay doubles with each attempt, capped at the configured delay
+    /// multiplied by 2^5 = 32.
+    Exponential,
+}
+
 impl RecoveryPolicy {
+    /// Retries after `delay` every time, without a limit.
+    pub fn retry(delay: Duration) -> Self {
+        Self::Retry { delay, max_retries: None, backoff: Backoff::Fixed }
+    }
+
+    /// Retries with the given delay, limit and growth.
+    pub fn retry_with(delay: Duration, max_retries: Option<u32>, backoff: Backoff) -> Self {
+        Self::Retry { delay, max_retries, backoff }
+    }
+
     pub fn host<F, Fut>(handler: F) -> Self
     where
         F: Fn(Failure) -> Fut + Send + Sync + 'static,
@@ -62,7 +88,7 @@ impl Fiber {
         if self.is_root() {
             return Err(Error::msg("the root context cannot be automatically recovered"));
         }
-        if let RecoveryPolicy::Retry { delay } = &policy {
+        if let RecoveryPolicy::Retry { delay, .. } = &policy {
             validate_delay(*delay)?;
         }
         self.ctx.root.run(|st| {
@@ -89,8 +115,24 @@ impl Fiber {
     }
 }
 
+/// The delay before attempt `attempt` (1 for the first retry). An exponential
+/// backoff doubles it and stops growing at the 6th step, so a failure loop cannot
+/// stretch the delay without bound.
+fn backoff_of(backoff: Backoff, delay: Duration, attempt: u32) -> Duration {
+    match backoff {
+        Backoff::Fixed => delay,
+        Backoff::Exponential => {
+            let shift = attempt.saturating_sub(1).min(5);
+            delay.saturating_mul(1u32 << shift)
+        }
+    }
+}
+
 async fn supervise(fiber: Fiber, policy: RecoveryPolicy) {
     let mut observed: Option<(u64, Error)> = None;
+    // Counts the failures this supervisor has acted on, which is what a retry
+    // limit and an exponential backoff are measured against.
+    let mut attempts: u32 = 0;
     loop {
         fiber
             .ctx
@@ -120,8 +162,18 @@ async fn supervise(fiber: Fiber, policy: RecoveryPolicy) {
         observed = Some((revision, error.clone()));
         let action = match &policy {
             RecoveryPolicy::Manual => return,
-            RecoveryPolicy::Retry { delay } if !error.is::<ValidationError>() => Ok(RecoveryAction::RetryAfter(*delay)),
-            RecoveryPolicy::Retry { .. } => Ok(RecoveryAction::KeepFailed),
+            RecoveryPolicy::Retry { delay, max_retries, backoff } => {
+                // A configuration that does not validate is not retried: the same
+                // input fails the same way, so a retry only spins. A limit that has
+                // been reached leaves the fiber failed for the same reason.
+                let exhausted = error.is::<ValidationError>() || max_retries.is_some_and(|limit| attempts >= limit);
+                if exhausted {
+                    Ok(RecoveryAction::KeepFailed)
+                } else {
+                    attempts += 1;
+                    Ok(RecoveryAction::RetryAfter(backoff_of(*backoff, *delay, attempts)))
+                }
+            }
             RecoveryPolicy::Host(handler) => {
                 let failure = Failure { fiber: fiber.clone(), error: error.clone() };
                 AssertUnwindSafe(async { handler(failure).await })
@@ -168,4 +220,29 @@ fn validate_delay(delay: Duration) -> Result<()> {
         return Err(Error::msg("recovery retry delay must be greater than zero"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Backoff, Duration, backoff_of};
+
+    #[test]
+    fn a_fixed_backoff_returns_the_configured_delay() {
+        let base = Duration::from_millis(10);
+        for attempt in 1..10 {
+            assert_eq!(backoff_of(Backoff::Fixed, base, attempt), base);
+        }
+    }
+
+    #[test]
+    fn an_exponential_backoff_doubles_and_stops_growing() {
+        let base = Duration::from_millis(10);
+        let of = |attempt| backoff_of(Backoff::Exponential, base, attempt);
+        assert_eq!(of(1), Duration::from_millis(10));
+        assert_eq!(of(2), Duration::from_millis(20));
+        assert_eq!(of(3), Duration::from_millis(40));
+        // Growth stops at the 6th step, so a failure loop cannot stretch it.
+        assert_eq!(of(7), Duration::from_millis(320));
+        assert_eq!(of(20), Duration::from_millis(320));
+    }
 }

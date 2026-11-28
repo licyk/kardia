@@ -66,7 +66,7 @@ async fn http_service_recovery_rebuilds_consumers_without_stopping_independent_p
         provider
             .set_recovery(match mode {
                 0 => RecoveryPolicy::Manual,
-                1 => RecoveryPolicy::Retry { delay: Duration::from_millis(30) },
+                1 => RecoveryPolicy::retry(Duration::from_millis(30)),
                 _ => RecoveryPolicy::host(|_| async { Ok(RecoveryAction::RetryAfter(Duration::from_millis(30))) }),
             })
             .unwrap();

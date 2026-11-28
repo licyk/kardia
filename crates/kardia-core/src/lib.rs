@@ -34,7 +34,7 @@ pub use id_table::IdTable;
 pub use key::{FiberId, ImplId, Key, RealmId};
 pub use logger::{Exporter, Level, Logger, Message, hyphenate};
 pub use plugin::{Inject, Plugin, PluginDef, RuntimeKey};
-pub use recovery::{Failure, RecoveryAction, RecoveryPolicy};
+pub use recovery::{Backoff, Failure, RecoveryAction, RecoveryPolicy};
 pub use registry::Registry;
 pub use scope::Overlay;
 pub use service::{Service, Svc};

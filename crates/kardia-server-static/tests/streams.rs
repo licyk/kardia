@@ -169,7 +169,7 @@ async fn every_recovery_policy_releases_failed_static_streams_and_preserves_inde
         plugin
             .set_recovery(match mode {
                 0 => RecoveryPolicy::Manual,
-                1 => RecoveryPolicy::Retry { delay: Duration::from_millis(30) },
+                1 => RecoveryPolicy::retry(Duration::from_millis(30)),
                 _ => RecoveryPolicy::host(|_| async { Ok(RecoveryAction::RetryAfter(Duration::from_millis(30))) }),
             })
             .unwrap();

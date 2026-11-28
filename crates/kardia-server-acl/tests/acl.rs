@@ -201,7 +201,7 @@ async fn acl_failure_and_each_recovery_policy_leave_public_routes_running() {
         fiber
             .set_recovery(match mode {
                 0 => RecoveryPolicy::Manual,
-                1 => RecoveryPolicy::Retry { delay: Duration::from_millis(20) },
+                1 => RecoveryPolicy::retry(Duration::from_millis(20)),
                 _ => RecoveryPolicy::host(|_| async { Ok(RecoveryAction::RetryAfter(Duration::from_millis(20))) }),
             })
             .unwrap();

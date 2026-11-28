@@ -87,7 +87,7 @@ async fn proxy_and_http_provider_failures_preserve_independent_http_and_websocke
             failed
                 .set_recovery(match mode {
                     0 => RecoveryPolicy::Manual,
-                    1 => RecoveryPolicy::Retry { delay: Duration::from_millis(40) },
+                    1 => RecoveryPolicy::retry(Duration::from_millis(40)),
                     _ => RecoveryPolicy::host(|_| async { Ok(RecoveryAction::RetryAfter(Duration::from_millis(40))) }),
                 })
                 .unwrap();

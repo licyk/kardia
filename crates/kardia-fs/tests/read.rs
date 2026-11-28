@@ -173,7 +173,7 @@ async fn mount_owner_recovery_leaves_an_independent_provider_available() {
         fiber
             .set_recovery(match mode {
                 0 => RecoveryPolicy::Manual,
-                1 => RecoveryPolicy::Retry { delay: Duration::from_millis(5) },
+                1 => RecoveryPolicy::retry(Duration::from_millis(5)),
                 _ => RecoveryPolicy::host(|_| async { Ok(RecoveryAction::RetryAfter(Duration::from_millis(5))) }),
             })
             .unwrap();
@@ -220,7 +220,7 @@ async fn directory_bases_clear_query_and_fragment_at_every_scope() {
 async fn opaque_base_is_a_configuration_failure_without_retry() {
     let root = Context::new();
     let plugin = root.plugin_value::<FsPlugin>(json!({"baseUrl":"memory:bucket"})).unwrap();
-    plugin.set_recovery(RecoveryPolicy::Retry { delay: Duration::from_millis(1) }).unwrap();
+    plugin.set_recovery(RecoveryPolicy::retry(Duration::from_millis(1))).unwrap();
     assert!(plugin.settled().await.unwrap_err().is::<kardia_core::ValidationError>());
     assert!(root.get::<Fs>().is_err());
     root.fiber().dispose().await.unwrap();

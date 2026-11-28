@@ -38,7 +38,7 @@ async fn handle(root: Context, state: Arc<State>, method: &str, args: Value) -> 
         "start" => {
             let policy = match args.as_str() {
                 Some("manual") => RecoveryPolicy::Manual,
-                Some("retry") => RecoveryPolicy::Retry { delay: Duration::from_millis(200) },
+                Some("retry") => RecoveryPolicy::retry(Duration::from_millis(200)),
                 Some("host") => {
                     let observed = state.clone();
                     RecoveryPolicy::host(move |_| {

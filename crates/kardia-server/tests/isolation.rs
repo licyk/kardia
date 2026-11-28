@@ -68,7 +68,7 @@ async fn recovery(mode: u8) {
     bad.settled().await.unwrap();
     let policy = match mode {
         0 => RecoveryPolicy::Manual,
-        1 => RecoveryPolicy::Retry { delay: Duration::from_millis(20) },
+        1 => RecoveryPolicy::retry(Duration::from_millis(20)),
         _ => RecoveryPolicy::host(|_| async { Ok(RecoveryAction::RetryAfter(Duration::from_millis(20))) }),
     };
     bad.set_recovery(policy).unwrap();

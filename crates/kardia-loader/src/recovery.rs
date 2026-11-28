@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::time::Duration;
 
-use kardia_core::{Error, Failure, Issue, PathSegment, RecoveryAction, RecoveryPolicy, Result};
+use kardia_core::{Backoff, Error, Failure, Issue, PathSegment, RecoveryAction, RecoveryPolicy, Result};
 use serde_json::Value;
 
 use crate::Loader;
@@ -13,6 +13,9 @@ pub enum RecoveryConfig {
     Manual,
     Retry {
         delay_ms: u64,
+        /// How many restarts are attempted before the entry stays failed.
+        max_retries: Option<u32>,
+        backoff: Backoff,
     },
     Host {
         handler: String,
@@ -23,7 +26,14 @@ impl RecoveryConfig {
     pub(crate) fn read(value: Option<&Value>) -> Self {
         let Some(value) = value else { return Self::Manual };
         match value["mode"].as_str() {
-            Some("retry") => Self::Retry { delay_ms: value["delayMs"].as_u64().unwrap_or(1000) },
+            Some("retry") => Self::Retry {
+                delay_ms: value["delayMs"].as_u64().unwrap_or(1000),
+                max_retries: value["maxRetries"].as_u64().map(|limit| limit.min(u32::MAX as u64) as u32),
+                backoff: match value["backoff"].as_str() {
+                    Some("exponential") => Backoff::Exponential,
+                    _ => Backoff::Fixed,
+                },
+            },
             Some("host") => Self::Host { handler: value["handler"].as_str().unwrap_or_default().into() },
             _ => Self::Manual,
         }
@@ -44,7 +54,9 @@ impl Loader {
     pub(crate) fn recovery_policy(&self, config: &RecoveryConfig) -> Result<RecoveryPolicy> {
         match config {
             RecoveryConfig::Manual => Ok(RecoveryPolicy::Manual),
-            RecoveryConfig::Retry { delay_ms } => Ok(RecoveryPolicy::Retry { delay: Duration::from_millis(*delay_ms) }),
+            RecoveryConfig::Retry { delay_ms, max_retries, backoff } => {
+                Ok(RecoveryPolicy::retry_with(Duration::from_millis(*delay_ms), *max_retries, *backoff))
+            }
             RecoveryConfig::Host { handler } => self
                 .0
                 .recovery_handlers
@@ -70,11 +82,17 @@ pub(crate) fn validate(value: &Value) -> Vec<Issue> {
     match value["mode"].as_str() {
         Some("manual") => Vec::new(),
         Some("retry") => {
+            let mut issues = Vec::new();
             if value.get("delayMs").is_some_and(|v| v.as_u64().is_none_or(|n| n == 0)) {
-                issue("delayMs must be a positive integer", Some("delayMs"))
-            } else {
-                Vec::new()
+                issues.extend(issue("delayMs must be a positive integer", Some("delayMs")));
             }
+            if value.get("maxRetries").is_some_and(|v| v.as_u64().is_none()) {
+                issues.extend(issue("maxRetries must be a non-negative integer", Some("maxRetries")));
+            }
+            if value.get("backoff").is_some_and(|v| !matches!(v.as_str(), Some("fixed" | "exponential"))) {
+                issues.extend(issue("backoff must be fixed or exponential", Some("backoff")));
+            }
+            issues
         }
         Some("host") => {
             if value["handler"].as_str().is_none_or(str::is_empty) {
