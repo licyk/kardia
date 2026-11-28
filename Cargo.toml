@@ -37,7 +37,7 @@ serde_path_to_error = "0.1"
 indexmap = { version = "2", features = ["serde"] }
 proptest = "1"
 # kqueue follows directory symlinks and reports changes through their watched paths.
-notify = { version = "8", default-features = false, features = ["macos_kqueue"] }
+notify = { version = "9", default-features = false, features = ["macos_kqueue"] }
 syn = { version = "3", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
