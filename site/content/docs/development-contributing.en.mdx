@@ -109,19 +109,21 @@ Each crate carries its own version, `version` under its `[package]`, and the `ka
 - a crate whose sources or manifest changed since the last release;
 - every published crate that depends on one of them, since a dependent that kept its old version would keep users on the old requirement of the changed crate.
 
-Tests, benches, examples and prose never reach a user of a crate and never trigger a release. The published requirement is a caret range, so a patch release stays compatible with what is already on crates.io: `kardia-timer` 0.4.0 accepts 0.4.1 of `kardia-core` without needing a version of its own beyond the one its own change asks for.
+Tests, benches, examples and prose never reach a user of a crate and never trigger a release. The published requirement is a caret range, so a patch release stays compatible with what is already on crates.io: `kardia-timer` 0.6.0 accepts 0.6.1 of `kardia-core` without needing a version of its own beyond the one its own change asks for.
 
-A minor or major release moves the requirement users write, so it releases the whole workspace: a dependent that stayed on `^0.3` would keep resolving the old crate, and one that moved to `^0.4` would ask for a version that does not exist yet.
+A minor or major release moves the requirement users write, so it releases the whole workspace: a dependent that stayed on `^0.5` would keep resolving the old crate, and one that moved to `^0.6` would ask for a version that does not exist yet.
+
+`--apply` is all or nothing. It checks everything that can refuse the release (an existing tag, an unreadable manifest) before writing, and restores the manifests if a later step fails, so a refused or interrupted release never leaves a version bumped: a second run would bump it again from the new version. A batch is tagged `release-<date>`, or `release-<date>-2`, `-3` when that day already released.
 
 <Steps>
 <Step>
 `cargo xtask release patch` prints the plan: which crates move, to which version, and why. Commit and push it with the release.
 </Step>
 <Step>
-`cargo xtask release patch --apply` writes the versions, updates `Cargo.lock` and creates the `release-<date>` tag naming that batch. Commit, push, and push the tag (`git push --follow-tags`): the push runs CI, the tag starts `.github/workflows/release.yml`.
+`cargo xtask release patch --apply` writes the versions, updates `Cargo.lock` and creates the tag naming that batch. Commit, push, and push the tag (`git push --follow-tags`): the push runs CI, the tag starts `.github/workflows/release.yml`.
 </Step>
 <Step>
-Release lists the crate versions of the tagged commit and asks crates.io which of them are missing; a release whose versions are all published is an error. It then finds CI's run of the tagged commit and waits for it if it is still running: a passed run is reused, a failed one stops the release. Only when there is no usable run (a commit CI never ran on, or a run a newer push cancelled) does Release call `ci.yml` itself as its checks. Each released commit is tested once.
+Release lists the crate versions of the tagged commit and asks crates.io which of them are missing. When every version is already published there is nothing to do: it reports that with a notice and the jobs after it skip, so the run ends successfully instead of failing. Otherwise it finds CI's run of the tagged commit and waits for it if it is still running: a passed run is reused, a failed one stops the release. Only when there is no usable run (a commit CI never ran on, or a run a newer push cancelled) does Release call `ci.yml` itself as its checks. Each released commit is tested once.
 </Step>
 <Step>
 It publishes every crate version that is not on crates.io yet, in dependency order (`cargo publish --workspace`; `xtask` is never published), then creates a GitHub release for the tag, with notes since the previous `release-*` tag.

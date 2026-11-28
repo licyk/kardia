@@ -33,6 +33,8 @@ Static 使用 FS provider，不直接绑定本地文件系统。内容探测有�
 
 这些测试注入真实实现的错误、panic 或 Fiber 失败，并观察真实网络与清理计数。自动模式没有以手动 update 代替恢复；手动模式验证保持 Failed，之后才明确处理；host 模式遵循回调结果。失败只允许影响该实例及其不可用服务的消费者。
 
+`crates/kardia-core/tests/recovery.rs` 承载"宿主托管一组受监督插件"的验收：无需任何驱动重启的自动恢复、保持失败直到显式处理的手动模式、宿主决策及其处理器错误被隔离、重复失败与恢复、以及释放在待执行重启时取消该重启——每一步都断言无关插件仍在服务。`crates/kardia-loader/tests/recovery.rs` 通过配置覆盖同样的场景。
+
 隔离边界必须明确：in-process unwind 可捕获 Rust panic，但不能阻止 abort、segfault 或进程级退出。需要这种隔离时使用已有进程/WASM guest 边界；本轮没有新增任意原生代码沙箱。
 
 ## 固定对照与复现 [#parity]

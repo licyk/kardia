@@ -109,19 +109,21 @@ CI 的步骤：
 - 自上次发布以来源码或 manifest 有改动的 crate；
 - 所有发布依赖了它们的 crate——依赖者若保留旧版本，用户就会一直停留在被改动 crate 的旧版本要求上。
 
-测试、bench、示例和文档不会到达 crate 的使用者，也不会触发发布。随包发布的要求是 caret 范围，因此 patch 发布与 crates.io 上已有的版本保持兼容：`kardia-timer` 0.4.0 直接接受 `kardia-core` 0.4.1，不必只为这个依赖再发一版。
+测试、bench、示例和文档不会到达 crate 的使用者，也不会触发发布。随包发布的要求是 caret 范围，因此 patch 发布与 crates.io 上已有的版本保持兼容：`kardia-timer` 0.6.0 直接接受 `kardia-core` 0.6.1，不必只为这个依赖再发一版。
 
-minor 或 major 发布会改变用户填写的版本要求，因此会发布整个工作区：停在 `^0.3` 的依赖方会一直解析到旧 crate，而改到 `^0.4` 又会要求一个尚不存在的版本。
+minor 或 major 发布会改变用户填写的版本要求，因此会发布整个工作区：停在 `^0.5` 的依赖方会一直解析到旧 crate，而改到 `^0.6` 又会要求一个尚不存在的版本。
+
+`--apply` 是全有或全无的。它先完成所有可能拒绝发布的检查（标签是否已存在、manifest 是否可读）再写盘，并在后续步骤失败时把 manifest 还原；因此被拒绝或中断的发布不会留下已升级的版本号，否则第二次运行会在新版本上再升一级。一批发布使用标签 `release-<date>`，当天已有发布时依次为 `release-<date>-2`、`-3`。
 
 <Steps>
 <Step>
 运行 `cargo xtask release patch`，它会打印发布计划：哪些 crate 会升级、升到哪个版本、原因是什么。随本次发布一起提交并推送。
 </Step>
 <Step>
-`cargo xtask release patch --apply` 写入版本号、更新 `Cargo.lock`，并为这一批创建 `release-<date>` 标签。提交并推送，同时推送标签（`git push --follow-tags`）：推送会运行 CI，标签会启动 `.github/workflows/release.yml`。
+`cargo xtask release patch --apply` 写入版本号、更新 `Cargo.lock`，并为这一批创建标签。提交并推送，同时推送标签（`git push --follow-tags`）：推送会运行 CI，标签会启动 `.github/workflows/release.yml`。
 </Step>
 <Step>
-Release 会列出该标签所指提交中各 crate 的版本，并向 crates.io 查询哪些版本还不存在；如果所有版本都已发布，这一步会报错。然后它找到 CI 对这个提交的运行，如果还在进行就等待：通过的运行被直接复用，失败的运行会终止发布。只有在没有可用运行时（CI 从未运行过的提交，或被较新推送取消的运行），Release 才会自己调用 `ci.yml` 作为检查。每个被发布的提交只测试一次。
+Release 会列出该标签所指提交中各 crate 的版本，并向 crates.io 查询哪些版本还不存在。如果所有版本都已发布，就没有可做的工作：它以一条 notice 说明，后续作业全部跳过，整次运行以成功结束，而不是失败。否则它会找到 CI 对这个提交的运行，如果还在进行就等待：通过的运行被直接复用，失败的运行会终止发布。只有在没有可用运行时（CI 从未运行过的提交，或被较新推送取消的运行），Release 才会自己调用 `ci.yml` 作为检查。每个被发布的提交只测试一次。
 </Step>
 <Step>
 它按依赖顺序发布尚未出现在 crates.io 上的各个 crate 版本（`cargo publish --workspace`；`xtask` 从不发布），然后为该标签创建一个 GitHub release，说明从上一个 `release-*` 标签开始生成。

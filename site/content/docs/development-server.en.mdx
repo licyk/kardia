@@ -33,6 +33,8 @@ Static reads through FS providers. Content detection owns a separate stream. Sim
 
 Tests inject errors, panics or Fiber failure into the actual implementation and observe real sockets and cleanup counters. Automatic recovery does not use test-driven updates. Manual mode is observed Failed before explicit handling. Host mode follows callback decisions. Only the failed instance and consumers of unavailable services may be interrupted.
 
+`crates/kardia-core/tests/recovery.rs` holds the acceptance for a host that runs a supervised set of plugins: automatic recovery without anything driving a restart, manual mode staying failed until handled, a host-defined decision whose handler error is contained, repeated failure and recovery, and disposal cancelling a pending restart — each asserting that an unrelated plugin keeps serving throughout. `crates/kardia-loader/tests/recovery.rs` covers the same through configuration.
+
 The containment boundary remains explicit: in-process unwind handling can catch Rust panic, but cannot contain abort, segfault or process-wide exit. Use the existing process/WASM guest boundary when that isolation is needed. This work does not add a sandbox for arbitrary native code.
 
 ## Fixed comparisons and reproduction [#parity]
