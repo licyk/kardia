@@ -92,7 +92,7 @@ fn is_proc_macro(attrs: &[Attribute]) -> bool {
 fn impl_name(item: &syn::ItemImpl) -> String {
     let target = type_name(&item.self_ty);
     match &item.trait_ {
-        Some((_, path, _)) => format!("{} for {target}", path_name(path)),
+        Some((path, _)) => format!("{} for {target}", path_name(path)),
         None => target,
     }
 }

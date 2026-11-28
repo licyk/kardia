@@ -1599,7 +1599,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "serde",
- "syn 2.0.119",
+ "syn 3.0.10",
  "tokio",
  "trybuild",
 ]
@@ -3747,7 +3747,7 @@ dependencies = [
  "proc-macro2",
  "serde",
  "serde_json",
- "syn 2.0.119",
+ "syn 3.0.10",
  "toml_edit",
 ]
 
