@@ -1,0 +1,1 @@
+import{n as e,t}from"./orama-static-AJUZf7Um.js";export{t as oramaStaticClient,e as staticClient};
