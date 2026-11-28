@@ -520,6 +520,7 @@ async fn does_not_reuse_an_id_owned_by_an_explicit_patch_insert() {
 
 // --- read-only files and disposal ---
 
+#[cfg(unix)]
 fn set_readonly(app: &App, readonly: bool) {
     let mut permissions = std::fs::metadata(&app.filename).unwrap().permissions();
     #[allow(clippy::permissions_set_readonly_false)]
@@ -527,6 +528,10 @@ fn set_readonly(app: &App, readonly: bool) {
     std::fs::set_permissions(&app.filename, permissions).unwrap();
 }
 
+// Windows replaces a file through a rename whatever its read-only attribute
+// says, so the write-back cannot be made to fail there and the overlay this
+// case checks for never appears.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn keeps_runtime_changes_in_memory_when_the_file_is_read_only() {
     let app = App::setup("sync-readonly.yml", vec![plugin("a", 1), plugin("b", 1)], json!({})).await;
