@@ -52,6 +52,16 @@ enum Signal {
 impl Watcher {
     pub(crate) fn start(ctx: &Context, path: &Path, options: WatchOptions) -> Result<Self> {
         let path = normalize(path)?;
+        // A FIFO, a socket or a device never reports a content change, and a native
+        // watch on one can block the platform watcher.
+        if is_special(&path) {
+            return Err(crate::FsError::new(
+                crate::FsCode::NotSupported,
+                None,
+                format!("cannot watch {}: not a file or directory", path.display()),
+            )
+            .into());
+        }
         // A file replaced through a rename (an atomic write) is lost by a
         // watch on the file itself, so its directory is watched instead.
         let is_file = !path.is_dir();
@@ -214,6 +224,28 @@ fn normalize(path: &Path) -> Result<PathBuf> {
 
 fn is_change(kind: &EventKind) -> bool {
     matches!(kind, EventKind::Create(_) | EventKind::Modify(_))
+}
+
+/// Whether the entry is neither a file nor a directory — a FIFO, a socket, a
+/// device — and therefore cannot report a content change. A path that does not
+/// exist yet is not special: it may be created before the watch starts.
+fn is_special(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) => {
+                let kind = metadata.file_type();
+                kind.is_fifo() || kind.is_socket() || kind.is_block_device() || kind.is_char_device()
+            }
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
 }
 
 #[cfg(test)]

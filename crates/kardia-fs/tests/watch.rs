@@ -420,3 +420,19 @@ async fn calls_a_function_added_again_in_the_same_dispatch_once_for_ready() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(count(&calls), 1);
 }
+#[tokio::test]
+#[cfg(unix)]
+async fn refuses_to_watch_a_fifo() {
+    let dir = fixture("special");
+    let fifo = dir.join("pipe");
+    // `mkfifo(1)` creates one without another crate; a system without it skips.
+    if !matches!(std::process::Command::new("mkfifo").arg(&fifo).status(), Ok(status) if status.success()) {
+        return;
+    }
+    let (_, fiber) = consumer().await;
+    let error = match fiber.context().get::<Fs>().unwrap().watch(&fifo, WatchOptions::default()) {
+        Ok(_) => panic!("a FIFO is not watched"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("not a file or directory"), "{error}");
+}

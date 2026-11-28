@@ -159,7 +159,7 @@ for await (const entry of fs.dir('/a/b').list()) { ... }
 | --- | --- | --- |
 | 包拆分 | `kardia-fs` 单 crate，`local.rs` 内建本地 provider | 结构差异，非语义 |
 | `Path` 三态语义 | `FsExt::resolve(&str)`，只有字符串；`url.rs` 有 `resolve`/`directory` | **大**：无名字数组、无「字面名字」概念 |
-| `access/rename/remove/stat/mkdir/symlink/readlink/copy/readdir` | **全部缺失**；`FsProvider` 只有 `read()` | **最大** |
+| entry 操作（`access`/`rename`/`remove`/`stat`/`mkdir`/`symlink`/`readlink`/`copy`/`readdir`） | `stat`/`write`/`rename`/`remove` 与 `Capabilities` 已补齐；其余仍缺 | 部分完成 |
 | `FileRef::stream/bytes/text/json/write` | `FileRef::stream()` 一个方法 | **大** |
 | `slice()` 区间读 | 无 | 中 |
 | 原子写/独占写 | 无 | 大（include 现在自己实现临时文件 + rename） |

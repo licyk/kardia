@@ -32,3 +32,13 @@ async fn writes_expressions_back_with_their_tag() {
     app.settle().await;
     assert_eq!(app.config("a").unwrap()["value"], json!("#2"));
 }
+#[test]
+fn an_alias_that_precedes_its_anchor_is_told_apart_from_a_missing_one() {
+    // A forward reference: the anchor exists lower in the document.
+    let error = kardia_include::yaml::parse("b: *later\na: &later 1\n").unwrap_err();
+    assert_eq!(error.message, "alias *later must follow its anchor");
+
+    // No anchor of that name exists at all.
+    let error = kardia_include::yaml::parse("a: *missing\n").unwrap_err();
+    assert_eq!(error.message, "unresolved alias: *missing");
+}

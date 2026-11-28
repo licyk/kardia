@@ -20,6 +20,10 @@
 | P2-4 proxy 前缀化 + 头映射 + `isolateOrigin` | `4fe3e11` | 完成，含删除 `ServerProxy` |
 | P2-1 fs `Path` 三态 + entry 解析 | `bb51304` | 完成 |
 | P1-2 `std:` 服务键 | 本次 | 完成，显式改名（非运行时归一） |
+| fs entry 操作（`stat`/`write`/`rename`/`remove`）+ `include` 改造 | 本次 | 完成，见第 3.3 节 |
+| watcher 跳过 FIFO/socket/设备 | 本次 | 完成 |
+| include 别名报错区分 | 本次 | 完成 |
+| http SSE（`event-stream`） | 本次 | 完成 |
 
 ## 2. 验证状态
 
@@ -57,9 +61,15 @@
 
 代价是不再接受 `inject: ["fs"]` 的旧写法。这是刻意的破坏性变更，与上游一致。
 
-### 3.3 fs 只做了 `Path` 语义，未做 entry 操作
+### 3.3 fs entry 操作在第二轮补上，并暴露了一个真实缺陷
 
-计划列了 `stat`/`write`/`rename`/`remove`/`realpath` 与 `capabilities`。实际只实现了 `Path` 三态语义——因为 6 个 fs 对照失败全部出自它，而 kardia 现有的 `include`/`server-static`/`hmr` 都只用读。补 entry 操作目前没有消费者，属于计划里明确标注的「按需」，留待出现消费者时再做。
+第一轮只做了 `Path` 三态语义，理由写的是「没有消费者」。这个理由是错的：`include` 一直在写文件，只是直接用 `std::fs`，绕过了 `kardia-fs`。它因此无法通过 provider 工作（非 `file:` scheme 一律失败），也不参与 fs 的拦截与生命周期。
+
+第二轮补上 `Capabilities` 与 `stat`/`write`/`rename`/`remove`，并让 `include` 改走 provider。改造中 `sync` 的两个 dispose 测试立刻失败，原因是：**写盘发生在插件卸载期间，而 `file:` 的 mount 由另一个插件持有，此时已被卸载**。
+
+修复方式：`include` 在启动时用 `Fs::provider_of()` 捕获 provider 句柄（`Provider`），此后读写都走这个句柄。`Provider` 持有 `Arc<Mount>`，因此 provider 的生命周期跟随 `include`，与 mount 列表的增删无关。
+
+这个缺陷只会在「卸载时写盘」这条路径上暴露，而它恰好是两个遗留测试覆盖的。
 
 ## 4. 剩余 parity 失败
 
@@ -71,14 +81,32 @@
 
 | 项 | 状态 | 说明 |
 | --- | --- | --- |
-| fs entry 操作（`stat`/`write`/`rename`/`remove`/`realpath`/`copy`/`mkdir`/`readdir`） | 未做 | 无消费者；`FsProvider` 仍只有 `read()` |
-| fs 区间读、原子写、`ifMatch`、`DirRef` | 未做 | 同上，且需要 `capabilities` 机制 |
+| fs `realpath`/`copy`/`mkdir`/`readdir`/`symlink` | 未做 | 仍无消费者；已有 `capabilities` 机制可接入 |
+| fs 区间读、原子写、`ifMatch`、`DirRef` | 未做 | 同上 |
 | fs 内存 provider 与 conformance 套件 | 未做 | 上游有独立包，kardia 无对应生态 |
-| http `event-stream`（SSE） | 未做 | 下游未提出需求；`05` 文档给了实现方案 |
-| http `data:`/`file:` URL | 未做 | parity README 已声明不追求完整 decoder 生态 |
+| http `data:`/`file:` URL | 未做 | parity README 已声明不追求完整 decoder 生态；Rust 侧应走 `std:fs` |
 | 上游 `ctx.std.x` 语法糖 | 无法跟进 | Rust 无属性代理；键名已对齐 |
 | 上游 `getStack` 栈帧拼接 | 无法跟进 | Rust 用 `std::backtrace` |
 | 上游发布流程（PR 合并触发） | 未做 | kardia 有自己的发布流程 |
+
+## 5.1 经核实不存在的上游项
+
+分析时列为「缺失」，第二轮核实后确认 kardia 本就没有该问题，不实现：
+
+| 项 | 核实结果 |
+| --- | --- |
+| 组日志去重 | `show_log` 已经跳过 `group`，且 kardia 没有 `reload` 日志动作，不存在重复 |
+
+## 5.2 第二轮补上的项
+
+| 项 | 内容 |
+| --- | --- |
+| fs `Capabilities` 与四个 entry 操作 | provider 未声明的操作在调用前报 `NotSupported` |
+| `include` 改走 fs | 读写重命名删除全部经由捕获的 `Provider`，不再直接调用 `std::fs` |
+| `Faulty` provider | 测试可在真实 provider 上注入 rename 失败，替代替换 `std::fs::rename` 的闭包 |
+| watcher 跳过特殊文件 | FIFO、socket、块/字符设备返回 `NotSupported`，避免平台 watcher 阻塞 |
+| include 别名报错 | 区分「锚点在后」（`must follow its anchor`）与「不存在」（`unresolved alias`） |
+| http SSE | `EventStream` 增量解析器，处理跨 chunk 的 CRLF 与 UTF-8 分裂 |
 
 ## 6. 下游反馈状态
 

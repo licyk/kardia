@@ -514,7 +514,7 @@ impl Include {
                     .warn(format_args!("config file {file} is missing, {pending} pending change(s) kept in memory"));
                 return Ok(());
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(error),
         };
         if current != expected {
             // someone else wrote the file: merge first, then come back
@@ -656,7 +656,7 @@ impl Include {
                         {
                             None
                         }
-                        Err(error) => return Err(error.into()),
+                        Err(error) => return Err(error),
                     };
                     if current.as_deref() != Some(expected) {
                         return Err(Error::new(StaleWrite));
@@ -665,7 +665,7 @@ impl Include {
                 match provider.rename(tmp.clone(), self.0.url.clone()).await {
                     Ok(()) => return Ok(()),
                     Err(error) if attempt < RENAME_RETRIES && is_transient_fs(&error) => {}
-                    Err(error) => return Err(error.into()),
+                    Err(error) => return Err(error),
                 }
                 tokio::time::sleep(RENAME_BACKOFF * (attempt + 1)).await;
             }

@@ -55,9 +55,12 @@
 - `std:` 服务键（显式改名，与上游一致）
 - 下游 K1、K2、K4
 
+- fs entry 操作（`stat`/`write`/`rename`/`remove` + `Capabilities`），`include` 改走 provider
+- watcher 跳过 FIFO/socket/设备、include 别名报错区分、http SSE
+
 **`bun run test:server:reference` 为 224 / 224 通过。**
 
-仍未跟进：fs 的 entry 操作与区间读等（无消费者）、http SSE、下游 K5–K8（协议级）。清单见 `12` 第 5、6 节。
+仍未跟进：fs 的区间读、原子写、`ifMatch`、`DirRef`、内存 provider（无消费者）；下游 K5–K8（协议级）。清单见 `12` 第 5、6 节。
 
 ## 核对方式
 

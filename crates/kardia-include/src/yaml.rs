@@ -172,19 +172,63 @@ enum Frame {
 }
 
 /// Parses the first document of `content`.
+/// The anchor names the document declares, in declaration order. The parser
+/// numbers anchors from one in the same order, so the names decide whether an
+/// alias that failed is a forward reference or an absent anchor.
+fn anchor_names(content: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut rest = content;
+    while let Some(index) = rest.find('&') {
+        rest = &rest[index + 1..];
+        let end = rest.find(|ch: char| !(ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.'))).unwrap_or(rest.len());
+        let name = &rest[..end];
+        rest = &rest[end..];
+        if !name.is_empty() {
+            names.push(name.to_owned());
+        }
+    }
+    names
+}
+
+/// The parser reports an alias whose anchor it has not seen yet as `unknown
+/// anchor`, with no way to tell a forward reference from a missing anchor in the
+/// message. The alias at `at` supplies the name, and the anchors the document
+/// declares decide which of the two it is.
+fn describe(content: &str, message: String, at: usize) -> String {
+    if !message.contains("unknown anchor") {
+        return message;
+    }
+    let Some(rest) = content.get(at..) else { return message };
+    let Some(alias) = rest.strip_prefix('*') else { return message };
+    let end = alias.find(|ch: char| !(ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.'))).unwrap_or(alias.len());
+    let name = &alias[..end];
+    if name.is_empty() {
+        return message;
+    }
+    if anchor_names(content).iter().any(|anchor| anchor == name) {
+        format!("alias *{name} must follow its anchor")
+    } else {
+        format!("unresolved alias: *{name}")
+    }
+}
+
 pub fn parse(content: &str) -> Result<(Value, Syntax), ParseError> {
     let chars: Vec<char> = content.chars().collect();
+
     let mut stack: Vec<Frame> = Vec::new();
     let mut anchors: HashMap<usize, (Value, Node)> = HashMap::new();
     let mut result: Option<(Value, Node)> = None;
     for event in Parser::new_from_str(content) {
-        let (event, span) = event
-            .map_err(|error| ParseError { message: error.info().to_string(), position: (*error.marker()).into() })?;
+        let (event, span) = event.map_err(|error| {
+            let message = describe(content, error.info().to_string(), error.marker().index());
+            ParseError { message, position: (*error.marker()).into() }
+        })?;
         let start = Position::from(span.start);
         let completed = match event {
             Event::StreamStart | Event::DocumentStart(_) | Event::Nothing => None,
             Event::DocumentEnd | Event::StreamEnd => break,
             Event::Alias(id) => {
+                // An alias the parser accepted always has its anchor already.
                 let (value, node) = anchors
                     .get(&id)
                     .cloned()
