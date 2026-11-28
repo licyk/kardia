@@ -24,6 +24,8 @@ All backends speak one JSON-based **guest ABI** (below) and run each guest plugi
 | Reload | compiles once per version; old and new instances run side by side, and dropping an instance releases all of its memory | each version is loaded from a fresh copy and **never unloaded**; it stays loaded until the process exits | reloading a module respawns its processes |
 | Use for | production guests | development: same toolchain, no WASM target needed | guests in any language, or that must not crash the host |
 | `kardia` binary | yes | yes | not yet (library only) |
+| `GuestService::emit` (events to a guest) and `Host::detached()` (host calls outside an export) | no: nothing carries them to a running instance, so they return an error | as on the left | yes (`kardia-guest/3`) |
+| `call` exports of one instance together | serial | serial | yes (`kardia-guest/3`); version 1 and 2 guests stay serial |
 
 **WebAssembly.** `WasmSource` runs core WebAssembly modules on wasmtime rather than WIT components, so guests need no component toolchain (the tests are written in WAT). A module compiles once per version and instantiates in its own store per fiber. `WasmSource::with_limits` bounds each instance:
 
@@ -407,32 +409,43 @@ Host functions returning `i32` set the message to their result and return its le
 
 ### Process transport [#process]
 
-A process guest exchanges one JSON object per line over its stdin and stdout (stdout is reserved for this; a guest logs through `log` or stderr). There are two versions: version 1, and `kardia-guest/2`, which adds a handshake, request ids, cancellation and pings.
+A process guest exchanges one JSON object per line over its stdin and stdout (stdout is reserved for this; a guest logs through `log` or stderr). There are three versions: version 1; `kardia-guest/2`, which adds a handshake, request ids, cancellation and pings; and `kardia-guest/3`, which adds calls of one instance in flight at the same time, events to a running guest, and host calls from anywhere.
 
-**Handshake.** The host's first line offers version 2 as an export: `{"export":"hello","input":{"protocol":"kardia-guest/2"}}`. A version 2 guest answers `{"ready":"kardia-guest/2"}`. A version 1 guest answers `{"done":1}`, as it does to any export it does not know, and the host serves it version 1, so either starts without a delay, and a version 2 guest still runs on a host that never offers it. A guest that does not answer within the handshake timeout is killed.
+**Handshake.** The host opens with `{"export":"hello","input":{"protocol":"kardia-guest/2"}}` — the only name a 0.2 guest knows. The guest answers with **the newest version it speaks**, `{"ready":"kardia-guest/3"}` or `{"ready":"kardia-guest/2"}`, and the host serves it that. A version 1 guest answers `{"done":1}`, as it does to any export it does not know, and is served version 1. A guest built with `kardia-guest` 0.2 therefore runs unchanged on a new host; the other way round does not hold, since a host that knows only version 2 reports an unknown protocol for `ready: "kardia-guest/3"`. A guest that does not answer within the handshake timeout is killed.
 
 **Version 1:**
 
 | Direction | Message | Meaning |
 |---|---|---|
-| host → guest | `{ export, input }` | an export: `export` is one of `meta`, `apply`, `call`, `dispose`; `input` is the message (`null` if empty) |
-| guest → host | `{ call: "log", level, text }` | logs; no reply |
+| host → guest | `{ export, input }` | one export: `export` is `meta`, `apply`, `call` or `dispose`; `input` is the message (`null` when empty) |
+| guest → host | `{ call: "log", level, text }` | log; no answer |
 | guest → host | `{ call: "provide", key, value }` | answered with `{ result }` or `{ error }` (an undeclared `key` is an error) |
 | guest → host | `{ call: "view", key }` | answered with `{ result }` or `{ error }` |
 | guest → host | `{ call: "invoke", key, method, args }` | answered with `{ result }` or `{ error }` |
-| guest → host | `{ output }` | sets the result text of the export |
+| guest → host | `{ output }` | sets the export's result text |
 | guest → host | `{ done: status }` | ends the export |
 
-**`kardia-guest/2`** sends the same messages, each with an `id`: an export carries a new `id`, and every message about it carries the same one (`{"id":3,"call":"view","key":"db"}`, `{"id":3,"result":…}`, `{"id":3,"output":…}`, `{"id":3,"done":0}`). The host calls one export at a time. Two more messages need no running export:
+**`kardia-guest/2`** sends the same messages, each carrying an `id`: every export brings a new `id`, and every message about it carries the same one (`{"id":3,"call":"view","key":"db"}`, `{"id":3,"result":…}`, `{"id":3,"output":…}`, `{"id":3,"done":0}`). The host calls one export at a time. Two more messages need no running export:
 
 | Direction | Message | Meaning |
 |---|---|---|
-| host → guest | `{ cancel: id }` | the caller no longer wants export `id`: the guest may stop early; the host drops its result and answers its later host calls with an error |
+| host → guest | `{ cancel: id }` | the caller no longer wants export `id`: the guest may stop early; the host drops its result |
 | host → guest | `{ ping: n }` | answered with `{ pong: n }`, even while an export runs |
+
+**`kardia-guest/3`** keeps every message above and changes only how they are related, adding two of its own:
+
+| Change | Meaning |
+|---|---|
+| exports in flight together | the host sends a `call` without waiting for the one before; `output` and `done` still belong to their `id`. So **several `call` exports of one instance run at the same time**; `meta`, `apply` and `dispose` still run alone |
+| host calls carry a `seq` | a guest's `provide`, `view` and `invoke` carry a `seq` the guest chooses, answered with `{ seq, result }` or `{ seq, error }`. The host answers them on a thread of its own, so several may be in flight and **none has to belong to an export**: a guest may keep a host handle from `apply` and call the host from any thread at any time |
+| events to the guest | the host may send `{ event: name, payload }` at any moment; the guest receives it without waiting for an export to end |
+| cancellation and pings | as in version 2 |
+
+Version 3 asks guest authors for one thing: `call` and event handling may overlap, so state they share goes behind a lock or an atomic. On the host side the matching calls are `GuestService::emit` (send an event) and `Host::detached()` (reach the host outside an export); the WASM and dynamic-library backends have no channel to a running guest and return an error for both.
 
 After `dispose` the process is killed; a guest exits when its stdin closes.
 
-For example, the `Counter` guest above, applied without configuration and then called once:
+For example, the `Counter` guest above, applied with no config and called once:
 
 ```text
 → {"export":"apply","input":{"config":null,"imports":{}}}
@@ -445,20 +458,44 @@ For example, the `Counter` guest above, applied without configuration and then c
 ← {"done":0}
 ```
 
-The same under `kardia-guest/2`:
+The same exchange under `kardia-guest/3` (the host offers the version 2 name, the guest answers with version 3):
 
 ```text
 → {"export":"hello","input":{"protocol":"kardia-guest/2"}}
-← {"ready":"kardia-guest/2"}
+← {"ready":"kardia-guest/3"}
 → {"id":1,"export":"apply","input":{"config":null,"imports":{}}}
-← {"id":1,"call":"provide","key":"counter","value":{"config":null}}
-→ {"id":1,"result":null}
+← {"seq":0,"id":1,"call":"provide","key":"counter","value":{"config":null}}
+→ {"seq":0,"result":null}
 ← {"id":1,"call":"log","level":2,"text":"counting"}
 ← {"id":1,"done":0}
 → {"id":2,"export":"call","input":{"key":"counter","method":"increment","args":null}}
 ← {"id":2,"output":"1"}
 ← {"id":2,"done":0}
 ```
+
+The host may now send `{"event":"settings","payload":{"theme":"dark"}}` with no `id` at all, and the guest handles it at its next opportunity; a guest holding the host from `apply` may send `{"seq":1,"call":"view","key":"db"}` from any thread, a line that carries no `id` either.
+
+### Writing a guest in another language [#interop]
+
+A guest in another language implements the protocol above and links nothing. `pykardia` is a Python implementation of the same model: `pykardia.guest.export` turns one Python source into a self-contained executable (a process guest), a CFFI dynamic library, or a WASI module, and kardia loads all three as they are.
+
+Loading them needs no code: `kardia-hmr` ships an example that runs a guest through the real `Loader` and `Hmr` and prints what it did as JSON.
+
+```sh
+cargo run -p kardia-hmr --example run_guest -- ./plugins/counter \
+    --provides counter --config '{"initial":5}' \
+    --call increment 3 --call increment 1
+```
+
+```json
+{"view":{"initial":5},"protocol":3,
+ "steps":[{"method":"increment","result":{"ok":8}},{"method":"increment","result":{"ok":9}}],
+ "logs":["Python guest applied"]}
+```
+
+The backend follows the file: `.wasm` or `.wat` runs on wasmtime, a file with the executable bit runs as a child process, and anything else loads as a dynamic library. `--replace <file>` moves that file over the guest's own path and hot-reloads it through HMR in the same run, so the reload path is observable too.
+
+pykardia's CI keeps this path honest: it checks out kardia, builds the example, and runs all three kinds of artifact through the real loader, hot reload included. The only agreement between the two repositories is the protocol this section describes, whose authoritative form is the `kardia-hmr` crate documentation (`cargo doc -p kardia-hmr --open`).
 
 ## A guest by hand: `hello.wat` [#hello]
 

@@ -208,6 +208,7 @@ A third kind, **child processes**, is available to apps built on the library (`k
 - Reloading a module respawns its processes.
 - `kardia::hmr::ProcessGuest` adds arguments, a `Spawner` of the app's own, timeouts and a frame limit, and can take the plugin's metadata from the app instead of the guest.
 - Replace an executable by renaming a new file over it, since a running executable can't be written to.
+- Under `kardia-guest/3`, the calls of one instance run at the same time, the host sends events to a running guest with `GuestService::emit`, and a guest reaches the host outside any export through the `Host::detached()` handle it kept from `apply`. A guest built with `kardia-guest` 0.2 keeps working: the handshake offers the version 2 name and the guest answers with the newest version it speaks. The WASM and dylib backends have no channel to a running instance, so events and detached host calls fail there.
 
 To reload guest modules as they change, add an `hmr` entry with watch mode:
 
@@ -292,6 +293,19 @@ What a guest can do:
 - **Fail safely.** An error or panic in a guest fails only that plugin or call. In a dylib or a process, the SDK catches the panic and returns it as an error. WebAssembly aborts on a panic, and the host reports the abort as a failed call. A process that exits fails its later calls with "the guest process exited".
 
 Guests in other languages implement the JSON-based guest interface described in the `kardia-hmr` crate docs (`cargo doc -p kardia-hmr --open`). `examples/plugins/hello.wat` is a guest written by hand in WebAssembly text.
+
+### Guests from other languages
+
+An SDK in another language implements that interface and links nothing. [`pykardia`](https://github.com/licyk/pykardia) is a Python implementation of the same model: it exports one Python source as a self-contained executable, a CFFI dynamic library or a WASI module, and all three load as they are.
+
+`cargo run -p kardia-hmr --example run_guest` runs a guest through the real `Loader` and `Hmr` and prints what it did as one JSON object, so another language's test suite can drive this host without linking it:
+
+```sh
+cargo run -p kardia-hmr --example run_guest -- ./plugins/counter \
+    --provides counter --config '{"initial":5}' --call increment 3
+```
+
+The backend follows the file (`.wasm`/`.wat` on wasmtime, an executable as a child process, anything else as a dynamic library), and `--replace <file>` moves a file over the guest and hot-reloads it in the same run. pykardia's CI checks out this repository, builds the example, and runs all three kinds of artifact through it, hot reload included.
 
 ## TypeScript and Tauri
 

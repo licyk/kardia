@@ -24,6 +24,8 @@ icon: Container
 | 重载 | 每个版本编译一次；新旧实例并存，丢弃实例会释放其全部内存 | 每个版本从一份新副本加载，**永不卸载**；一直保留到进程退出 | 重载模块会重新启动其进程 |
 | 适用于 | 生产环境的访客 | 开发：同一套工具链，无需 WASM 目标 | 任意语言编写的访客，或不能让宿主崩溃的访客 |
 | `kardia` 二进制 | 支持 | 支持 | 暂不支持（仅限库） |
+| `GuestService::emit`（宿主到访客的事件）与 `Host::detached()`（导出外调用宿主） | 不支持：没有到运行中实例的通道，调用返回错误 | 同左 | 支持（`kardia-guest/3`） |
+| 单实例并发 `call` | 串行 | 串行 | 支持（`kardia-guest/3`）；版本 1、2 的访客仍串行 |
 
 **WebAssembly。** `WasmSource` 在 wasmtime 上运行核心 WebAssembly 模块，而不是 WIT 组件，因此访客不需要组件工具链（测试用 WAT 编写）。模块每个版本编译一次，并为每个纤程在各自的 store 中实例化。`WasmSource::with_limits` 为每个实例设置上限：
 
@@ -407,9 +409,9 @@ kardia-hmr 启动的线程（进程访客的 `guest-stdin`、`guest-stdout`、`g
 
 ### 进程传输 [#process]
 
-进程访客通过 stdin 和 stdout 每行交换一个 JSON 对象（stdout 专用于此；访客通过 `log` 或 stderr 记录日志）。协议有两个版本：版本 1，以及增加了握手、请求 id、取消和 ping 的 `kardia-guest/2`。
+进程访客通过 stdin 和 stdout 每行交换一个 JSON 对象（stdout 专用于此；访客通过 `log` 或 stderr 记录日志）。协议有三个版本：版本 1；`kardia-guest/2`，在版本 1 之上增加了握手、请求 id、取消和 ping；以及 `kardia-guest/3`，在版本 2 之上允许同一实例的多个调用同时在途、允许宿主向访客发送事件，并允许访客在任何时刻调用宿主。
 
-**握手。** 宿主的第一行以导出的形式提供版本 2：`{"export":"hello","input":{"protocol":"kardia-guest/2"}}`。版本 2 的访客应答 `{"ready":"kardia-guest/2"}`。版本 1 的访客应答 `{"done":1}`（它对任何不认识的导出都这样应答），宿主随后按版本 1 为它服务。因此两种访客都能立即启动，版本 2 的访客在从不提供它的宿主上也能运行。在握手时限内没有应答的访客会被杀死。
+**握手。** 宿主以 `{"export":"hello","input":{"protocol":"kardia-guest/2"}}` 开场——这是 0.2 版访客唯一认识的名字。访客回答**它能说的最高版本**：`{"ready":"kardia-guest/3"}` 或 `{"ready":"kardia-guest/2"}`，宿主按这个回答为它服务。版本 1 的访客对任何不认识的导出都应答 `{"done":1}`，宿主随后按版本 1 为它服务。因此用 `kardia-guest` 0.2 构建的访客在新宿主上照常运行；反过来，用新 SDK 构建的访客不能在只认识版本 2 的旧宿主上运行，旧宿主会对 `ready: "kardia-guest/3"` 报未知协议。在握手时限内没有应答的访客会被杀死。
 
 **版本 1：**
 
@@ -427,8 +429,19 @@ kardia-hmr 启动的线程（进程访客的 `guest-stdin`、`guest-stdout`、`g
 
 | 方向 | 消息 | 含义 |
 |---|---|---|
-| 宿主 → 访客 | `{ cancel: id }` | 调用者不再需要导出 `id`：访客可以提前结束；宿主丢弃其结果，并以错误应答它之后的宿主调用 |
+| 宿主 → 访客 | `{ cancel: id }` | 调用者不再需要导出 `id`：访客可以提前结束；宿主丢弃其结果 |
 | 宿主 → 访客 | `{ ping: n }` | 以 `{ pong: n }` 应答，即使有导出正在运行 |
+
+**`kardia-guest/3`** 保留上述全部消息，只改它们的关联方式，并增加两条：
+
+| 变化 | 含义 |
+|---|---|
+| 导入可以同时在途 | 宿主发出一个 `call` 后不必等它结束就可以发下一个；`output` 与 `done` 仍按 `id` 关联。因此**同一个访客实例的多个 `call` 并发执行**。`meta`、`apply`、`dispose` 仍然独占执行 |
+| 宿主调用带 `seq` | 访客到宿主的 `provide`、`view`、`invoke` 带一个访客自己分配的 `seq`，宿主以 `{ seq, result }` 或 `{ seq, error }` 应答。宿主在自己的读线程上处理宿主调用，所以多条可以交叉在途，而且**不要求属于任何导出**——访客可以在 `apply` 之后保留一个宿主句柄，从任何线程、任何时刻调用宿主 |
+| 宿主到访客的事件 | 宿主随时可以发送 `{ event: name, payload }`；访客立即收到，不必等某个导出结束 |
+| 取消与 ping | 与版本 2 相同 |
+
+版本 3 对访客作者的要求是：`call` 与事件处理可能同时进行，它们共享的状态要放到锁或原子后面。宿主侧的对应能力是 `GuestService::emit`（发事件）与 `Host::detached()`（脱离导出调用宿主）；WASM 与动态库后端没有到运行中访客的通道，这两项在那里会返回错误。
 
 `dispose` 之后进程会被杀死；stdin 关闭时访客退出。
 
@@ -445,20 +458,44 @@ kardia-hmr 启动的线程（进程访客的 `guest-stdin`、`guest-stdout`、`g
 ← {"done":0}
 ```
 
-在 `kardia-guest/2` 下相同的过程：
+在 `kardia-guest/3` 下相同的过程（宿主提供版本 2 的名字，访客回答版本 3）：
 
 ```text
 → {"export":"hello","input":{"protocol":"kardia-guest/2"}}
-← {"ready":"kardia-guest/2"}
+← {"ready":"kardia-guest/3"}
 → {"id":1,"export":"apply","input":{"config":null,"imports":{}}}
-← {"id":1,"call":"provide","key":"counter","value":{"config":null}}
-→ {"id":1,"result":null}
+← {"seq":0,"id":1,"call":"provide","key":"counter","value":{"config":null}}
+→ {"seq":0,"result":null}
 ← {"id":1,"call":"log","level":2,"text":"counting"}
 ← {"id":1,"done":0}
 → {"id":2,"export":"call","input":{"key":"counter","method":"increment","args":null}}
 ← {"id":2,"output":"1"}
 ← {"id":2,"done":0}
 ```
+
+宿主此时可以不加 `id` 直接发送 `{"event":"settings","payload":{"theme":"dark"}}`，访客会在下一次有机会时处理它；访客也可以在拿到 `apply` 的宿主句柄后，从任意线程发送 `{"seq":1,"call":"view","key":"db"}`，而这一行不带任何 `id`。
+
+### 用其他语言编写访客 [#interop]
+
+其他语言的 SDK 只需实现上面的协议，而不用链接 kardia。`pykardia` 是同一套模型的 Python 实现：`pykardia.guest.export` 把一份 Python 源码导出成自包含的可执行文件（进程访客）、CFFI 动态库或 WASI 模块，三种产物都能被 kardia 直接加载。
+
+加载它们不需要写代码：`kardia-hmr` 带一个示例，用真实的 `Loader` 与 `Hmr` 跑一个访客并把结果打印成 JSON。
+
+```sh
+cargo run -p kardia-hmr --example run_guest -- ./plugins/counter \
+    --provides counter --config '{"initial":5}' \
+    --call increment 3 --call increment 1
+```
+
+```json
+{"view":{"initial":5},"protocol":3,
+ "steps":[{"method":"increment","result":{"ok":8}},{"method":"increment","result":{"ok":9}}],
+ "logs":["Python guest applied"]}
+```
+
+后端按文件自动选择：`.wasm` 或 `.wat` 走 wasmtime，带可执行位的是子进程，其余按动态库加载。`--replace <file>` 会把该文件移到访客自己的路径上，并在同一次运行中经 HMR 热重载，因此重载行为也可以直接观察。
+
+这条路径由 pykardia 的 CI 守着：它检出 kardia、构建这个示例，再让上面三种产物依次通过真实加载器，包括热重载。两边的版本约定只有这一节描述的协议本身——`kardia-hmr` 的 crate 文档（`cargo doc -p kardia-hmr --open`）是它的权威来源。
 
 ## 手写访客：`hello.wat` [#hello]
 

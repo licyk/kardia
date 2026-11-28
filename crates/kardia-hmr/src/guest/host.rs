@@ -79,11 +79,11 @@ impl GuestHost {
     }
 
     /// Calls a service at `key`: a [`GuestService`] another guest provides, or a
-    /// [`HostAction`] the host registered with [`register`], which lets a guest
+    /// [`HostAction`] the host registered with [`register_action`], which lets a guest
     /// reach the host's own implementation instead of only a JSON view.
     ///
     /// [`HostAction`]: super::HostAction
-    /// [`register`]: super::register
+    /// [`register_action`]: super::register_action
     pub fn invoke(&self, key: &str, method: &str, args: Value) -> Result<Value> {
         let ctx = self.ctx()?;
         if let Ok(service) = ctx.get_as::<GuestService>(key) {

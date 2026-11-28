@@ -97,11 +97,14 @@
 //! `{ done: status }` ends it. After `dispose` the process is killed; a
 //! guest exits when its stdin closes.
 //!
-//! **`kardia-guest/3`.** The host's first line offers it as an export:
-//! `{ export: "hello", input: { protocol: "kardia-guest/3" } }`. A version 3
-//! guest answers `{ ready: "kardia-guest/3" }`; a version 1 guest answers
-//! `{ done: 1 }`, as it does to any export it does not know, and is served
-//! version 1. Under version 3:
+//! **`kardia-guest/3`.** The host opens with
+//! `{ export: "hello", input: { protocol: "kardia-guest/2" } }` — the name a
+//! kardia-guest 0.2 guest knows. The guest answers with the newest version it
+//! speaks, `{ ready: "kardia-guest/3" }` or `{ ready: "kardia-guest/2" }`, and
+//! the host serves it that; a version 1 guest answers `{ done: 1 }`, as it does
+//! to any export it does not know, and is served version 1. A guest built with
+//! kardia-guest 0.2 therefore runs unchanged, while a guest that speaks version
+//! 3 needs a host that does. Under version 3:
 //!
 //! * Every export carries an `id`, and its `output` and `done` carry the
 //!   same `id`. Exports may be in flight at the same time: the host sends

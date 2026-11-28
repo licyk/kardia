@@ -23,12 +23,14 @@ const PROTOCOL: &str = "kardia-guest/3";
 /// carries the protocol, so the guest must not print to it; log through
 /// [`Host::log`] or stderr.
 ///
-/// A host offering `kardia-guest/3` gets it: a reader thread then takes the
-/// host's messages, so a host call waits for its own reply, an event the
-/// host sends reaches [`Guest::event`](crate::Guest::event) as soon as no
-/// export runs, a cancelled export sees [`Host::cancelled`], and a host the
-/// guest keeps ([`Host::detached`]) reaches the host from any thread. Any
-/// other host is served protocol version 1.
+/// A host that opens with the handshake gets `kardia-guest/3`: a reader
+/// thread takes the host's messages, so each `call` runs on a thread of its
+/// own and the calls of the instance overlap, a host call waits only for its
+/// own reply, an event the host sends reaches
+/// [`Guest::event`](crate::Guest::event) as it comes, a cancelled export sees
+/// [`Host::cancelled`], and a host the guest keeps ([`Host::detached`])
+/// reaches the host from any thread. A host that opens with an export instead
+/// is served protocol version 1.
 pub fn serve<G: Guest>() {
     let stdin = Arc::new(Mutex::new(std::io::stdin()));
     let Some(first) = next(&stdin) else { return };
