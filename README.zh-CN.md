@@ -117,7 +117,7 @@ kardia path/to/kardia.yml
 
 每个内置插件也支持使用对应的 TypeScript 包名，例如 `@cordisjs/plugin-timer`。
 
-官方服务的键位于 `std:` 命名空间，与 Cordis 一致：`fs` 提供 `std:fs`，`http` 提供 `std:http`，`server` 提供 `std:server`，`timer`、`hmr`、`env` 同理。依赖其中之一的条目要写该键，例如 `inject: ["std:fs"]`；拦截也用同一个键，例如 `intercept: { "std:server": { path: "/api" } }`。`loader`、`include`、`bridge` 保留自己的键。
+官方服务的键位于 `std:` 命名空间，与 Cordis 一致：`fs` 提供 `std:fs`，`http` 提供 `std:http`，`server` 提供 `std:server`，`timer`、`hmr` 同理。依赖其中之一的条目要写该键，例如 `inject: ["std:fs"]`；拦截也用同一个键，例如 `intercept: { "std:server": { path: "/api" } }`。`loader`、`include`、`bridge` 保留自己的键。
 
 `server:proxy` 转发到前缀：`target` 可以是以 `/` 结尾的 URL、形如 `https:` 的 scheme，或表示所有 HTTP URL 的空字符串。`requestHeaders` 把每个上游请求头映射到它唯一的入站来源，`isolateOrigin` 丢弃凭据并把上游文档放入沙箱。
 

@@ -114,7 +114,7 @@ The file is a list of **entries**. Each entry runs one plugin:
 
 Each built-in also answers to its TypeScript package name, such as `@cordisjs/plugin-timer`.
 
-The official services declare their key in the `std:` namespace, as Cordis does: `fs` provides `std:fs`, `http` provides `std:http`, `server` provides `std:server`, and so do `timer`, `hmr` and `env`. An entry that depends on one names that key, so `inject: ["std:fs"]`, and an intercept of one uses the same key, so `intercept: { "std:server": { path: "/api" } }`. `loader`, `include` and `bridge` keep their own keys.
+The official services declare their key in the `std:` namespace, as Cordis does: `fs` provides `std:fs`, `http` provides `std:http`, `server` provides `std:server`, and so do `timer` and `hmr`. An entry that depends on one names that key, so `inject: ["std:fs"]`, and an intercept of one uses the same key, so `intercept: { "std:server": { path: "/api" } }`. `loader`, `include` and `bridge` keep their own keys.
 
 `server:proxy` forwards to a prefix: `target` is a URL ending with `/`, a scheme such as `https:`, or the empty string for every HTTP URL. `requestHeaders` maps each upstream header to its sole incoming source, and `isolateOrigin` drops cookies and sandboxes upstream documents.
 
