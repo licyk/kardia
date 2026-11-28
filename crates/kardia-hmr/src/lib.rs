@@ -134,7 +134,7 @@ pub use graph::{Exports, Imports, ModuleCode, ModuleGraph, ModuleId, ModuleSourc
 #[cfg(any(feature = "wasm", feature = "dylib", feature = "process"))]
 pub use guest::{
     CallControl, Export, GuestCode, GuestFailure, GuestFailureKind, GuestHost, GuestInstance, GuestMeta, GuestService,
-    guest_module, guest_plugin,
+    HostAction, guest_module, guest_plugin, register_action,
 };
 pub use hmr::{Hmr, HmrConfig, HmrExt, ImportFailure, ReconcileResult};
 #[cfg(feature = "process")]

@@ -68,9 +68,24 @@ impl GuestHost {
         Ok(self.ctx()?.view(key)?)
     }
 
-    /// Calls a [`GuestService`].
+    /// Calls a service at `key`: a [`GuestService`] another guest provides, or a
+    /// [`HostAction`] the host registered with [`register`], which lets a guest
+    /// reach the host's own implementation instead of only a JSON view.
+    ///
+    /// [`HostAction`]: super::HostAction
+    /// [`register`]: super::register
     pub fn invoke(&self, key: &str, method: &str, args: Value) -> Result<Value> {
-        self.ctx()?.get_as::<GuestService>(key)?.call(method, args)
+        let ctx = self.ctx()?;
+        if let Ok(service) = ctx.get_as::<GuestService>(key) {
+            return service.call(method, args);
+        }
+        match ctx.get_as::<super::Registered>(key) {
+            Ok(registered) => registered.0.call(method, args),
+            // Neither layer has the key, so the message says what was looked for.
+            Err(_) => Err(kardia_core::Error::msg(format!(
+                "no service \"{key}\": a guest provides none under that name, and the host registered no action there"
+            ))),
+        }
     }
 
     #[cfg(feature = "process")]
