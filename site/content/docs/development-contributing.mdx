@@ -33,7 +33,7 @@ cargo xtask arch                # lib.rs and mod.rs only declare and re-export m
 
 - WASM 访客插件测试会把它的测试夹具构建为 WebAssembly 模块，因此请先安装该目标：`rustup target add wasm32-unknown-unknown`。
 - 有些测试会在运行时用 cargo 构建夹具 crate，因此第一次运行会稍慢一些。
-- 这些 crate 的最低支持 Rust 版本是 1.91（工作区 `Cargo.toml` 中的 `rust-version`）；CI 使用一个固定的、更新的工具链（见下文）。
+- 这些 crate 的最低支持 Rust 版本是 1.95（工作区 `Cargo.toml` 中的 `rust-version`）；CI 使用一个固定的、更新的工具链（见下文）。
 - 测试如何组织，以及每个测试套件使用哪个运行时，见[测试](/docs/development-testing)。
 
 ### npm 包 [#js]

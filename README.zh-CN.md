@@ -31,7 +31,7 @@
 
 ## 环境要求
 
-- Rust 1.91 或更新版本。
+- Rust 1.95 或更新版本。
 - 仅在构建 WebAssembly 客体插件或运行完整测试套件时，需要安装 `wasm32-unknown-unknown` 目标。
 
   ```sh

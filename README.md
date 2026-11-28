@@ -30,7 +30,7 @@ An app is a tree of **plugins**. Each plugin runs in a **fiber**:
 
 ## Requirements
 
-- Rust 1.91 or newer.
+- Rust 1.95 or newer.
 - Only needed to build WebAssembly guest plugins, or to run the full test suite: the `wasm32-unknown-unknown` target.
 
   ```sh
