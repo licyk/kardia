@@ -2,7 +2,7 @@ use futures::{SinkExt, StreamExt};
 use kardia_core::{Context, Error, FiberState, Inject, Plugin, RecoveryAction, RecoveryPolicy, Result};
 use kardia_http::{Http, HttpPlugin};
 use kardia_server::{Body, Bytes, Server, ServerConfig, ServerExt, ServerPlugin, WsExt, ws_handler};
-use kardia_server_proxy::{ProxyConfig, ProxyPlugin, ServerProxy};
+use kardia_server_proxy::{ProxyConfig, ProxyPlugin};
 use serde_json::json;
 use std::{
     sync::{
@@ -76,7 +76,8 @@ async fn proxy_and_http_provider_failures_preserve_independent_http_and_websocke
             root.plugin::<Healthy>(()).unwrap().settled().await.unwrap();
             let provider = root.plugin::<HttpPlugin>(Default::default()).unwrap();
             provider.settled().await.unwrap();
-            let config = json!({"target":upstream.get::<Server>().unwrap().public_url()});
+            // A target is a prefix that ends with `/`.
+            let config = json!({"target": format!("{}/", upstream.get::<Server>().unwrap().public_url())});
             let proxy =
                 root.intercept("server", json!({"path":"/proxy"})).plugin_value::<ProxyPlugin>(config.clone()).unwrap();
             proxy.settled().await.unwrap();
@@ -155,16 +156,19 @@ async fn unavailable_upstream_is_request_local_and_recovers_without_restarting_p
     let listener = upstream.plugin::<ServerPlugin>(ServerConfig::local(0)).unwrap();
     listener.settled().await.unwrap();
     let address = upstream.get::<Server>().unwrap().address();
-    let target = upstream.get::<Server>().unwrap().public_url();
+    // A target is a prefix that ends with `/`.
+    let target = format!("{}/", upstream.get::<Server>().unwrap().public_url());
     let root = Context::new();
     root.plugin::<ServerPlugin>(ServerConfig::local(0)).unwrap().settled().await.unwrap();
     root.plugin::<Healthy>(()).unwrap().settled().await.unwrap();
     root.plugin::<HttpPlugin>(Default::default()).unwrap().settled().await.unwrap();
-    let proxy =
-        root.intercept("server", json!({"path":"/proxy"})).plugin::<ProxyPlugin>(ProxyConfig { target }).unwrap();
+    let proxy = root
+        .intercept("server", json!({"path":"/proxy"}))
+        .plugin::<ProxyPlugin>(ProxyConfig { target, isolate_origin: false, request_headers: Default::default() })
+        .unwrap();
     proxy.settled().await.unwrap();
     let url = root.get::<Server>().unwrap().public_url();
-    let identity = root.get::<ServerProxy>().unwrap().impl_id();
+    let identity = root.get::<Server>().unwrap().impl_id();
     listener.dispose().await.unwrap();
     assert_eq!(reqwest::get(format!("{url}/proxy/healthy")).await.unwrap().status(), 500);
     assert!(connect_async(format!("{}/proxy/healthy", url.replace("http:", "ws:"))).await.is_err());
@@ -173,7 +177,7 @@ async fn unavailable_upstream_is_request_local_and_recovers_without_restarting_p
     upstream.plugin::<ServerPlugin>(ServerConfig::local(address.port())).unwrap().settled().await.unwrap();
     upstream.plugin::<Healthy>(()).unwrap().settled().await.unwrap();
     assert_eq!(reqwest::get(format!("{url}/proxy/healthy")).await.unwrap().text().await.unwrap(), "alive");
-    assert_eq!(root.get::<ServerProxy>().unwrap().impl_id(), identity);
+    assert_eq!(root.get::<Server>().unwrap().impl_id(), identity);
     root.fiber().dispose().await.unwrap();
     upstream.fiber().dispose().await.unwrap();
 }

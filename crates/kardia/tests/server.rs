@@ -39,10 +39,11 @@ async fn catalog_loads_all_server_packages_and_rebuilds_proxy_after_provider_rep
     loader.create(json!({"id":"static","name":"@cordisjs/server-static","config":{"root":kardia::fs::Url::from_directory_path(folder.path()).unwrap()},"intercept":{"server":{"path":"/static"}}}),None,None).await.unwrap();
     let server = root.get::<Server>().unwrap();
     let url = server.public_url();
-    loader.create(json!({"id":"proxy","name":"@cordisjs/server-proxy","config":{"target":url},"intercept":{"server":{"path":"/proxy"}},"recovery":{"mode":"manual"}}),None,None).await.unwrap();
+    // A target is a prefix that ends with `/`.
+    loader.create(json!({"id":"proxy","name":"@cordisjs/server-proxy","config":{"target":format!("{url}/")},"intercept":{"server":{"path":"/proxy"}},"recovery":{"mode":"manual"}}),None,None).await.unwrap();
     loader.settled().await;
-    let proxy = root.get::<kardia::server_proxy::ServerProxy>().unwrap().impl_id();
-    assert_eq!(root.get::<kardia::server_proxy::ServerProxy>().unwrap().public_url().unwrap(), format!("{url}/proxy"));
+    // The proxy forwards under its intercept; it has no public URL of its own.
+    assert_eq!(root.get::<Server>().unwrap().public_url(), url);
     let client = reqwest::Client::new();
     assert_eq!(client.get(format!("{url}/static/")).send().await.unwrap().text().await.unwrap(), "<h1>static</h1>");
     assert_eq!(
@@ -58,12 +59,10 @@ async fn catalog_loads_all_server_packages_and_rebuilds_proxy_after_provider_rep
     let http = loader.resolve("http").unwrap().inner_fiber().unwrap();
     http.update_with(json!({}), true).unwrap().await.unwrap();
     loader.resolve("proxy").unwrap().inner_fiber().unwrap().settled().await.unwrap();
-    assert_ne!(root.get::<kardia::server_proxy::ServerProxy>().unwrap().impl_id(), proxy);
     assert_eq!(
         client.post(format!("{url}/proxy/echo")).body("again").send().await.unwrap().text().await.unwrap(),
         "again"
     );
-    let proxy = root.get::<kardia::server_proxy::ServerProxy>().unwrap().impl_id();
     loader
         .resolve("server")
         .unwrap()
@@ -75,7 +74,6 @@ async fn catalog_loads_all_server_packages_and_rebuilds_proxy_after_provider_rep
         .unwrap();
     loader.resolve("proxy").unwrap().inner_fiber().unwrap().settled().await.unwrap();
     assert_ne!(root.get::<Server>().unwrap().impl_id(), server.impl_id());
-    assert_ne!(root.get::<kardia::server_proxy::ServerProxy>().unwrap().impl_id(), proxy);
     assert_eq!(
         client.post(format!("{url}/proxy/echo")).body("rebuilt").send().await.unwrap().text().await.unwrap(),
         "rebuilt"

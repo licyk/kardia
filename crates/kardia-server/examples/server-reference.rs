@@ -66,18 +66,26 @@ async fn main() -> kardia_core::Result<()> {
                 let ctx = context.clone();
                 async move {
                     let base = ctx.get::<Server>()?.public_url();
-                    let plain = ctx.get::<kardia_server_proxy::ServerProxy>()?.public_url()?.replace(&base, "$BASE");
+                    // The proxy has no public URL of its own: the service reports
+                    // the URL of the server, including the prefix of its routes.
+                    let plain = ctx.get::<Server>()?.public_url().replace(&base, "$BASE");
                     let intercepted = ctx
                         .intercept("server", json!({"path":"/caller"}))
-                        .get::<kardia_server_proxy::ServerProxy>()?
-                        .public_url()?
+                        .get::<Server>()?
+                        .public_url()
                         .replace(&base, "$BASE");
                     res.set_json(&json!({"root":plain,"intercepted":intercepted}))?;
                     Ok(None)
                 }
             })?;
+            // A target is a prefix that ends with `/`.
+            let prefix = format!("{}/", url.trim_end_matches('/'));
             root.intercept("server", json!({"path":std::env::var("KARDIA_PROXY_PATH").unwrap_or_default()}))
-                .plugin::<kardia_server_proxy::ProxyPlugin>(kardia_server_proxy::ProxyConfig { target: url })?
+                .plugin::<kardia_server_proxy::ProxyPlugin>(kardia_server_proxy::ProxyConfig {
+                    target: prefix,
+                    isolate_origin: false,
+                    request_headers: Default::default(),
+                })?
                 .settled()
                 .await?;
         }
