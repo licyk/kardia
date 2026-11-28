@@ -32,6 +32,7 @@
 | 09 | [`09-parity-matrix.md`](09-parity-matrix.md) | kardia 现有实现逐项对照矩阵（已具备 / 部分具备 / 缺失），含代码位置 |
 | 10 | [`10-downstream-feedback.md`](10-downstream-feedback.md) | 下游 `Hanafubuki-dev/KARDIA-ADOPTION-ANALYSIS.md` 的 K1–K9 诉求逐条评估 |
 | 11 | [`11-implementation-plan.md`](11-implementation-plan.md) | 汇总所有文档后的完整实现计划：阶段、任务、验收、风险 |
+| 12 | [`12-execution-record.md`](12-execution-record.md) | 计划的实际落地结果、与计划的偏差及原因、剩余 parity 失败的性质 |
 
 ## 结论摘要
 
@@ -40,7 +41,13 @@
 3. **上游本轮没有引入**任何与下游 K1–K9 诉求直接对应的能力：事件仍不带 `FiberId`、bridge 仍信任客户端、guest 协议未变。因此下游九条诉求需要本项目自己实现，不能指望上游。
 4. 计划按四条主线推进：核心与加载器对齐、HTTP/Server 语义对齐、fs 能力补齐、下游反馈落地。
 5. **下游九条诉求里有两条不必照做**：K3 的「调用上限」kardia 已有（`BridgeOptions.timeout`），K9 的重启/退避已在 0.3.0 的 entry 级 `recovery` 里实现。这两项需要先与下游澄清，再决定是否补并发上限、熔断与指数退避。
-6. **九个上游修复在 kardia 依然存在**，且都是小改动：查询串含 `?`、表单体 content-type、IPv6 主机括号、timer 重入句柄、static 目录顺序、proxy hop-by-hop、FIFO 跳过、entry 转移归属、`Fiber::leak` 缺失。这些建议作为第一轮落地内容。
+6. **九个上游修复在 kardia 上同样存在**（分析时的状态）：查询串含 `?`、表单体 content-type、IPv6 主机括号、timer 重入句柄、static 目录顺序、proxy hop-by-hop、FIFO 跳过、entry 转移归属、`Fiber::leak` 缺失。前六项已修，第七项（FIFO 跳过）待定，第八项经实测在 kardia 不存在，第九项已补原语。详见 `12`。
+
+## 已落地
+
+见 [`12-execution-record.md`](12-execution-record.md)。已合入的包括：基线 pin 更新、P0 四项缺陷、`EffectHandle::leak()`、畸形百分号 400、static 目录顺序、`noProxy`、事件带 `FiberId`、bridge 的作用域广播与宿主身份注入。
+
+仍未落地：proxy 前缀化（含删除 `ServerProxy`）、fs 的 `Path` 三态与 entry 操作、`std:` 归一化。这三项各自对应一组尚未通过的 parity 对照。
 
 ## 核对方式
 
