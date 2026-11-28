@@ -326,6 +326,17 @@ impl EffectHandle {
         self.cell.dispose(self.root.upgrade().as_ref())
     }
 
+    /// Stops the fiber from disposing this effect, so that the caller becomes
+    /// responsible for calling [`dispose`](Self::dispose). Returns whether the
+    /// effect was registered on a fiber.
+    pub fn leak(&self) -> bool {
+        let Some(entry) = self.cell.take_entry() else { return false };
+        let Some(root) = self.root.upgrade() else { return false };
+        let fiber = self.cell.fiber;
+        drop(root.run(|st| st.detach_effect(fiber, entry)));
+        true
+    }
+
     /// Resolves when the setup has finished (immediately for synchronous
     /// effects), with the setup's failure if it failed.
     pub fn ready(&self) -> impl Future<Output = Result<()>> + Send + 'static {

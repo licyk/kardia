@@ -10,6 +10,23 @@ fn meta(label: &str, children: Vec<EffectMeta>) -> EffectMeta {
 }
 
 #[tokio::test]
+async fn a_leaked_effect_outlives_its_fiber_until_the_caller_disposes_it() {
+    let root = Context::new();
+    let seq = Seq::new();
+    let handle = root.on_dispose(seq.pusher(1)).unwrap();
+    assert!(handle.leak(), "the effect was registered on the fiber");
+    assert!(!handle.leak(), "a leaked effect is registered nowhere");
+
+    // Disposing the fiber no longer reverts it.
+    root.fiber().dispose().await.unwrap();
+    assert_eq!(seq.len(), 0);
+
+    // The caller owns it now.
+    handle.dispose().await.unwrap();
+    assert_eq!(seq.len(), 1);
+}
+
+#[tokio::test]
 async fn dispose_manually() {
     let root = Context::new();
     let seq = Seq::new();
